@@ -86,8 +86,8 @@ use std::io::Read;
 #[cfg(test)]
 use std::net::Shutdown;
 
-const BUILD_NAME: &str = "Mutiny Protocol V1.0 Build 6.9 Candidate 1";
-const BUILD_DESCRIPTION: &str = "Authenticated Mining Presence & Participation Eligibility";
+const BUILD_NAME: &str = "Mutiny Protocol V1.0 Build 7.0 Candidate 1";
+const BUILD_DESCRIPTION: &str = "First-Node Mainnet Bootstrap Activation";
 // Inherited locked Build 5.9 scope: Local Authenticated RPC & Service Boundary.
 const MOTTO: &str = "No Masters. Only the Many.";
 
@@ -727,6 +727,7 @@ fn run() -> Result<(), String> {
             cmd,
             "help"
                 | "init"
+                | "bootstrap-mainnet"
                 | "node"
                 | "node-key-init"
                 | "node-key-info"
@@ -786,6 +787,86 @@ fn run() -> Result<(), String> {
             print_banner(&state);
             println!("Initialized {}", data_dir.display());
             print_status(&state);
+        }
+        "bootstrap-mainnet" => {
+            if runtime_network != RuntimeNetwork::Mainnet {
+                return Err("bootstrap-mainnet requires --network mainnet".into());
+            }
+            let provider = ingress.bootstrap_witness.as_ref().ok_or(
+                "bootstrap-mainnet requires --bootstrap-witness PATH",
+            )?;
+            let live = load_state_for_runtime(&data_dir, &ingress)?;
+            validate_runtime_tuple(&live, RuntimeNetwork::Mainnet)?;
+            const EXPECTED_GENESIS_STATE_ROOT: &str =
+                "e08ca8e75aa57e03b3f42575dbd0ecf7b64898d5a05ff22ad66c40adcfa0d2c7";
+            if live.height != 0
+                || live.tip_epoch != 0
+                || live.tip_hash != hex::encode(MAINNET_GENESIS_ID)
+                || live.current_state_root != EXPECTED_GENESIS_STATE_ROOT
+                || !live.blocks.is_empty()
+                || !live.licenses.is_empty()
+                || !live.bitcoin_headers.is_empty()
+                || live.bitcoin_best_chain.is_some()
+                || !live.mempool.is_empty()
+                || !live.pending_protocol_operations.is_empty()
+                || !live.confirmed_transactions.is_empty()
+                || !live.side_branches.is_empty()
+            {
+                return Err("bootstrap-mainnet requires the exact clean Mainnet height-0 state".into());
+            }
+            let witness = provider
+                .load()
+                .map_err(|e| e.to_string())?
+                .decode()
+                .map_err(|e| e.to_string())?;
+            let staged = mainnet_bootstrap::build_staged_mainnet_block1_transition(
+                &live, &witness,
+            )
+            .map_err(|e| format!("Mainnet Block 1 bootstrap refused: {e:?}"))?;
+
+            const EXPECTED_BLOCK1: &str =
+                "9d8026ac82592abb40cb1809142af67ea57b89e19ad51db35ff3d53f09907ded";
+            const EXPECTED_STATE_ROOT: &str =
+                "4d844f0393da16e076f0873358b3471425261e9fda0bf011124f1dae705faae7";
+            const EXPECTED_PAYMENT_ID: &str =
+                "e7aa3d2f8459a0fd58683e1a7c3ea79c08403e1a82aec051db72fe0e3ddd8a89";
+
+            if staged.state.height != 1
+                || staged.state.tip_epoch != 10
+                || staged.state.tip_hash != EXPECTED_BLOCK1
+                || staged.state.current_state_root != EXPECTED_STATE_ROOT
+                || staged.state.licenses.len() != BOOTSTRAP_LICENSE_COUNT
+                || staged.proof.license_count != BOOTSTRAP_LICENSE_COUNT
+                || staged.proof.issued_epoch != 10
+                || staged.proof.activation_epoch != 74
+                || hex::encode(staged.proof.bitcoin_payment_id) != EXPECTED_PAYMENT_ID
+            {
+                return Err("Mainnet Block 1 staged authority tuple mismatch".into());
+            }
+            check_state(&staged.state)?;
+            blocksync::verify_full_replay(&staged.state)?;
+
+            save_state(&data_dir, &staged.state)?;
+            let committed = load_state_for_runtime(&data_dir, &ingress)?;
+            if serde_json::to_vec(&committed).map_err(|e| e.to_string())?
+                != serde_json::to_vec(&staged.state).map_err(|e| e.to_string())?
+            {
+                return Err("Mainnet Block 1 committed state does not match staged state".into());
+            }
+
+            print_banner(&committed);
+            println!("Canonical Mainnet Block 1 committed");
+            println!("Block hash:        {}", committed.tip_hash);
+            println!("StateRoot:         {}", committed.current_state_root);
+            println!("Issued epoch:      {}", staged.proof.issued_epoch);
+            println!("Activation epoch:  {}", staged.proof.activation_epoch);
+            println!("Mining licenses:   {}", committed.licenses.len());
+            println!(
+                "BitcoinPaymentID:  {}",
+                hex::encode(staged.proof.bitcoin_payment_id)
+            );
+            println!("P2P listener started: NO");
+            println!("Mining activated: NO");
         }
         "node-key-init" => {
             let passphrase = read_required_passphrase_file(&args)?;
@@ -2171,8 +2252,9 @@ fn print_help() {
     println!("{BUILD_NAME} - {BUILD_DESCRIPTION}");
     println!("{MOTTO}\n");
     println!("Commands:");
-    println!("  Runtime: --network devnet|mainnet; node --bootstrap-witness PATH supplies Mainnet Block1 bootstrap input");
+    println!("  Runtime: --network devnet|mainnet; bootstrap-mainnet explicitly commits authenticated Mainnet Block 1");
     println!("  mutinyd init [--data-dir PATH] [--epoch-ms N] [--force]");
+    println!("  mutinyd bootstrap-mainnet --network mainnet --data-dir PATH --bootstrap-witness PATH");
     println!("  mutinyd node-key-init --passphrase-file PATH [--data-dir PATH]");
     println!("  mutinyd node-key-info --passphrase-file PATH [--data-dir PATH]");
     println!("  mutinyd node-key-migrate --passphrase-file PATH [--data-dir PATH]");
@@ -10895,8 +10977,8 @@ mod tests {
     }
 
     #[test]
-    fn build69_runtime_identity_is_current_and_ascii() {
-        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 6.9 Candidate 1");
+    fn build70_runtime_identity_is_current_and_ascii() {
+        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 1");
         assert!(BUILD_NAME.is_ascii());
         assert!(BUILD_DESCRIPTION.is_ascii());
         // Older identities here are negative fixtures, never runtime labels.
@@ -10904,6 +10986,7 @@ mod tests {
             "Build 6.3 Candidate",
             "Build 6.7 Candidate",
             "Build 6.8 Candidate",
+            "Build 6.9 Candidate",
         ] {
             assert!(!BUILD_NAME.contains(stale));
             assert!(!BUILD_DESCRIPTION.contains(stale));
@@ -10911,11 +10994,11 @@ mod tests {
     }
 
     #[test]
-    fn build69_release_identity_pack_k_constants_and_inherited_cli_are_explicit() {
-        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 6.9 Candidate 1");
+    fn build70_release_identity_pack_k_constants_and_inherited_cli_are_explicit() {
+        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 1");
         assert_eq!(
             BUILD_DESCRIPTION,
-            "Authenticated Mining Presence & Participation Eligibility"
+            "First-Node Mainnet Bootstrap Activation"
         );
         assert_eq!(DEFAULT_DATA_DIR, "devnet-data-build6.3");
         assert_eq!(OP_MINING_PRESENCE, 0x0008);
@@ -13432,7 +13515,7 @@ mod hotfix1_release_tests {
         .unwrap();
         let help = fs::read_to_string(&help_out).expect("help must be valid UTF-8");
         assert!(fs::read(&help_err).unwrap().is_empty());
-        assert!(help.contains("Mutiny Protocol V1.0 Build 6.9 Candidate 1"));
+        assert!(help.contains("Mutiny Protocol V1.0 Build 7.0 Candidate 1"));
 
         // Local isolated Genesis state exercises the actual Mainnet print_banner path.
         // Native-host acceptance runs help only and initializes no state.
@@ -13466,7 +13549,7 @@ mod hotfix1_release_tests {
         let mainnet_output =
             fs::read_to_string(evidence.join("mainnet-status.stdout.log")).unwrap();
         assert!(
-            mainnet_output.contains("Mutiny Protocol V1.0 Build 6.9 Candidate 1 - Mainnet runtime")
+            mainnet_output.contains("Mutiny Protocol V1.0 Build 7.0 Candidate 1 - Mainnet runtime")
         );
         for output in [&help, &mainnet_output] {
             // Intentional negative fixtures for older release identities.
@@ -13474,6 +13557,7 @@ mod hotfix1_release_tests {
                 "Build 6.3 Candidate",
                 "Build 6.7 Candidate",
                 "Build 6.8 Candidate",
+                "Build 6.9 Candidate",
             ] {
                 assert!(!output.contains(stale), "stale runtime identity: {stale}");
             }
@@ -13483,7 +13567,7 @@ mod hotfix1_release_tests {
         }
         fs::write(
             evidence.join("PASS.txt"),
-            "BUILD69_RELEASE_IDENTITY_AND_HELP_NO_STATE_PASS",
+            "BUILD70_RELEASE_IDENTITY_AND_HELP_NO_STATE_PASS",
         )
         .unwrap();
     }
