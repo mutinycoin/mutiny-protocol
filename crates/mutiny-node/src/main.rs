@@ -792,9 +792,10 @@ fn run() -> Result<(), String> {
             if runtime_network != RuntimeNetwork::Mainnet {
                 return Err("bootstrap-mainnet requires --network mainnet".into());
             }
-            let provider = ingress.bootstrap_witness.as_ref().ok_or(
-                "bootstrap-mainnet requires --bootstrap-witness PATH",
-            )?;
+            let provider = ingress
+                .bootstrap_witness
+                .as_ref()
+                .ok_or("bootstrap-mainnet requires --bootstrap-witness PATH")?;
             let live = load_state_for_runtime(&data_dir, &ingress)?;
             validate_runtime_tuple(&live, RuntimeNetwork::Mainnet)?;
             const EXPECTED_GENESIS_STATE_ROOT: &str =
@@ -812,17 +813,17 @@ fn run() -> Result<(), String> {
                 || !live.confirmed_transactions.is_empty()
                 || !live.side_branches.is_empty()
             {
-                return Err("bootstrap-mainnet requires the exact clean Mainnet height-0 state".into());
+                return Err(
+                    "bootstrap-mainnet requires the exact clean Mainnet height-0 state".into(),
+                );
             }
             let witness = provider
                 .load()
                 .map_err(|e| e.to_string())?
                 .decode()
                 .map_err(|e| e.to_string())?;
-            let staged = mainnet_bootstrap::build_staged_mainnet_block1_transition(
-                &live, &witness,
-            )
-            .map_err(|e| format!("Mainnet Block 1 bootstrap refused: {e:?}"))?;
+            let staged = mainnet_bootstrap::build_staged_mainnet_block1_transition(&live, &witness)
+                .map_err(|e| format!("Mainnet Block 1 bootstrap refused: {e:?}"))?;
 
             const EXPECTED_BLOCK1: &str =
                 "9d8026ac82592abb40cb1809142af67ea57b89e19ad51db35ff3d53f09907ded";
@@ -2254,7 +2255,9 @@ fn print_help() {
     println!("Commands:");
     println!("  Runtime: --network devnet|mainnet; bootstrap-mainnet explicitly commits authenticated Mainnet Block 1");
     println!("  mutinyd init [--data-dir PATH] [--epoch-ms N] [--force]");
-    println!("  mutinyd bootstrap-mainnet --network mainnet --data-dir PATH --bootstrap-witness PATH");
+    println!(
+        "  mutinyd bootstrap-mainnet --network mainnet --data-dir PATH --bootstrap-witness PATH"
+    );
     println!("  mutinyd node-key-init --passphrase-file PATH [--data-dir PATH]");
     println!("  mutinyd node-key-info --passphrase-file PATH [--data-dir PATH]");
     println!("  mutinyd node-key-migrate --passphrase-file PATH [--data-dir PATH]");
@@ -10996,10 +10999,7 @@ mod tests {
     #[test]
     fn build70_release_identity_pack_k_constants_and_inherited_cli_are_explicit() {
         assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 1");
-        assert_eq!(
-            BUILD_DESCRIPTION,
-            "First-Node Mainnet Bootstrap Activation"
-        );
+        assert_eq!(BUILD_DESCRIPTION, "First-Node Mainnet Bootstrap Activation");
         assert_eq!(DEFAULT_DATA_DIR, "devnet-data-build6.3");
         assert_eq!(OP_MINING_PRESENCE, 0x0008);
         assert_eq!(PS_MINING_PRESENCE_STATE, 0x0008);
