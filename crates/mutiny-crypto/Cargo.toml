@@ -1,0 +1,14 @@
+[package]
+name = "mutiny-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+mutiny-types = { path = "../mutiny-types" }
+
+[dev-dependencies]
+hex.workspace = true

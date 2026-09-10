@@ -1,0 +1,16 @@
+[package]
+name = "mutiny-worker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Mutiny Protocol Pack-L authenticated mining worker boundary"
+
+[dependencies]
+sha2 = "0.10.9"
+ed25519-dalek = "2.2.0"
+thiserror = "2.0.20"
+mutiny-p2p = { path = "../mutiny-p2p" }
+mutiny-crypto = { path = "../mutiny-crypto" }
+
+[dev-dependencies]
+hex = "0.4.3"

@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mutiny-keystore",
+    "crates/mutiny-codec",
+    "crates/mutiny-crypto",
+    "crates/mutiny-types",
+    "crates/mutiny-consensus",
+    "crates/mutiny-bitcoin",
+    "crates/mutiny-transaction",
+    "crates/mutiny-state",
+    "crates/mutiny-protocol",
+    "crates/mutiny-node",
+    "crates/mutiny-p2p",
+    "crates/mutiny-duplex",
+    "crates/mutiny-worker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+argon2 = "0.5"
+hex = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+ed25519-dalek = "2"

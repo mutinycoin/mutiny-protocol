@@ -1,0 +1,16 @@
+[package]
+name = "mutiny-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mutiny-codec = { path = "../mutiny-codec" }
+mutiny-crypto = { path = "../mutiny-crypto" }
+mutiny-types = { path = "../mutiny-types" }
+mutiny-state = { path = "../mutiny-state" }
+mutiny-bitcoin = { path = "../mutiny-bitcoin" }
+mutiny-transaction = { path = "../mutiny-transaction" }
+ed25519-dalek.workspace = true
+thiserror.workspace = true
+hex.workspace = true

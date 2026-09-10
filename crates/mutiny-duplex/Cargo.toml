@@ -1,0 +1,9 @@
+[package]
+name = "mutiny-duplex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mutiny-p2p = { path = "../mutiny-p2p" }
+thiserror.workspace = true

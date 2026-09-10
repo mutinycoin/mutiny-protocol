@@ -1,0 +1,31 @@
+[package]
+name = "mutiny-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mutinyd"
+path = "src/main.rs"
+
+[dependencies]
+mutiny-worker = { path = "../mutiny-worker" }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+mutiny-keystore = { path = "../mutiny-keystore" }
+mutiny-codec = { path = "../mutiny-codec" }
+mutiny-crypto = { path = "../mutiny-crypto" }
+mutiny-consensus = { path = "../mutiny-consensus" }
+mutiny-types = { path = "../mutiny-types" }
+mutiny-transaction = { path = "../mutiny-transaction" }
+mutiny-state = { path = "../mutiny-state" }
+mutiny-p2p = { path = "../mutiny-p2p" }
+mutiny-duplex = { path = "../mutiny-duplex" }
+mutiny-protocol = { path = "../mutiny-protocol" }
+mutiny-bitcoin = { path = "../mutiny-bitcoin" }
+num-bigint.workspace = true
+
+rand_core = { version = "0.6", features = ["getrandom"] }
