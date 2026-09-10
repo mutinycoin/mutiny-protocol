@@ -1,0 +1,2 @@
+89e3fd0e79b7c15eb56ff3370e592191728fd2b6ca0c98ce5aab4c76a8a632b5  mutiny-integrated-mainnet-build6.9-windows-x86_64-candidate1.zip
+e48fe140d432103ce0b71f5769bbf57a920597a16108d5bdcd1ac0cefc25c995  mutiny-integrated-mainnet-build6.9-linux-x86_64-candidate1.tar.gz
