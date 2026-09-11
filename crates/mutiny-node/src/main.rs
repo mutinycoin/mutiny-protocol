@@ -12577,17 +12577,20 @@ mod tests {
     fn build441_preflight_peek_distinguishes_fin_from_idle_socket() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            thread::sleep(Duration::from_millis(20));
-            stream.shutdown(Shutdown::Write).unwrap();
-            thread::sleep(Duration::from_millis(50));
-        });
         let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        // Keep the accepted peer open until the idle observation is complete.
         assert!(!stream_has_orderly_eof(&client).unwrap());
-        thread::sleep(Duration::from_millis(40));
+        server.shutdown(Shutdown::Write).unwrap();
+
+        // Wait for FIN to reach the client before testing the nonblocking probe.
+        // The timeout bounds a broken test; it does not order the two peers.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(client.peek(&mut [0u8; 1]).unwrap(), 0);
         assert!(stream_has_orderly_eof(&client).unwrap());
-        server.join().unwrap();
     }
 
     #[test]
