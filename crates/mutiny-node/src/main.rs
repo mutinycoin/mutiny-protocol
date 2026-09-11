@@ -86,7 +86,7 @@ use std::io::Read;
 #[cfg(test)]
 use std::net::Shutdown;
 
-const BUILD_NAME: &str = "Mutiny Protocol V1.0 Build 7.0 Candidate 1";
+const BUILD_NAME: &str = "Mutiny Protocol V1.0 Build 7.0 Candidate 2";
 const BUILD_DESCRIPTION: &str = "First-Node Mainnet Bootstrap Activation";
 // Inherited locked Build 5.9 scope: Local Authenticated RPC & Service Boundary.
 const MOTTO: &str = "No Masters. Only the Many.";
@@ -796,11 +796,23 @@ fn run() -> Result<(), String> {
                 .bootstrap_witness
                 .as_ref()
                 .ok_or("bootstrap-mainnet requires --bootstrap-witness PATH")?;
-            let live = load_state_for_runtime(&data_dir, &ingress)?;
+            let witness = provider
+                .load()
+                .map_err(|e| e.to_string())?
+                .decode()
+                .map_err(|e| e.to_string())?;
+            // Bootstrap validation must not recover a journal, migrate legacy
+            // storage, or create directories before the final atomic commit.
+            let snapshot = storage::load_snapshot_read_only(&data_dir)?
+                .ok_or("bootstrap-mainnet requires initialized Mainnet storage")?;
+            let live = decode_devnet_state(&snapshot.bytes)?;
+            validate_storage_meta_for_runtime(&live, &snapshot.meta, RuntimeNetwork::Mainnet)?;
             validate_runtime_tuple(&live, RuntimeNetwork::Mainnet)?;
             const EXPECTED_GENESIS_STATE_ROOT: &str =
                 "e08ca8e75aa57e03b3f42575dbd0ecf7b64898d5a05ff22ad66c40adcfa0d2c7";
-            if live.height != 0
+            if live.format_version != 10
+                || live.genesis_time_ms != 0
+                || live.height != 0
                 || live.tip_epoch != 0
                 || live.tip_hash != hex::encode(MAINNET_GENESIS_ID)
                 || live.current_state_root != EXPECTED_GENESIS_STATE_ROOT
@@ -817,11 +829,15 @@ fn run() -> Result<(), String> {
                     "bootstrap-mainnet requires the exact clean Mainnet height-0 state".into(),
                 );
             }
-            let witness = provider
-                .load()
-                .map_err(|e| e.to_string())?
-                .decode()
-                .map_err(|e| e.to_string())?;
+            check_state(&live)?;
+            // Prove the complete Genesis prestate, including anchor fields that
+            // staging would otherwise overwrite before staged replay sees them.
+            blocksync::verify_full_replay_for_runtime(
+                &live,
+                RuntimeNetwork::Mainnet,
+                Some(provider),
+            )
+            .map_err(|e| e.to_string())?;
             let staged = mainnet_bootstrap::build_staged_mainnet_block1_transition(&live, &witness)
                 .map_err(|e| format!("Mainnet Block 1 bootstrap refused: {e:?}"))?;
 
@@ -837,6 +853,11 @@ fn run() -> Result<(), String> {
                 || staged.state.tip_hash != EXPECTED_BLOCK1
                 || staged.state.current_state_root != EXPECTED_STATE_ROOT
                 || staged.state.licenses.len() != BOOTSTRAP_LICENSE_COUNT
+                || staged.state.bitcoin_headers.len() != 2_003
+                || staged.proof.accepted_header_count != 2_003
+                || staged.state.bitcoin_best_chain.is_none()
+                || staged.state.consumed_bitcoin_payments.len() != 1
+                || staged.state.consumed_bitcoin_payments[0].payment_id != EXPECTED_PAYMENT_ID
                 || staged.proof.license_count != BOOTSTRAP_LICENSE_COUNT
                 || staged.proof.issued_epoch != 10
                 || staged.proof.activation_epoch != 74
@@ -845,7 +866,12 @@ fn run() -> Result<(), String> {
                 return Err("Mainnet Block 1 staged authority tuple mismatch".into());
             }
             check_state(&staged.state)?;
-            blocksync::verify_full_replay(&staged.state)?;
+            blocksync::verify_full_replay_for_runtime(
+                &staged.state,
+                RuntimeNetwork::Mainnet,
+                Some(provider),
+            )
+            .map_err(|e| e.to_string())?;
 
             save_state(&data_dir, &staged.state)?;
             let committed = load_state_for_runtime(&data_dir, &ingress)?;
@@ -10981,7 +11007,7 @@ mod tests {
 
     #[test]
     fn build70_runtime_identity_is_current_and_ascii() {
-        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 1");
+        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 2");
         assert!(BUILD_NAME.is_ascii());
         assert!(BUILD_DESCRIPTION.is_ascii());
         // Older identities here are negative fixtures, never runtime labels.
@@ -10998,7 +11024,7 @@ mod tests {
 
     #[test]
     fn build70_release_identity_pack_k_constants_and_inherited_cli_are_explicit() {
-        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 1");
+        assert_eq!(BUILD_NAME, "Mutiny Protocol V1.0 Build 7.0 Candidate 2");
         assert_eq!(BUILD_DESCRIPTION, "First-Node Mainnet Bootstrap Activation");
         assert_eq!(DEFAULT_DATA_DIR, "devnet-data-build6.3");
         assert_eq!(OP_MINING_PRESENCE, 0x0008);
@@ -13518,7 +13544,7 @@ mod hotfix1_release_tests {
         .unwrap();
         let help = fs::read_to_string(&help_out).expect("help must be valid UTF-8");
         assert!(fs::read(&help_err).unwrap().is_empty());
-        assert!(help.contains("Mutiny Protocol V1.0 Build 7.0 Candidate 1"));
+        assert!(help.contains("Mutiny Protocol V1.0 Build 7.0 Candidate 2"));
 
         // Local isolated Genesis state exercises the actual Mainnet print_banner path.
         // Native-host acceptance runs help only and initializes no state.
@@ -13552,7 +13578,7 @@ mod hotfix1_release_tests {
         let mainnet_output =
             fs::read_to_string(evidence.join("mainnet-status.stdout.log")).unwrap();
         assert!(
-            mainnet_output.contains("Mutiny Protocol V1.0 Build 7.0 Candidate 1 - Mainnet runtime")
+            mainnet_output.contains("Mutiny Protocol V1.0 Build 7.0 Candidate 2 - Mainnet runtime")
         );
         for output in [&help, &mainnet_output] {
             // Intentional negative fixtures for older release identities.
