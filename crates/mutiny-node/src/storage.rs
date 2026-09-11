@@ -449,6 +449,23 @@ pub(crate) fn load_snapshot_for_network(
     load_snapshot(dir)
 }
 
+/// Read only the committed snapshot. Refuse recovery or migration so a command
+/// can finish all pre-commit validation without changing the input directory.
+pub(crate) fn load_snapshot_read_only(dir: &Path) -> Result<Option<LoadedSnapshot>, String> {
+    if journal_path(dir).exists() {
+        return Err("bootstrap-mainnet requires clean storage without a pending journal".into());
+    }
+    let Some(meta) = read_meta_if_present(dir)? else {
+        return Ok(None);
+    };
+    let bytes = verify_snapshot_for_meta(dir, &meta)?;
+    Ok(Some(LoadedSnapshot {
+        bytes,
+        meta,
+        recovery: RecoveryAction::None,
+    }))
+}
+
 pub(crate) fn load_snapshot(dir: &Path) -> Result<Option<LoadedSnapshot>, String> {
     let recovery = recover(dir)?;
     let Some(meta) = read_meta_if_present(dir)? else {
