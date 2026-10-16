@@ -1,0 +1,227 @@
+//! Staged Node-authentication-key rotation; separate from Continuity/TPM keys.
+//! Parent authority must be independently authenticated. Not yet dispatched.
+use crate::{
+    Error, Hash, NETWORK_ID, Result, anchors::FinalizedAnchor, continuity_exit_v2::ParentControl,
+    wallet_authority_v1::WalletBook,
+};
+use minicbor::{Decoder, Encoder};
+use mutiny_crypto_v2::{Domain, HybridKey, HybridSignature, PublicKey, Role};
+pub const MAX_ROTATION_BYTES: usize = 16 * 1024;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeKeyRotate {
+    pub parent: FinalizedAnchor,
+    pub node: Hash,
+    pub hardware_generation: u64,
+    pub sequence: u64,
+    pub current: Vec<u8>,
+    pub proposed: Vec<u8>,
+    pub authorizer: Vec<u8>,
+    pub authorization: HybridSignature,
+    pub possession: HybridSignature,
+}
+impl NodeKeyRotate {
+    fn keys(&self) -> Result<(PublicKey, PublicKey, PublicKey, Domain)> {
+        let (old, g) = PublicKey::decode_descriptor(&self.current).map_err(|_| Error::Codec)?;
+        let (new, h) = PublicKey::decode_descriptor(&self.proposed).map_err(|_| Error::Codec)?;
+        let (authorizer, _) =
+            PublicKey::decode_descriptor(&self.authorizer).map_err(|_| Error::Codec)?;
+        if old.role != Role::Node || new.role != Role::Node || g.checked_add(1) != Some(h) {
+            return Err(Error::WrongGeneration);
+        }
+        let domain = match authorizer.role {
+            Role::WalletOwner => Domain::NodeKeyRotateOwner,
+            Role::Node => Domain::NodeKeyRotateNode,
+            _ => return Err(Error::BadSignature),
+        };
+        if old.ed448 == new.ed448
+            || old.fndsa == new.fndsa
+            || authorizer.ed448 == new.ed448
+            || authorizer.fndsa == new.fndsa
+        {
+            return Err(Error::Duplicate);
+        }
+        Ok((old, new, authorizer, domain))
+    }
+    pub fn body(&self) -> Result<Vec<u8>> {
+        self.keys()?;
+        self.parent
+            .validate_context(self.parent.genesis, self.parent.fingerprint)?;
+        self.parent.height.checked_add(1).ok_or(Error::Overflow)?;
+        if self.node == [0; 32] || self.hardware_generation == 0 || self.sequence == 0 {
+            return Err(Error::InvalidCounter);
+        }
+        let mut e = Encoder::new(Vec::new());
+        e.array(10)
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .u8(22)
+            .unwrap()
+            .u32(NETWORK_ID)
+            .unwrap()
+            .bytes(&self.parent.encode())
+            .unwrap()
+            .bytes(&self.node)
+            .unwrap()
+            .u64(self.hardware_generation)
+            .unwrap()
+            .u64(self.sequence)
+            .unwrap()
+            .bytes(&self.current)
+            .unwrap()
+            .bytes(&self.proposed)
+            .unwrap()
+            .bytes(&self.authorizer)
+            .unwrap();
+        Ok(e.into_writer())
+    }
+    pub fn sign_authorization(&mut self, key: &HybridKey) -> Result<()> {
+        let (_, _, expected, domain) = self.keys()?;
+        if key.public() != &expected {
+            return Err(Error::BadSignature);
+        }
+        self.authorization = key
+            .sign(domain, &self.body()?)
+            .map_err(|_| Error::BadSignature)?;
+        Ok(())
+    }
+    pub fn sign_possession(&mut self, key: &HybridKey) -> Result<()> {
+        let (_, expected, _, _) = self.keys()?;
+        if key.public() != &expected {
+            return Err(Error::BadSignature);
+        }
+        self.possession = key
+            .sign(Domain::NodeKeyRotatePossession, &self.body()?)
+            .map_err(|_| Error::BadSignature)?;
+        Ok(())
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut e = Encoder::new(Vec::new());
+        e.array(7)
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .u8(22)
+            .unwrap()
+            .bytes(&self.body()?)
+            .unwrap()
+            .bytes(&self.authorization.ed448)
+            .unwrap()
+            .bytes(&self.authorization.fndsa)
+            .unwrap()
+            .bytes(&self.possession.ed448)
+            .unwrap()
+            .bytes(&self.possession.fndsa)
+            .unwrap();
+        let raw = e.into_writer();
+        if raw.len() > MAX_ROTATION_BYTES {
+            return Err(Error::Oversize);
+        }
+        Ok(raw)
+    }
+    pub fn decode(raw: &[u8]) -> Result<Self> {
+        crate::blocks::canonical(raw, MAX_ROTATION_BYTES)?;
+        let mut d = Decoder::new(raw);
+        if d.array().map_err(|_| Error::Codec)? != Some(7)
+            || d.u8().map_err(|_| Error::Codec)? != 2
+            || d.u8().map_err(|_| Error::Codec)? != 22
+        {
+            return Err(Error::Codec);
+        }
+        let body = d.bytes().map_err(|_| Error::Codec)?;
+        let authorization = HybridSignature {
+            ed448: fixed(&mut d)?,
+            fndsa: fixed(&mut d)?,
+        };
+        let possession = HybridSignature {
+            ed448: fixed(&mut d)?,
+            fndsa: fixed(&mut d)?,
+        };
+        let mut b = Decoder::new(body);
+        if b.array().map_err(|_| Error::Codec)? != Some(10)
+            || b.u8().map_err(|_| Error::Codec)? != 2
+            || b.u8().map_err(|_| Error::Codec)? != 22
+            || b.u32().map_err(|_| Error::Codec)? != NETWORK_ID
+        {
+            return Err(Error::Codec);
+        }
+        let value = Self {
+            parent: FinalizedAnchor::decode(b.bytes().map_err(|_| Error::Codec)?)?,
+            node: fixed(&mut b)?,
+            hardware_generation: b.u64().map_err(|_| Error::Codec)?,
+            sequence: b.u64().map_err(|_| Error::Codec)?,
+            current: b.bytes().map_err(|_| Error::Codec)?.to_vec(),
+            proposed: b.bytes().map_err(|_| Error::Codec)?.to_vec(),
+            authorizer: b.bytes().map_err(|_| Error::Codec)?.to_vec(),
+            authorization,
+            possession,
+        };
+        if d.position() != raw.len()
+            || b.position() != body.len()
+            || value.encode() != Ok(raw.to_vec())
+        {
+            return Err(Error::NonCanonical);
+        }
+        Ok(value)
+    }
+    pub fn verify_signatures(&self) -> Result<()> {
+        self.encode()?;
+        let (_, new, authorizer, domain) = self.keys()?;
+        if authorizer.role == Role::Node && self.authorizer != self.current {
+            return Err(Error::BadSignature);
+        }
+        authorizer
+            .verify(domain, &self.body()?, &self.authorization)
+            .map_err(|_| Error::BadSignature)?;
+        new.verify(
+            Domain::NodeKeyRotatePossession,
+            &self.body()?,
+            &self.possession,
+        )
+        .map_err(|_| Error::BadSignature)
+    }
+    pub fn verify(
+        &self,
+        parent: &FinalizedAnchor,
+        control: &ParentControl<'_>,
+        wallets: &WalletBook,
+    ) -> Result<()> {
+        self.encode()?;
+        if &self.parent != parent
+            || self.node != control.node
+            || self.hardware_generation != control.hardware_generation
+            || self.current != control.node_descriptor
+        {
+            return Err(Error::WrongAnchor);
+        }
+        if control.exit_pending {
+            return Err(Error::WrongOperation);
+        }
+        if control.sequence.checked_add(1) != Some(self.sequence) {
+            return Err(Error::StaleSequence);
+        }
+        let (_, new, authorizer, domain) = self.keys()?;
+        match authorizer.role {
+            Role::WalletOwner => {
+                wallets.authorize(control.owner_address, &self.authorizer)?;
+            }
+            Role::Node if self.authorizer == control.node_descriptor => {}
+            _ => return Err(Error::BadSignature),
+        }
+        authorizer
+            .verify(domain, &self.body()?, &self.authorization)
+            .map_err(|_| Error::BadSignature)?;
+        new.verify(
+            Domain::NodeKeyRotatePossession,
+            &self.body()?,
+            &self.possession,
+        )
+        .map_err(|_| Error::BadSignature)
+    }
+}
+fn fixed<const N: usize>(d: &mut Decoder<'_>) -> Result<[u8; N]> {
+    d.bytes()
+        .map_err(|_| Error::Codec)?
+        .try_into()
+        .map_err(|_| Error::Codec)
+}

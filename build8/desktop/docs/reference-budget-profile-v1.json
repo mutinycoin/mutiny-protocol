@@ -1,0 +1,11 @@
+{
+  "max_source_uncertainty_ms": 248,
+  "max_calibration_half_width_ms": 250,
+  "min_sources": 1,
+  "max_faulty_sources": 0,
+  "drift_bound_ppb": 8680,
+  "max_holdover_ms": 86400000,
+  "max_interval_half_width_ms": 1000,
+  "max_suspend_gap_ms": 50,
+  "confirm_calibrations": 1
+}

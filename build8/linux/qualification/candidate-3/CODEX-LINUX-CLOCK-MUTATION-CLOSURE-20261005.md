@@ -1,0 +1,15 @@
+# Linux clock/admission independent mutation closure — 2026-10-05
+
+The checkpoint campaign closed naturally at 2026-10-05T05:31:11.882332Z. All 21 reviewed fault cases compiled and produced their intended behavioral failure, following a passing clean baseline with zero ignored tests. No setup or compilation failure is counted as a kill. These are 21 distinct (source path, fault bytes) pairs, not 21 independent security mechanisms. A06-normal and A06-public-evidence separately remove the physical-host hard stop in the two entry paths; both are caught by the same authenticated-public-witness refusal test.
+
+The prerequisite Release synthetic same-hardware key-rotation carrier executed 1/1 with zero failures/ignored tests, exit 0, and source unchanged. It closed at 03:48:57.295224Z; its log SHA256 is 8d834eb35527aac30b1ad9e06adb4d03a8f1a70f22fd4687d3237bd7b7cb1496. This establishes software carrier continuity only.
+
+Exact source commit: cf47b923143d4489db986a4d538b09af225ed74a. Tree: ab72496e5dda824006f5db8a110b50418c3bcb76. Independent package archive SHA256: 433a7c458fa28088ac0837aabf23374e56e942e8273f6ee5cb2710bcdbcf1ef1. Harness SHA256: e64055b7caa5f2236a06d18067f2015c3107f4ef93af1e6365405879952cded9. Selected fault plan SHA256: e32c7f7433537d4ef2858c7343f38c184a78593a09f8ab61d22e08c3eb3e6d36.
+
+The final report confirms exact source restoration, unchanged original package, unchanged complete copied source/vendor inventory, zero tripwire bytes and no harness process signals. The remote wrapper and Cargo descendants had closed before evidence capture. The independent closed checkpoint cache was copied; baseline run 2 and earlier campaign workspaces were preserved.
+
+The recovered archive contains 285 regular files and no nonregular members. All 284 capture-listed file identities and all 243 FINAL-listed artifact hashes were independently verified locally. Archive: linux-clock-review-v4-evidence.tar.gz, 23,867,972 bytes, SHA256 46fb0ada782716bd88808d4984bc35e3b1c70b0e1d88f24f603d8f71e0341b87. Recovery root: D:/Mutiny/build8-targets/codex-takeover-20261004/linux-clock-review-v4-recovered-v1. LOCAL-VERIFICATION.json records the complete verification and case statuses.
+
+The earlier V3 partial remains preserved. Its carrier wrote three public TEST-VALUE vaults into the copied source, so strict identity verification stopped before faults; archive de41302857d2b783bcfa3a0b4bebdfd526efa09e608fdd9df858ab0ee73b092b remains separate. The successor moved only the Linux test fixture storage to the protected temporary root. Its first preparation failure is also retained.
+
+These results do not establish whole-clock qualification, a production OS/VM matrix, authenticated live time, measured clock-class certification, physical TPM activation/locality, production eligibility, sealed Genesis or a final integrated-source campaign. Production hard stop E remains enabled. Authentic clock/profile inputs and enforceable physical-host binding remain launch dependencies. No result silently transfers to later source bytes.

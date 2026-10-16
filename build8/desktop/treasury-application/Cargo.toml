@@ -1,0 +1,35 @@
+[package]
+name="mutiny-native-treasury-application"
+version="0.0.0"
+edition="2024"
+publish=false
+[workspace]
+[dependencies]
+zeroize="=1.9.0"
+mutiny-consensus-v8={path="../consensus",default-features=false}
+mutiny-crypto-v2={path="../crypto-v2",default-features=false,features=["wallet-custody"]}
+rusqlite={version="=0.37.0",features=["bundled"]}
+minicbor={version="=2.3.0",features=["std"]}
+hex="=0.4.3"
+sha2="=0.10.9"
+[dev-dependencies]
+mutiny-consensus-v8={path="../consensus",default-features=false,features=["dividend-test-fixtures"]}
+serde_json="1"
+p256={version="=0.13.2",default-features=false,features=["ecdsa","std"]}
+[patch.crates-io]
+libsqlite3-sys={path="../treasury-sqlite-provider"}
+hkdf={path="../qualification/crypto-v2-sources/kdf-custody-v1/hkdf"}
+hmac={path="../qualification/crypto-v2-sources/kdf-custody-v1/hmac"}
+sha2={path="../qualification/crypto-v2-sources/kdf-custody-v1/sha2"}
+block-buffer={path="../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer"}
+pbkdf2={path="../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2"}
+argon2={path="../qualification/crypto-v2-sources/kdf-custody-v1/argon2"}
+blake2={path="../qualification/crypto-v2-sources/kdf-custody-v1/blake2"}
+[profile.release]
+opt-level  =  3
+overflow-checks  =  true
+debug-assertions  =  false
+codegen-units  =  1
+strip  =  "none"
+lto  =  false
+panic  =  "unwind"

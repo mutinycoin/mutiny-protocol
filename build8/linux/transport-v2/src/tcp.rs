@@ -1,0 +1,508 @@
+//! Bounded TCP carrier for the existing V2 handshake and encrypted frames.
+//! Caller provisions both endpoint pins and bounds accepted sockets/handshakes.
+//! No listener, discovery, production key storage or canonical authority here.
+use crate::{Context, InitiatorPending, ResponderPending, Session};
+use mutiny_crypto_v2::HybridKey;
+use std::{
+    io::{Read, Write},
+    net::{Shutdown, TcpStream},
+    time::{Duration, Instant},
+};
+
+const MAX_HANDSHAKE: Duration = Duration::from_secs(30);
+const MAX_IO: Duration = Duration::from_secs(5);
+const MIN_FRAME: usize = 99 + 1 + 16;
+const MAX_FRAME: usize = 99 + crate::MAX_PAYLOAD + 16;
+#[derive(Debug)]
+pub enum Error {
+    Transport(crate::Error),
+    Io(std::io::Error),
+    Deadline,
+    Length,
+    Closed,
+}
+type Result<T> = std::result::Result<T, Error>;
+impl From<crate::Error> for Error {
+    fn from(e: crate::Error) -> Self {
+        Self::Transport(e)
+    }
+}
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+pub struct Carrier {
+    stream: TcpStream,
+    closed: bool,
+    session_id: Option<[u8; 32]>,
+}
+impl Drop for Carrier {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+impl Carrier {
+    fn new(stream: TcpStream) -> Result<Self> {
+        // The carrier exclusively owns the socket; no cloned handles or other
+        // reader/writer may change mode/timeouts behind it.
+        stream.set_nonblocking(false)?;
+        stream.set_nodelay(true)?;
+        Ok(Self {
+            stream,
+            closed: false,
+            session_id: None,
+        })
+    }
+    pub fn close(&mut self) {
+        self.closed = true;
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+    fn remaining(&self, deadline: Instant) -> Result<Duration> {
+        if self.closed {
+            return Err(Error::Closed);
+        }
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|v| !v.is_zero())
+            .ok_or(Error::Deadline)
+    }
+    fn read_exact_until(&mut self, mut out: &mut [u8], deadline: Instant) -> Result<()> {
+        while !out.is_empty() {
+            self.stream
+                .set_read_timeout(Some(self.remaining(deadline)?))?;
+            match self.stream.read(out) {
+                Ok(0) => return Err(Error::Closed),
+                Ok(n) => out = &mut out[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        self.remaining(deadline)?;
+        Ok(())
+    }
+    fn write_until(&mut self, mut raw: &[u8], deadline: Instant) -> Result<()> {
+        while !raw.is_empty() {
+            self.stream
+                .set_write_timeout(Some(self.remaining(deadline)?))?;
+            match self.stream.write(raw) {
+                Ok(0) => return Err(Error::Closed),
+                Ok(n) => raw = &raw[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        self.remaining(deadline)?;
+        Ok(())
+    }
+    fn handshake_deadline(budget: Duration) -> Result<Instant> {
+        if budget.is_zero() || budget > MAX_HANDSHAKE {
+            return Err(Error::Deadline);
+        }
+        Instant::now().checked_add(budget).ok_or(Error::Deadline)
+    }
+    /// Exact existing handshake bytes, four fixed-size phases, no negotiation.
+    /// Crypto time counts toward the same absolute deadline as socket waits.
+    pub fn initiate(
+        stream: TcpStream,
+        context: Context,
+        key: &HybridKey,
+        budget: Duration,
+    ) -> Result<(Self, Session)> {
+        let deadline = Self::handshake_deadline(budget)?;
+        let mut carrier = Self::new(stream)?;
+        let (pending, hello) = InitiatorPending::start(context, key)?;
+        carrier.write_until(&hello, deadline)?;
+        let mut response = vec![0; crate::handshake::RESPONSE_LEN];
+        carrier.read_exact_until(&mut response, deadline)?;
+        let (pending, finish) = pending.accept(key, &response)?;
+        carrier.write_until(&finish, deadline)?;
+        let mut tag = [0; 16];
+        carrier.read_exact_until(&mut tag, deadline)?;
+        let session = pending.finish(&tag)?;
+        carrier.remaining(deadline)?;
+        carrier.session_id = Some(session.id());
+        Ok((carrier, session))
+    }
+    pub fn respond(
+        stream: TcpStream,
+        context: Context,
+        key: &HybridKey,
+        budget: Duration,
+    ) -> Result<(Self, Session)> {
+        let deadline = Self::handshake_deadline(budget)?;
+        Self::respond_until(stream, context, key, deadline)
+    }
+    /// Preserve an accept-time deadline across a bounded worker queue. Passing
+    /// a relative timeout here would accidentally grant queueing time again.
+    pub fn respond_until(
+        stream: TcpStream,
+        context: Context,
+        key: &HybridKey,
+        deadline: Instant,
+    ) -> Result<(Self, Session)> {
+        if !deadline
+            .checked_duration_since(Instant::now())
+            .is_some_and(|left| !left.is_zero() && left <= MAX_HANDSHAKE)
+        {
+            return Err(Error::Deadline);
+        }
+        let mut carrier = Self::new(stream)?;
+        let mut hello = vec![0; crate::handshake::HELLO_LEN];
+        carrier.read_exact_until(&mut hello, deadline)?;
+        let (pending, response) = ResponderPending::accept(context, key, &hello)?;
+        carrier.write_until(&response, deadline)?;
+        let mut finish = vec![0; crate::handshake::CLIENT_FINISH_LEN];
+        carrier.read_exact_until(&mut finish, deadline)?;
+        let (session, tag) = pending.finish(&finish)?;
+        carrier.write_until(&tag, deadline)?;
+        carrier.remaining(deadline)?;
+        carrier.session_id = Some(session.id());
+        Ok((carrier, session))
+    }
+    fn io_deadline(&self, limit: Instant) -> Result<Instant> {
+        self.remaining(limit)?;
+        Ok(limit.min(Instant::now().checked_add(MAX_IO).ok_or(Error::Deadline)?))
+    }
+    /// Wait for the first byte without consuming it. A quiet connection returns
+    /// false and stays open, allowing bounded service ticks and shutdown checks.
+    /// True is readiness only, never authentication. The sole socket owner must
+    /// then receive/authenticate the frame with its ordinary complete-frame
+    /// deadline; partial prefixes/bodies cannot use this idle exception.
+    pub fn wait_for_frame(&mut self, limit: Instant) -> Result<bool> {
+        let result = (|| {
+            let deadline = self.io_deadline(limit)?;
+            let mut first = [0u8; 1];
+            loop {
+                self.stream
+                    .set_read_timeout(Some(self.remaining(deadline)?))?;
+                match self.stream.peek(&mut first) {
+                    Ok(0) => return Err(Error::Closed),
+                    Ok(_) => return Ok(true),
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        return Ok(false);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        })();
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+    /// Frame bytes must already come from Session/ObjectLink. The two-byte BE
+    /// length is only framing; AEAD authenticates the exact enclosed V2 frame.
+    /// Failure closes the socket, even if a prefix or partial body was sent.
+    pub fn send_frame(&mut self, frame: &[u8], limit: Instant) -> Result<()> {
+        let result = (|| {
+            let deadline = self.io_deadline(limit)?;
+            if !(MIN_FRAME..=MAX_FRAME).contains(&frame.len()) {
+                return Err(Error::Length);
+            }
+            self.write_until(&(frame.len() as u16).to_be_bytes(), deadline)?;
+            self.write_until(frame, deadline)
+        })();
+        if result.is_err() {
+            self.close()
+        };
+        result
+    }
+    /// Caller MUST authenticate with the associated Session/ObjectLink before
+    /// dispatch. On authentication failure close the carrier; never use plaintext
+    /// fallback or treat bytes received as a canonical/semantic acknowledgement.
+    pub fn receive_frame(&mut self, limit: Instant) -> Result<Vec<u8>> {
+        let result = (|| {
+            let deadline = self.io_deadline(limit)?;
+            let mut prefix = [0; 2];
+            self.read_exact_until(&mut prefix, deadline)?;
+            let length = u16::from_be_bytes(prefix) as usize;
+            if !(MIN_FRAME..=MAX_FRAME).contains(&length) {
+                return Err(Error::Length);
+            }
+            let mut frame = vec![0; length];
+            self.read_exact_until(&mut frame, deadline)?;
+            Ok(frame)
+        })();
+        if result.is_err() {
+            self.close()
+        };
+        result
+    }
+    /// Same completed-handshake pairing check as receive_object, while allowing
+    /// the node to guard bounded queue mutation AFTER socket waits.
+    pub fn receive_frame_for_session(&mut self, session: [u8; 32], limit: Instant) -> Result<Vec<u8>> {
+        if self.session_id != Some(session) {
+            self.close();
+            return Err(Error::Transport(crate::Error::Context));
+        }
+        self.receive_frame(limit)
+    }
+    /// Preferred object path: exact handshake pairing, AEAD, replay protection
+    /// and bounded reassembly all precede Event delivery. This may wait on the
+    /// socket, so call OUTSIDE the canonical runtime/consensus actor lock.
+    /// The returned completed bytes still require their semantic verifier.
+    pub fn receive_object(
+        &mut self,
+        link: &mut crate::object_link::ObjectLink,
+        limit: Instant,
+    ) -> Result<crate::object_link::Event> {
+        let result = (|| {
+            if self.session_id != Some(link.session_id()) {
+                return Err(Error::Transport(crate::Error::Context));
+            }
+            let frame = self.receive_frame(limit)?;
+            Ok(link.receive(&frame)?)
+        })();
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Endpoint, Metadata};
+    use mutiny_crypto_v2::Role;
+    use std::net::TcpListener;
+    fn sockets() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        (client, listener.accept().unwrap().0)
+    }
+    fn limit() -> Instant {
+        Instant::now() + Duration::from_secs(5)
+    }
+    #[test]
+    fn real_hybrid_handshake_and_sustained_encrypted_loopback_frames() {
+        let a = HybridKey::generate(Role::Transport).unwrap();
+        let b = HybridKey::generate(Role::Transport).unwrap();
+        let context = Context::pinned(
+            [1; 32],
+            [2; 32],
+            Endpoint::pinned(a.public().clone(), 1).unwrap(),
+            Endpoint::pinned(b.public().clone(), 1).unwrap(),
+        )
+        .unwrap();
+        let (client, server) = sockets();
+        let server_context = context.clone();
+        let server = std::thread::spawn(move || {
+            let (mut carrier, mut session) =
+                Carrier::respond(server, server_context, &b, MAX_HANDSHAKE).unwrap();
+            for index in 0..128u8 {
+                let frame = carrier.receive_frame(limit()).unwrap();
+                let (meta, plain) = session.open(&frame).unwrap();
+                assert_eq!(plain, vec![index; 140]);
+                let reply = session.seal(&meta, &plain).unwrap();
+                carrier.send_frame(&reply, limit()).unwrap();
+                assert!(session.open(&frame).is_err());
+            }
+        });
+        let (mut carrier, mut session) =
+            Carrier::initiate(client, context, &a, MAX_HANDSHAKE).unwrap();
+        let meta = Metadata {
+            kind: 3,
+            object: [9; 32],
+            fragment: 0,
+            count: 1,
+            hops: 0,
+        };
+        for index in 0..128u8 {
+            carrier
+                .send_frame(&session.seal(&meta, &[index; 140]).unwrap(), limit())
+                .unwrap();
+            let (observed, plain) = session
+                .open(&carrier.receive_frame(limit()).unwrap())
+                .unwrap();
+            assert_eq!(observed, meta);
+            assert_eq!(plain, vec![index; 140]);
+        }
+        server.join().unwrap();
+    }
+    #[test]
+    fn hostile_lengths_eof_and_deadlines_close_without_resynchronizing() {
+        for length in [0u16, 1, 115, 256, u16::MAX] {
+            let (client, mut server) = sockets();
+            let mut c = Carrier::new(client).unwrap();
+            server.write_all(&length.to_be_bytes()).unwrap();
+            assert!(matches!(c.receive_frame(limit()), Err(Error::Length)));
+            assert!(matches!(c.receive_frame(limit()), Err(Error::Closed)));
+        }
+        let (client, mut server) = sockets();
+        let mut c = Carrier::new(client).unwrap();
+        server.write_all(&[0, 116, 7]).unwrap();
+        server.shutdown(Shutdown::Write).unwrap();
+        assert!(c.receive_frame(limit()).is_err());
+        assert!(c.closed);
+        let (client, _server) = sockets();
+        let mut c = Carrier::new(client).unwrap();
+        assert!(
+            c.receive_frame(Instant::now() + Duration::from_millis(30))
+                .is_err()
+        );
+        assert!(c.closed);
+        let (client, _server) = sockets();
+        let mut c = Carrier::new(client).unwrap();
+        assert!(matches!(
+            c.send_frame(&[0; 116], Instant::now()),
+            Err(Error::Deadline)
+        ));
+        assert!(c.closed);
+        let (client, _server) = sockets();
+        let mut c = Carrier::new(client).unwrap();
+        assert!(matches!(
+            c.send_frame(&[0; 256], limit()),
+            Err(Error::Length)
+        ));
+        assert!(c.closed);
+        assert!(Carrier::handshake_deadline(Duration::ZERO).is_err());
+        assert!(Carrier::handshake_deadline(Duration::from_secs(31)).is_err());
+    }
+    #[test]
+    fn idle_ticks_preserve_socket_but_partial_frames_still_expire() {
+        let (client, mut server) = sockets();
+        let mut carrier = Carrier::new(client).unwrap();
+        for _ in 0..3 {
+            assert!(
+                !carrier
+                    .wait_for_frame(Instant::now() + Duration::from_millis(20))
+                    .unwrap()
+            );
+            assert!(!carrier.closed);
+        }
+        // Peeking consumes neither framing nor payload bytes.
+        let bytes = [7u8; 116];
+        server
+            .write_all(&(bytes.len() as u16).to_be_bytes())
+            .unwrap();
+        server.write_all(&bytes).unwrap();
+        assert!(carrier.wait_for_frame(limit()).unwrap());
+        assert_eq!(carrier.receive_frame(limit()).unwrap(), bytes);
+        assert!(
+            !carrier
+                .wait_for_frame(Instant::now() + Duration::from_millis(20))
+                .unwrap()
+        );
+        // Once the prefix starts, the ordinary complete-frame deadline applies.
+        server.write_all(&[0]).unwrap();
+        assert!(carrier.wait_for_frame(limit()).unwrap());
+        assert!(
+            carrier
+                .receive_frame(Instant::now() + Duration::from_millis(30))
+                .is_err()
+        );
+        assert!(carrier.closed);
+        assert!(matches!(
+            carrier.wait_for_frame(limit()),
+            Err(Error::Closed)
+        ));
+
+        let (client, server) = sockets();
+        let mut carrier = Carrier::new(client).unwrap();
+        server.shutdown(Shutdown::Both).unwrap();
+        assert!(matches!(
+            carrier.wait_for_frame(limit()),
+            Err(Error::Closed)
+        ));
+        assert!(carrier.closed);
+    }
+    #[test]
+    fn object_receive_pairs_exact_session_and_closes_on_authenticated_replay() {
+        use crate::{
+            object_link::{Event, ObjectLink},
+            objects::{ObjectKind, ObjectQueue},
+        };
+        let a = HybridKey::generate(Role::Transport).unwrap();
+        let b = HybridKey::generate(Role::Transport).unwrap();
+        let context = Context::pinned(
+            [1; 32],
+            [2; 32],
+            Endpoint::pinned(a.public().clone(), 1).unwrap(),
+            Endpoint::pinned(b.public().clone(), 1).unwrap(),
+        )
+        .unwrap();
+        let (client, server) = sockets();
+        let copy = context.clone();
+        let server =
+            std::thread::spawn(move || Carrier::respond(server, copy, &b, MAX_HANDSHAKE).unwrap());
+        let (mut sender, initiator) =
+            Carrier::initiate(client, context, &a, MAX_HANDSHAKE).unwrap();
+        let (mut receiver, responder) = server.join().unwrap();
+        let mut random = [0; 16];
+        mutiny_crypto_v2::fill_os_random(&mut random).unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("build8-tcp-object-{}", hex::encode(random)));
+        std::fs::create_dir(&directory).unwrap();
+        let send_queue =
+            ObjectQueue::open(&directory.join("send.sqlite"), initiator.peer_id()).unwrap();
+        let recv_queue =
+            ObjectQueue::open(&directory.join("recv.sqlite"), responder.peer_id()).unwrap();
+        let mut send = ObjectLink::new(initiator, send_queue).unwrap();
+        let mut recv = ObjectLink::new(responder, recv_queue).unwrap();
+        let (offer, have) = send
+            .enqueue(
+                ObjectKind::WorkProbeRequest,
+                b"public malformed semantic probe",
+                0,
+            )
+            .unwrap();
+        sender.send_frame(&have, limit()).unwrap();
+        assert!(matches!(
+            receiver.receive_object(&mut recv, limit()),
+            Ok(Event::Offered(_))
+        ));
+        let want = recv.request_missing(&offer.id, 0, 1, 0, false).unwrap();
+        receiver.send_frame(&want, limit()).unwrap();
+        assert!(matches!(
+            sender.receive_object(&mut send, limit()),
+            Ok(Event::Requested)
+        ));
+        let fragment = send.send_one().unwrap().unwrap();
+        sender.send_frame(&fragment, limit()).unwrap();
+        let Event::Completed { bytes, .. } = receiver.receive_object(&mut recv, limit()).unwrap()
+        else {
+            panic!("expected exact opaque object")
+        };
+        assert_eq!(bytes, b"public malformed semantic probe"); // Not semantic acceptance.
+        sender.send_frame(&fragment, limit()).unwrap();
+        assert!(matches!(
+            receiver.receive_object(&mut recv, limit()),
+            Err(Error::Transport(crate::Error::Replay))
+        ));
+        assert!(receiver.closed);
+        // A different session object is rejected before waiting for more bytes.
+        sender.session_id = Some([0; 32]);
+        assert!(matches!(
+            sender.receive_object(&mut send, limit()),
+            Err(Error::Transport(crate::Error::Context))
+        ));
+        assert!(sender.closed);
+        drop(send);
+        drop(recv);
+        drop(sender);
+        drop(receiver);
+        for name in [
+            "send.sqlite",
+            "recv.sqlite",
+            "send.sqlite-wal",
+            "recv.sqlite-wal",
+            "send.sqlite-shm",
+            "recv.sqlite-shm",
+        ] {
+            let path = directory.join(name);
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
+}

@@ -1,0 +1,13 @@
+{
+  "fresh_process": true,
+  "identity": {
+    "account_id": "6d440b409bffa1504ff7fd84ac59f4c84e3ac19033a0778b5783cfb6ec9c5f5a",
+    "address_id": "613565e219ac1f2e01e188ac3d6196e5237f5c3fb44a9c020fc4427708ec3a29",
+    "owner_public_key": "c18242e9bc272c9f9bb28d227852eaf178b451c5ddf13f898fd9aeaba09c6013"
+  },
+  "network": 1297437697,
+  "path": "m/44'/1297437697'/0'/0'/0'",
+  "result": "PASS",
+  "schema": "BUILD8-WALLET-RESTORE-V1",
+  "temporary_instance_removed": true
+}

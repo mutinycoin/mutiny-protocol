@@ -1,0 +1,657 @@
+//! Shared hybrid integration under qualification. Not approved for final ceremony.
+//! Private material has no Debug, Clone, Serialize, logging, or public export API.
+use fn_dsa::{
+    DOMAIN_NONE, HASH_ID_RAW, KeyPairGenerator, KeyPairGenerator1024, SigningKey, SigningKey1024,
+    VerifyingKey, VerifyingKey1024, hashed_vrfykey_from_vrfykey,
+};
+use rand_core::{CryptoRng, RngCore};
+use sha2::{Digest, Sha256, Sha512};
+use std::ffi::{c_char, c_void};
+use zeroize::{Zeroize, Zeroizing};
+// A build must not silently return to native FP/SIMD signing through a lost
+// transitive dependency feature. This is independent of production readiness.
+const _: () = assert!(fn_dsa::BUILD8_INTEGER_BACKEND);
+const _: () = assert!(argon2::BUILD8_CUSTODY_PROFILE == 1);
+// A root which loses the qualified source overrides must fail compilation.
+const _: () = assert!(hkdf::BUILD8_CUSTODY_PROFILE == 1 && sha2::BUILD8_CUSTODY_PROFILE == 1 && pbkdf2::BUILD8_CUSTODY_PROFILE == 1);
+
+pub const PRODUCTION_SECURITY_QUALIFIED: bool = false;
+pub const RECEIPT_QUALIFICATION_ENABLED: bool = cfg!(feature="receipt-qualification");
+#[cfg(feature="receipt-qualification")]
+pub mod qualification_receipt_v1;
+pub const WALLET_CUSTODY_ENABLED: bool = cfg!(any(feature="wallet-custody",test));
+pub const RELEASE_CUSTODY_ENABLED: bool = cfg!(any(feature="release-custody",test));
+pub const NETWORK: u32 = 0x4d555401;
+pub const PROFILE: &str = "MUTINY-FNDSA1024-PORNIN-20260722-V1";
+pub const WALLET_CRYPTO_SUITE_ID: u16 = 1;
+pub const BOTH_REQUIRED_POLICY_ID: u8 = 1;
+pub type Result<T> = std::result::Result<T, Error>;
+#[derive(Debug, PartialEq, Eq)]
+pub enum Error {
+    Entropy,
+    Encoding,
+    Role,
+    Key,
+    Signature,
+    Fault,
+    Rounding,
+    Mnemonic,
+    Password,
+    Custody,
+    Worker,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Role {
+    WalletOwner = 1,
+    WalletRecovery = 2,
+    Release = 3,
+    Continuity = 4,
+    Transport = 5,
+    Node = 6,
+}
+impl Role {
+    fn private_allowed(self)->Result<()> {
+        if matches!(self,Self::WalletOwner|Self::WalletRecovery)&&!WALLET_CUSTODY_ENABLED {
+            return Err(Error::Role);
+        }
+        if self==Self::Release&&!RELEASE_CUSTODY_ENABLED {return Err(Error::Role);}
+        Ok(())
+    }
+    pub fn suite(self) -> &'static str {
+        match self {
+            Self::WalletOwner | Self::WalletRecovery => "MUTINY-WALLET-HYBRID-ED448-FNDSA1024-V1",
+            Self::Release => "MUTINY-FIRMWARE-RELEASE-HYBRID-ED448-FNDSA1024-V1",
+            Self::Continuity => "MUTINY-CONTINUITY-HYBRID-ED448-FNDSA1024-V1",
+            Self::Transport => "MUTINY-TRANSPORT-HYBRID-ED448-FNDSA1024-V1",
+            Self::Node => "MUTINY-NODE-HYBRID-ED448-FNDSA1024-V1",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Domain {
+    /// Provisional, nonproduction, bound to one independently authenticated result.
+    #[cfg(feature="receipt-qualification")]
+    QualificationReceipt(qualification_receipt_v1::Intent),
+    Transaction,
+    WalletRotate,
+    WalletRotatePossession,
+    MinerEnrollment,
+    PhysicalAdmission,
+    RecoveryAuthorize,
+    ReleaseApproval,
+    ReleasePossession,
+    ReleaseRotation,
+    ContinuityVote,
+    ContinuityWorkProbe,
+    ContinuityPossession,
+    TransportResponder,
+    TransportInitiator,
+    NodeWork,
+    NodeWorkerSession,
+    NodeObservation,
+    ContinuityExitOwner,
+    ContinuityExitNode,
+    NodeAdmissionPossession,
+    BondCreate,
+    BondUnbond,
+    BondWithdraw,
+    NodeKeyRotateOwner,
+    NodeKeyRotateNode,
+    NodeKeyRotatePossession,
+    /// Non-spending Treasury proof of control (D2/Q2). Own domain; verified by nothing else.
+    TreasuryProofOfControl,
+    /// P7 maker offer signature (Lane P design 8.2 with amendment AM-6): the maker's wallet owner
+    /// key over the canonical OfferBody version 2. PROPOSED-UNFROZEN; ARCHITECT question C.3.
+    TradeOffer,
+    /// P7 maker fill proof over the exact trading operation body (AM-6). PROPOSED-UNFROZEN.
+    TradeFill,
+}
+impl Domain {
+    fn role(self) -> Role {
+        match self {
+            #[cfg(feature="receipt-qualification")]
+            Self::QualificationReceipt(_) => Role::Node,
+            Self::Transaction
+            | Self::WalletRotate
+            | Self::WalletRotatePossession
+            | Self::MinerEnrollment
+            | Self::PhysicalAdmission
+            | Self::ContinuityExitOwner | Self::BondCreate | Self::BondUnbond | Self::BondWithdraw | Self::NodeKeyRotateOwner | Self::TreasuryProofOfControl => Role::WalletOwner,
+            Self::RecoveryAuthorize => Role::WalletRecovery,
+            Self::ReleaseApproval | Self::ReleasePossession | Self::ReleaseRotation => {
+                Role::Release
+            }
+            Self::ContinuityVote | Self::ContinuityWorkProbe | Self::ContinuityPossession => Role::Continuity,
+            Self::TransportResponder | Self::TransportInitiator => Role::Transport,
+            // AM-6 DEFAULT (reversible; the ONLY place the maker-offer role is decided): the maker's
+            // wallet owner key. The D1 packet's separate role 7 "Trade" is ARCHITECT question C.3.
+            Self::TradeOffer | Self::TradeFill => Role::WalletOwner,
+            Self::NodeWork | Self::NodeWorkerSession | Self::NodeObservation | Self::ContinuityExitNode | Self::NodeAdmissionPossession | Self::NodeKeyRotateNode | Self::NodeKeyRotatePossession => Role::Node,
+        }
+    }
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            #[cfg(feature="receipt-qualification")]
+            Self::QualificationReceipt(_) => b"MUTINY-BUILD8-QUAL-RECEIPT-ADAPTER-V1",
+            Self::Transaction => b"MUTINY-BUILD8-WALLET-TRANSACTION-INTENT-V1",
+            Self::WalletRotate => b"MUTINY-BUILD8-WALLET-KEY-ROTATE-V1",
+            Self::WalletRotatePossession => b"MUTINY-BUILD8-WALLET-KEY-ROTATE-POSSESSION-V1",
+            Self::MinerEnrollment => b"MUTINY-BUILD8-MINER-ENROLLMENT-OWNER-V2",
+            Self::PhysicalAdmission => b"MUTINY-BUILD8-PHYSICAL-ADMISSION-OWNER-V2",
+            Self::RecoveryAuthorize => b"MUTINY-BUILD8-WALLET-RECOVERY-AUTHORIZE-V1",
+            Self::ReleaseApproval => b"MUTINY-BUILD8-RELEASE-APPROVAL-V1",
+            Self::ReleasePossession => b"MUTINY-BUILD8-RELEASE-CUSTODIAN-POSSESSION-V1",
+            Self::ReleaseRotation => b"MUTINY-BUILD8-FIRMWARE-POLICY-ROTATE-V1",
+            Self::ContinuityVote => b"MUTINY-BUILD8-CONTINUITY-HYBRID-VOTE-V1",
+            Self::ContinuityWorkProbe => b"MUTINY-BUILD8-CONTINUITY-WORK-LIVENESS-V2",
+            Self::ContinuityPossession => b"MUTINY-BUILD8-CONTINUITY-HYBRID-POSSESSION-V1",
+            Self::TransportResponder => b"MUTINY-BUILD8-TRANSPORT-RESPONDER-V2",
+            Self::TransportInitiator => b"MUTINY-BUILD8-TRANSPORT-INITIATOR-V2",
+            Self::NodeWork => b"MUTINY-BUILD8-NODE-WORK-AUTHORIZATION-V2",
+            Self::NodeWorkerSession => b"MUTINY-BUILD8-NODE-WORKER-SESSION-V2",
+            Self::NodeObservation => b"MUTINY-BUILD8-NODE-OBSERVATION-RECEIPT-V3",
+            Self::ContinuityExitOwner => b"MUTINY-BUILD8-CONTINUITY-EXIT-OWNER-V2",
+            Self::ContinuityExitNode => b"MUTINY-BUILD8-CONTINUITY-EXIT-NODE-V2",
+            Self::NodeAdmissionPossession => b"MUTINY-BUILD8-NODE-ADMISSION-POSSESSION-V2",
+            Self::BondCreate => b"MUTINY-BUILD8-BOND-CREATE-V2",
+            Self::BondUnbond => b"MUTINY-BUILD8-BOND-UNBOND-V2",
+            Self::BondWithdraw => b"MUTINY-BUILD8-BOND-WITHDRAW-V2",
+            Self::NodeKeyRotateOwner => b"MUTINY-BUILD8-NODE-KEY-ROTATE-OWNER-V2",
+            Self::NodeKeyRotateNode => b"MUTINY-BUILD8-NODE-KEY-ROTATE-NODE-V2",
+            Self::NodeKeyRotatePossession => b"MUTINY-BUILD8-NODE-KEY-ROTATE-POSSESSION-V2",
+            Self::TreasuryProofOfControl => b"MUTINY-BUILD8-TREASURY-PROOF-OF-CONTROL-V1",
+            Self::TradeOffer => b"MUTINY-BUILD8-TRADE-OFFER-V1",
+            Self::TradeFill => b"MUTINY-BUILD8-TRADE-FILL-V1",
+        }
+    }
+}
+fn intent(domain: Domain, payload: &[u8]) -> Result<[u8; 64]> {
+    #[cfg(feature="receipt-qualification")]
+    if let Domain::QualificationReceipt(bound) = domain {
+        if payload != bound.body() { return Err(Error::Encoding); }
+    }
+    if payload.len() > 1024 * 1024 {
+        return Err(Error::Encoding);
+    }
+    let mut h = Sha512::new();
+    h.update(domain.bytes());
+    h.update([0]);
+    h.update(payload);
+    Ok(h.finalize().into())
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicKey {
+    pub role: Role,
+    pub ed448: [u8; 57],
+    pub fndsa: [u8; 1793],
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HybridSignature {
+    pub ed448: [u8; 114],
+    pub fndsa: [u8; 1280],
+}
+unsafe extern "C" {
+    fn ossl_ed448_public_from_private(
+        ctx: *mut c_void,
+        out: *mut u8,
+        seed: *const u8,
+        prop: *const c_char,
+    ) -> i32;
+    fn ossl_ed448_sign(
+        ctx: *mut c_void,
+        out: *mut u8,
+        msg: *const u8,
+        n: usize,
+        pk: *const u8,
+        sk: *const u8,
+        domain: *const u8,
+        domain_n: usize,
+        ph: u8,
+        prop: *const c_char,
+    ) -> i32;
+    fn build8_qual_ed448_public_valid(pk: *const u8, n: usize) -> i32;
+    fn build8_qual_ed448_verify(
+        pk: *const u8,
+        pn: usize,
+        sig: *const u8,
+        sn: usize,
+        msg: *const u8,
+        mn: usize,
+    ) -> i32;
+    fn build8_crypto_rounding_ready() -> i32;
+    fn build8_crypto_custody_process_ready() -> i32;
+}
+impl PublicKey {
+    pub fn validate(&self) -> Result<()> {
+        if unsafe { build8_qual_ed448_public_valid(self.ed448.as_ptr(), 57) } != 1
+            || self.fndsa[0] != 0x0a
+            || VerifyingKey1024::decode(&self.fndsa).is_none()
+        {
+            return Err(Error::Key);
+        }
+        Ok(())
+    }
+    pub fn verify(
+        &self,
+        domain: Domain,
+        payload: &[u8],
+        signature: &HybridSignature,
+    ) -> Result<()> {
+        if self.role != domain.role() {
+            return Err(Error::Role);
+        }
+        self.validate()?;
+        let m = intent(domain, payload)?;
+        if unsafe {
+            build8_qual_ed448_verify(
+                self.ed448.as_ptr(),
+                57,
+                signature.ed448.as_ptr(),
+                114,
+                m.as_ptr(),
+                64,
+            )
+        } != 1
+            || signature.fndsa[0] != 0x3a
+            || !VerifyingKey1024::decode(&self.fndsa)
+                .ok_or(Error::Key)?
+                .verify(&signature.fndsa, &DOMAIN_NONE, &HASH_ID_RAW, &m)
+        {
+            return Err(Error::Signature);
+        }
+        Ok(())
+    }
+    pub fn descriptor(&self, generation: u64) -> Result<Vec<u8>> {
+        self.validate()?;
+        if generation == 0 {
+            return Err(Error::Encoding);
+        }
+        let mut e = minicbor::Encoder::new(Vec::new());
+        let wallet = matches!(self.role, Role::WalletOwner | Role::WalletRecovery);
+        e.array(if wallet { 9 } else { 8 })
+            .unwrap()
+            .u8(1)
+            .unwrap()
+            .u32(NETWORK)
+            .unwrap()
+            .u8(self.role as u8)
+            .unwrap()
+            .u64(generation)
+            .unwrap();
+        if wallet {
+            e.u16(WALLET_CRYPTO_SUITE_ID)
+                .unwrap()
+                .u8(BOTH_REQUIRED_POLICY_ID)
+                .unwrap();
+        } else {
+            e.str(self.role.suite()).unwrap();
+        }
+        e.str(PROFILE)
+            .unwrap()
+            .bytes(&self.ed448)
+            .unwrap()
+            .bytes(&self.fndsa)
+            .unwrap();
+        Ok(e.into_writer())
+    }
+    pub fn decode_descriptor(raw: &[u8]) -> Result<(Self, u64)> {
+        if raw.len() > 2048 {
+            return Err(Error::Encoding);
+        }
+        let mut d = minicbor::Decoder::new(raw);
+        let n = d
+            .array()
+            .map_err(|_| Error::Encoding)?
+            .ok_or(Error::Encoding)?;
+        if d.u8().map_err(|_| Error::Encoding)? != 1
+            || d.u32().map_err(|_| Error::Encoding)? != NETWORK
+        {
+            return Err(Error::Encoding);
+        }
+        let role = match d.u8().map_err(|_| Error::Encoding)? {
+            1 => Role::WalletOwner,
+            2 => Role::WalletRecovery,
+            3 => Role::Release,
+            4 => Role::Continuity,
+            5 => Role::Transport,
+            6 => Role::Node,
+            _ => return Err(Error::Role),
+        };
+        let generation = d.u64().map_err(|_| Error::Encoding)?;
+        if matches!(role, Role::WalletOwner | Role::WalletRecovery) {
+            if n != 9
+                || d.u16().map_err(|_| Error::Encoding)? != WALLET_CRYPTO_SUITE_ID
+                || d.u8().map_err(|_| Error::Encoding)? != BOTH_REQUIRED_POLICY_ID
+            {
+                return Err(Error::Encoding);
+            }
+        } else if n != 8 || d.str().map_err(|_| Error::Encoding)? != role.suite() {
+            return Err(Error::Encoding);
+        }
+        if d.str().map_err(|_| Error::Encoding)? != PROFILE {
+            return Err(Error::Encoding);
+        }
+        let ed448 = d
+            .bytes()
+            .map_err(|_| Error::Encoding)?
+            .try_into()
+            .map_err(|_| Error::Encoding)?;
+        let fndsa = d
+            .bytes()
+            .map_err(|_| Error::Encoding)?
+            .try_into()
+            .map_err(|_| Error::Encoding)?;
+        let public = Self { role, ed448, fndsa };
+        if d.position() != raw.len() || public.descriptor(generation)? != raw {
+            return Err(Error::Encoding);
+        }
+        Ok((public, generation))
+    }
+    pub fn address_id(&self, generation: u64) -> Result<[u8; 32]> {
+        if self.role != Role::WalletOwner {
+            return Err(Error::Role);
+        }
+        let mut h = Sha256::new();
+        h.update(b"MUTINY-BUILD8-HYBRID-ADDRESS-V1\0");
+        h.update(self.descriptor(generation)?);
+        Ok(h.finalize().into())
+    }
+}
+// Private to the crate: library infallible RNG API consumes exactly the already
+// obtained seed. An OS error cannot become a constant or deterministic fallback.
+struct Seed<const N: usize> {
+    value: Zeroizing<[u8; N]>,
+    used: bool,
+}
+impl<const N: usize> CryptoRng for Seed<N> {}
+impl<const N: usize> RngCore for Seed<N> {
+    fn next_u32(&mut self) -> u32 {
+        panic!("Pinned RNG contract changed")
+    }
+    fn next_u64(&mut self) -> u64 {
+        panic!("Pinned RNG contract changed")
+    }
+    fn fill_bytes(&mut self, out: &mut [u8]) {
+        assert!(!self.used && out.len() == N, "Pinned RNG contract changed");
+        out.copy_from_slice(self.value.as_ref());
+        self.used = true;
+    }
+    fn try_fill_bytes(&mut self, out: &mut [u8]) -> std::result::Result<(), rand_core::Error> {
+        self.fill_bytes(out);
+        Ok(())
+    }
+}
+pub struct HybridKey {
+    ed_seed: Zeroizing<[u8; 57]>,
+    fn_secret: Zeroizing<Vec<u8>>,
+    public: PublicKey,
+}
+// The pinned FN-DSA implementation owns large fixed-size scratch contexts.
+// Keep their construction/decoding off GUI and Windows main-thread stacks.
+// Serialize private operations to bound simultaneous scratch/stack residency.
+static PRIVATE_JOB: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn private_job<T: Send>(job: impl FnOnce() -> Result<T> + Send) -> Result<T> {
+    protect_process()?;
+    let _guard = PRIVATE_JOB.lock().map_err(|_| Error::Worker)?;
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("build8-private-crypto".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn_scoped(scope, job)
+            .map_err(|_| Error::Worker)?
+            .join()
+            .map_err(|_| Error::Worker)?
+    })
+}
+pub fn protect_process() -> Result<()> {
+    if unsafe { build8_crypto_custody_process_ready() } == 1 {
+        Ok(())
+    } else {
+        Err(Error::Custody)
+    }
+}
+fn checked_fill(out: &mut [u8], provider: impl FnOnce(&mut [u8]) -> Result<()>) -> Result<()> {
+    if let Err(error) = provider(out) {
+        out.zeroize();
+        return Err(error);
+    }
+    Ok(())
+}
+/// Checked OS entropy shared by hybrid custody and ephemeral transport.
+/// On any error the entire caller buffer is erased, including partial output.
+pub fn fill_os_random(out: &mut [u8]) -> Result<()> {
+    checked_fill(out, |out| {
+        protect_process()?;
+        #[cfg(test)]
+        if tests::ENTROPY_FAIL.get() {
+            return Err(Error::Entropy);
+        }
+        #[cfg(windows)]
+        {
+            unsafe extern "C" {
+                fn build8_crypto_windows_random(out: *mut u8, length: usize) -> i32;
+            }
+            if unsafe { build8_crypto_windows_random(out.as_mut_ptr(), out.len()) } != 1 {
+                return Err(Error::Entropy);
+            }
+        }
+        #[cfg(not(windows))]
+        getrandom::fill(out).map_err(|_| Error::Entropy)?;
+        Ok(())
+    })
+}
+fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>> {
+    let mut bytes = Zeroizing::new([0; N]);
+    fill_os_random(bytes.as_mut())?;
+    Ok(bytes)
+}
+impl HybridKey {
+    pub fn generate(role: Role) -> Result<Self> {
+        role.private_allowed()?;
+        // Wallet identity must be reproducible from the qualified 24-word
+        // mnemonic. Independent random algorithm seeds are other-role only.
+        if matches!(role, Role::WalletOwner | Role::WalletRecovery) {
+            return Err(Error::Role);
+        }
+        Self::from_seeds(role, random::<57>()?, random::<32>()?)
+    }
+    fn from_seeds(
+        role: Role,
+        ed_seed: Zeroizing<[u8; 57]>,
+        seed: Zeroizing<[u8; 32]>,
+    ) -> Result<Self> {
+        private_job(move || Self::from_seeds_on_worker(role, ed_seed, seed))
+    }
+    fn from_seeds_on_worker(
+        role: Role,
+        ed_seed: Zeroizing<[u8; 57]>,
+        seed: Zeroizing<[u8; 32]>,
+    ) -> Result<Self> {
+        role.private_allowed()?;
+        let mut public = PublicKey {
+            role,
+            ed448: [0; 57],
+            fndsa: [0; 1793],
+        };
+        if unsafe {
+            ossl_ed448_public_from_private(
+                std::ptr::null_mut(),
+                public.ed448.as_mut_ptr(),
+                ed_seed.as_ptr(),
+                std::ptr::null(),
+            )
+        } != 1
+        {
+            return Err(Error::Fault);
+        }
+        let mut fn_secret = Zeroizing::new(vec![0; 2369]);
+        let mut rng = Seed {
+            value: seed,
+            used: false,
+        };
+        KeyPairGenerator1024::default().keygen(10, &mut rng, &mut fn_secret, &mut public.fndsa);
+        public.validate()?;
+        let key = Self {
+            ed_seed,
+            fn_secret,
+            public,
+        };
+        key.checked_fn()?;
+        Ok(key)
+    }
+    pub fn public(&self) -> &PublicKey {
+        &self.public
+    }
+    fn checked_fn(&self) -> Result<SigningKey1024> {
+        if self.fn_secret.len() != 2369 || self.fn_secret[0] != 0x5a {
+            return Err(Error::Key);
+        }
+        let sk = SigningKey1024::decode(&self.fn_secret).ok_or(Error::Key)?;
+        let mut derived = [0; 1793];
+        sk.to_verifying_key(&mut derived);
+        if derived != self.public.fndsa
+            || self.fn_secret[2305..] != hashed_vrfykey_from_vrfykey(&derived)
+        {
+            return Err(Error::Key);
+        }
+        Ok(sk)
+    }
+    pub fn sign(&self, domain: Domain, payload: &[u8]) -> Result<HybridSignature> {
+        if self.public.role != domain.role() {
+            return Err(Error::Role);
+        }
+        if unsafe { build8_crypto_rounding_ready() } != 1 {
+            return Err(Error::Rounding);
+        }
+        let m = intent(domain, payload)?;
+        let mut rng = Seed {
+            value: random::<40>()?,
+            used: false,
+        };
+        private_job(move || {
+            if unsafe { build8_crypto_rounding_ready() } != 1 {
+                return Err(Error::Rounding);
+            }
+            let mut key = self.checked_fn()?;
+            let mut sig = HybridSignature {
+                ed448: [0; 114],
+                fndsa: [0; 1280],
+            };
+            key.sign(&mut rng, &DOMAIN_NONE, &HASH_ID_RAW, &m, &mut sig.fndsa)
+                .ok_or(Error::Fault)?;
+            if unsafe {
+                ossl_ed448_sign(
+                    std::ptr::null_mut(),
+                    sig.ed448.as_mut_ptr(),
+                    m.as_ptr(),
+                    64,
+                    self.public.ed448.as_ptr(),
+                    self.ed_seed.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    0,
+                    std::ptr::null(),
+                )
+            } != 1
+            {
+                return Err(Error::Fault);
+            }
+            self.public
+                .verify(domain, payload, &sig)
+                .map_err(|_| Error::Fault)?;
+            Ok(sig)
+        })
+    }
+    #[cfg(any(feature="wallet-custody",test))]
+    pub fn wallet_restore(phrase: &str, role: Role) -> Result<Self> {
+        if !matches!(role, Role::WalletOwner | Role::WalletRecovery) {
+            return Err(Error::Role);
+        }
+        private_job(|| {
+            let m = bip39::Mnemonic::parse_in(bip39::Language::English, phrase)
+                .map_err(|_| Error::Mnemonic)?;
+            if m.word_count() != 24 {
+                return Err(Error::Mnemonic);
+            }
+            
+            // Same BIP39 English mnemonic, empty passphrase, 2048 rounds and
+            // 64-byte seed. Use the qualified erasing HMAC/SHA-512 provider.
+            let normalized_words = Zeroizing::new(m.to_string());
+            let mut seed = Zeroizing::new([0u8; 64]);
+            pbkdf2::pbkdf2_hmac::<Sha512>(normalized_words.as_bytes(), b"mnemonic", 2048, seed.as_mut());
+            drop(normalized_words);
+            drop(m);
+
+            let kdf = hkdf::Hkdf::<Sha512>::new(
+                Some(b"MUTINY-BUILD8-WALLET-KEY-DERIVATION-V1"),
+                seed.as_ref(),
+            );
+            let mut ed = Zeroizing::new([0; 57]);
+            let mut fn_seed = Zeroizing::new([0; 32]);
+            let info = |algorithm: &[u8]| {
+                [
+                    b"MUTINY-BUILD8-WALLET-KEY-V1\0".as_slice(),
+                    &NETWORK.to_be_bytes(),
+                    &[role as u8],
+                    algorithm,
+                    PROFILE.as_bytes(),
+                ]
+                .concat()
+            };
+            kdf.expand(&info(b"ED448"), ed.as_mut())
+                .map_err(|_| Error::Key)?;
+            kdf.expand(&info(b"FNDSA1024"), fn_seed.as_mut())
+                .map_err(|_| Error::Key)?;
+            Self::from_seeds_on_worker(role, ed, fn_seed)
+        })
+    }
+}
+#[cfg(any(feature="wallet-custody",test))]
+pub fn create_wallet_phrase() -> Result<Zeroizing<String>> {
+    let entropy = wallet_entropy::entropy()?;
+    let mnemonic = bip39::Mnemonic::from_entropy(entropy.as_ref()).map_err(|_| Error::Mnemonic)?;
+    Ok(Zeroizing::new(mnemonic.to_string()))
+}
+
+mod custody;
+#[cfg(any(feature="wallet-custody",test))]
+mod wallet_entropy;
+#[cfg(feature = "qualification")]
+pub fn qualification_wallet_entropy_provider() -> Result<bool> {
+    wallet_entropy::qualify_provider()
+}
+pub mod enrollment;
+pub mod treasury_proof_v1;
+#[cfg(any(feature="wallet-custody",test))]
+pub mod rehearsal_keys_v1;
+pub mod worker_session_auth;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod treasury_proof_tests;
+
+#[cfg(feature = "qualification")]
+pub fn qualification_reference_fndsa_public(seed: &[u8; 32]) -> [u8; 1793] {
+    unsafe extern "C" {
+        fn fndsa_keygen_seeded(
+            logn: u32,
+            seed: *const c_void,
+            n: usize,
+            sk: *mut c_void,
+            pk: *mut c_void,
+        );
+    }
+    let mut private = Zeroizing::new(vec![0u8; 2369]);
+    let mut public = [0; 1793];
+    unsafe {
+        fndsa_keygen_seeded(
+            10,
+            seed.as_ptr().cast(),
+            32,
+            private.as_mut_ptr().cast(),
+            public.as_mut_ptr().cast(),
+        )
+    };
+    public
+}

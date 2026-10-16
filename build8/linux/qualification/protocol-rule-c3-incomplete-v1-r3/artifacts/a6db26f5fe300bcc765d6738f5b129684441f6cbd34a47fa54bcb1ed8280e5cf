@@ -1,0 +1,155 @@
+//! Checked Windows elapsed counters. This supplies neither UTC nor a boot identity and cannot
+//! implement ElapsedSource or enable HostClock::start by itself. Qualification additionally needs
+//! a reviewed stable kernel boot identity, authenticated calibration, and measured profile bounds.
+//! No wall clock, persisted UUID, process ID or process-random identity is a substitute.
+//!
+//! Microsoft documents both precise APIs on Windows 10 / Server 2016 and later, in 100 ns units.
+//! The unbiased count excludes sleep/hibernation; the interrupt count includes them. Resolve the
+//! exports from the already-loaded System32 KernelBase module (the implementation exports on the
+//! actual Windows build, rather than the Kernel32 facade): missing support is unavailable,
+//! without loading a caller-selected DLL or falling back to a lower-resolution/wall-time source.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PairedCounters {
+    pub monotonic_ns: u64,
+    pub boottime_ns: u64,
+    /// Width between the two unbiased reads. Diagnostic evidence; no invented acceptance bound.
+    pub capture_window_ns: u64,
+}
+
+fn paired(first_100ns: u64, boot_100ns: u64, second_100ns: u64) -> Option<PairedCounters> {
+    let first = first_100ns.checked_mul(100)?;
+    let boot = boot_100ns.checked_mul(100)?;
+    let second = second_100ns.checked_mul(100)?;
+    Some(PairedCounters {
+        monotonic_ns: super::sandwich_midpoint(first, second)?,
+        boottime_ns: boot,
+        capture_window_ns: second.checked_sub(first)?,
+    })
+}
+
+#[cfg(windows)]
+mod native {
+    use super::{PairedCounters, paired};
+    use std::{
+        ffi::{c_char, c_void},
+        sync::OnceLock,
+    };
+
+    type Counter = unsafe extern "system" fn(*mut u64);
+    #[derive(Clone, Copy)]
+    struct Api {
+        unbiased: Counter,
+        interrupt: Counter,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+    fn api() -> Option<Api> {
+        static API: OnceLock<Option<Api>> = OnceLock::new();
+        *API.get_or_init(|| {
+            // Resolve an existing module by its full OS-supplied system directory, without an
+            // environment/search-path/basename DLL choice. Kernel32 does not export these precise
+            // APIs on the inspected Windows26200 build; KernelBase implements the same APIs.
+            let mut name = vec![0u16; 32768];
+            // SAFETY: the initialized, exclusively borrowed buffer has the declared capacity.
+            let length = unsafe { GetSystemDirectoryW(name.as_mut_ptr(), name.len() as u32) };
+            if length == 0 || length as usize >= name.len() {
+                return None;
+            }
+            name.truncate(length as usize);
+            name.extend("\\kernelbase.dll\0".encode_utf16());
+            // SAFETY: the NUL-terminated full system-module path is valid for the call; this obtains
+            // only an already-loaded module, never loads a DLL or changes its reference count.
+            let module = unsafe { GetModuleHandleW(name.as_ptr()) };
+            if module.is_null() {
+                return None;
+            }
+            // SAFETY: fixed exported names and signatures from realtimeapiset.h. No untrusted
+            // name/handle/function pointer is accepted. An absent export is refused before use.
+            let unbiased =
+                unsafe { GetProcAddress(module, c"QueryUnbiasedInterruptTimePrecise".as_ptr()) };
+            let interrupt =
+                unsafe { GetProcAddress(module, c"QueryInterruptTimePrecise".as_ptr()) };
+            if unbiased.is_null() || interrupt.is_null() {
+                return None;
+            }
+            Some(Api {
+                unbiased: unsafe { std::mem::transmute::<*mut c_void, Counter>(unbiased) },
+                interrupt: unsafe { std::mem::transmute::<*mut c_void, Counter>(interrupt) },
+            })
+        })
+    }
+    pub(super) fn read() -> Option<PairedCounters> {
+        let api = api()?;
+        // A failed-to-write output also refuses through checked conversion; both documented APIs
+        // return VOID and specify the output pointer, rather than an error code.
+        let (mut first, mut boot, mut second) = (u64::MAX, u64::MAX, u64::MAX);
+        // SAFETY: all three outputs are distinct initialized u64 objects, exclusively borrowed for
+        // the documented call. Read order pairs BOOTTIME with the MONOTONIC midpoint.
+        unsafe {
+            (api.unbiased)(&mut first);
+            (api.interrupt)(&mut boot);
+            (api.unbiased)(&mut second);
+        }
+        paired(first, boot, second)
+    }
+}
+
+// Prepared diagnostic reader; deliberately not wired into ElapsedSource or production startup.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(super) fn read_counters() -> Option<PairedCounters> {
+    native::read()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paired_counter_conversion_is_exact_and_midpoint_is_checked() {
+        assert_eq!(
+            paired(10, 31, 13),
+            Some(PairedCounters {
+                monotonic_ns: 1150,
+                boottime_ns: 3100,
+                capture_window_ns: 300,
+            })
+        );
+        assert_eq!(paired(13, 31, 10), None);
+        for sample in [(u64::MAX, 0, u64::MAX), (0, u64::MAX, 0), (0, 0, u64::MAX)] {
+            assert_eq!(paired(sample.0, sample.1, sample.2), None);
+        }
+        let maximum = u64::MAX / 100;
+        assert!(paired(maximum, maximum, maximum).is_some());
+        assert_eq!(paired(maximum, maximum + 1, maximum), None);
+    }
+
+    #[test]
+    fn pairing_keeps_the_actual_capture_window_without_fabricated_profile_bound() {
+        assert_eq!(
+            paired(1, 2, 1_000_001).unwrap().capture_window_ns,
+            100_000_000
+        );
+        // This window is not silently clamped or accepted as a physical qualification margin.
+        assert_eq!(paired(0, 0, 0).unwrap().capture_window_ns, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_precise_counter_reads_do_not_regress_without_using_wall_time() {
+        let mut previous =
+            read_counters().expect("documented precise Windows counter APIs unavailable");
+        for _ in 0..1000 {
+            let current = read_counters().expect("native counter conversion/order refused");
+            assert!(current.monotonic_ns >= previous.monotonic_ns);
+            assert!(current.boottime_ns >= previous.boottime_ns);
+            previous = current;
+        }
+        eprintln!("native public counter evidence: {previous:?}; no boot or UTC qualification");
+    }
+}

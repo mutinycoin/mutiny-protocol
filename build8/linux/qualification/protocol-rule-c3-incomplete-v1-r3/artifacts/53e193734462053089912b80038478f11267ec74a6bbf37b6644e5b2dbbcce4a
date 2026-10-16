@@ -1,0 +1,92 @@
+# StateRoot and StateProof V2
+
+Authority: ARCHITECT-STATE-PROOF-MODEL-V2.txt. This specification supersedes the
+flat StateRoot V1 definition before Genesis. There is one accepted consensus
+root, V2. Historical V1 qualification artifacts are not V2 chain inputs.
+
+H(domain, bytes) is SHA-256(ASCII(domain) || 00 || bytes). All CBOR below uses
+the existing deterministic canonical codec; unsigned integers use shortest
+encoding. Existing 32-byte keys and typed record bytes are unchanged. Keys are
+unique, at most 10,000,000 records exist, and each record is at most 262,144 bytes.
+Path bit d is bit 7-(d mod 8) of key byte floor(d/8), for d=0..255. Zero is left.
+
+D[256] = H(MUTINY-BUILD8-STATE-EMPTY-V2, empty bytes).
+D[d] = H(MUTINY-BUILD8-STATE-BRANCH-V2, D[d+1] || D[d+1]).
+An occupied leaf is H(MUTINY-BUILD8-STATE-LEAF-V2, CBOR([2,key,recordBytes])).
+Every branch is H(MUTINY-BUILD8-STATE-BRANCH-V2,left32 || right32).
+StateRoot = H(MUTINY-BUILD8-STATE-V2, CBOR([2,recordCount,treeRoot32])).
+The empty root includes count zero and D[0]. Count is never supplied as an
+independent trusted assertion. Duplicate keys fail, including identical values.
+
+StateProofV2 is exactly the canonical CBOR array:
+
+`[2, FinalizedAnchorV1Bytes, recordCount, key32, presentBoolean,
+recordBytesOrNull, bitmap32, nondefaultSiblingHashes]`.
+
+Presence must agree with non-null record bytes. The bitmap uses the same bit
+numbering as the key; set bit d supplies sibling depth d+1. Siblings occur in
+ascending d order. Clear bits select D[d+1]. Explicit default siblings, wrong
+hash widths, extra/missing siblings, noncanonical encodings, trailing data,
+unsupported versions, and out-of-bound counts/records fail. Verification folds
+from depth 255 through 0, then binds the count with the outer StateRoot hash.
+
+The caller independently authenticates the finalized anchor and its header
+StateRoot, and supplies the requested key. The response is not a finality trust
+source. The supplied key must match the request, including for absence proofs:
+one empty subtree witness can otherwise apply to several absent keys. Context
+includes NetworkID, GenesisID, ProtocolFingerprint, height, and BlockHash.
+Generic inclusion authenticates exact record bytes; typed consumers must also
+validate the schema and derive its expected key. Absence of one UTXO does not
+prove wallet balance completeness.
+
+Generic encoded proofs are bounded at 294,912 bytes before decoding. The exact
+largest codec witness is 271,052 bytes: maximum anchor height, count 10 million,
+262,144-byte record, bitmap all ones, and 256 nondefault siblings. This is an
+encoding bound, not a claim that arbitrary siblings describe an actual state.
+The wallet UTXO profile limits records to 94 bytes and encoded proofs to 9,216
+bytes before parsing/allocation; its maximal encoding is 8,999 bytes. It verifies
+the outpoint-derived key, seven-field UTXO codec, requested owner, positive
+amount, and creation height no later than the authenticated header. Spending
+still applies normal maturity, authorization, and canonical-state rules.
+
+Compressed Patricia nodes are an optional cache of this exact 256-level tree.
+They cannot change the root definition. The in-memory implementation stores at
+most 2n-1 cache nodes. Independent recursive full construction and a streaming
+sorted-key frontier reproduce the same root. The streaming frontier has 256
+entries regardless of record count and rejects non-increasing keys. Checkpoint
+export reconstructs the root from one SQLite read snapshot; restore replays the
+certified history, checks records against replayed state, reconstructs the V2
+root, and only then marks the import complete. The persistent compressed index
+stores at most 2n-1 nodes keyed by depth and masked key prefix. Canonical state,
+changed Merkle paths, count, and anchor/root metadata publish in the same SQLite
+transaction. Deleted paths are reclaimed. Startup deterministically rebuilds
+from root-checked canonical records. Proof reads use one transaction, at most
+257 compressed nodes plus one bounded record, and verify the resulting proof
+against canonical authority before returning it. Corruption fails closed.
+
+The authenticated proof request is canonical CBOR
+`[2, FinalizedAnchorV1Bytes, key32, profile]`, at most 192 bytes, where profile 0
+is generic, profile 1 applies the UTXO bounds (94-byte record / 9 KiB proof),
+and profile 2 applies the wallet-authority bounds (4 KiB record / 13 KiB proof).
+Unknown profiles reject. Wallet-authority lookup proves the queried address
+record and its referenced current-authority record at the same independently
+authenticated anchor and root. An absent address requires an absence proof and
+permits only direct generation-1 address ownership. There is one key per request;
+no recursive/unbounded batch. The existing authenticated transport bounds frames
+at 1 MiB, uses directional sequence numbers and a bounded qualification session.
+Production listener deployment and LoRa reassembly remain separate gates.
+
+Allocator qualification for the maximal generic witness measured 794,958 bytes
+of additional peak heap, 1,066,010 including the encoded input. An over-limit
+input was rejected with zero decoder heap allocation. These figures exclude
+allocator metadata and stack; the witness frontier is a fixed 256 hashes.
+
+LoRa transports these same canonical proof bytes. It has no alternate root,
+leaf, or verification rule. Fragment count, reassembly bytes, deadlines, and
+concurrency must be bounded by its separately qualified transport profile.
+
+StateRoot remains 32 bytes in the unchanged WorkHeader. SHA256d work, target,
+Ticket and nonce encoding remain unchanged. Changed root contents require new
+dependent vectors and signatures; they do not alone require fleet remeasurement.
+This specification and the domain registry enter the ProtocolFingerprint
+candidate. Genesis is not sealed by specification or fixture generation.

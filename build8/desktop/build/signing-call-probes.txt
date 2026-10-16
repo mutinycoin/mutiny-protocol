@@ -1,0 +1,237 @@
+# Probe corpus of build/check-signing-calls.pl --selftest (fixes of the independent wallet review,
+# MAJOR-2). Each probe is "=== <id> PASS|FAIL [@<repository-relative file>] <what>" followed by a
+# whole file text, scanned as if it were that file (default wallet-core/src/ops/payment.rs) against
+# the allow-list of build/signing-call-rules.txt. FAIL: the probe must produce at least one finding;
+# PASS: none. R1-R3 are the three functions the independent review appended to ops/payment.rs
+# (verbatim); build/negative-controls.sh injects them into a scratch clone as well.
+=== R1 FAIL review probe 1: a raw key parameter named `signer` signs caller-chosen bytes under a caller-chosen domain
+pub fn review_probe_receiver_named_signer(
+    signer: &mutiny_crypto_v2::HybridKey,
+    bytes: &[u8],
+) -> Option<mutiny_crypto_v2::HybridSignature> {
+    signer.sign(mutiny_crypto_v2::Domain::NodeWork, bytes).ok()
+}
+=== R2 FAIL review probe 2: the path call HybridKey::sign
+pub fn review_probe_path_call(
+    key: &mutiny_crypto_v2::HybridKey,
+    bytes: &[u8],
+) -> Option<mutiny_crypto_v2::HybridSignature> {
+    mutiny_crypto_v2::HybridKey::sign(key, mutiny_crypto_v2::Domain::Transaction, bytes).ok()
+}
+=== R3 FAIL review probe 3: a trading Operation approved with a raw key
+pub fn review_probe_consensus_approve(
+    key: &mutiny_crypto_v2::HybridKey,
+    op: &mut mutiny_consensus_v8::trading_v1::Operation,
+) -> bool {
+    op.approve(0, key, 1).is_ok()
+}
+=== C1 FAIL Rotation::sign (consensus wallet rotation) as a path call
+use mutiny_consensus_v8::wallet_rotation_v1::Rotation;
+pub fn rotate(rotation: &mut Rotation, current: &HybridKey, proposed: &HybridKey) -> bool {
+    Rotation::sign(rotation, current, proposed).is_ok()
+}
+=== C2 FAIL SignedClaim::sign (dividend claim) as a constructor
+pub fn claim(body: ClaimBody, descriptor: Vec<u8>, key: &HybridKey) -> Option<SignedClaim> {
+    dividend_claim_v1::SignedClaim::sign(body, descriptor, key).ok()
+}
+=== C3 FAIL OfferProof::sign (the maker's fill signature)
+pub fn fill(offer: SignedOffer, op: &Operation, key: &HybridKey) -> Option<OfferProof> {
+    trading_v1::OfferProof::sign(offer, op, key).ok()
+}
+=== C4 FAIL SignedOffer::sign (a maker's offer)
+pub fn make_offer(body: OfferBody, key: &HybridKey) -> Option<SignedOffer> {
+    SignedOffer::sign(body, key).ok()
+}
+=== C5 FAIL Transfer::sign_input outside the payment handler
+pub fn spend_all(transfer: &mut Transfer, key: &HybridKey) {
+    for index in 0..transfer.inputs.len() {
+        let _ = transfer.sign_input(index, key);
+    }
+}
+=== C6 FAIL @wallet-core/src/ops/bond.rs a bond operation signed outside its handler
+pub fn sign_bond_now(op: &mut BondOperation, key: &HybridKey) -> bool {
+    op.sign(key).is_ok()
+}
+=== C7 FAIL an imported sign_challenge called bare
+use mutiny_crypto_v2::treasury_proof_v1::{sign_challenge, Challenge};
+pub fn prove(key: &HybridKey, descriptor: &[u8], challenge: &Challenge) -> bool {
+    let proof = sign_challenge(key, descriptor, challenge);
+    proof.is_ok()
+}
+=== C8 FAIL HybridKey::sign taken as a function value (no call at the path)
+pub fn signer_fn() -> fn(&HybridKey, Domain, &[u8]) -> crypto::Result<HybridSignature> {
+    HybridKey::sign
+}
+=== C9 FAIL a qualified path <HybridKey>::sign and <T as Trait>::sign
+pub fn qualified(key: &HybridKey, bytes: &[u8]) -> bool {
+    <HybridKey>::sign(key, domain_of(bytes), bytes).is_ok()
+}
+pub fn qualified_trait(key: &HybridKey, bytes: &[u8]) -> bool {
+    <HybridKey as Sign>::sign(key, domain_of(bytes), bytes).is_ok()
+}
+=== C10 FAIL a method chain split over lines and a turbofish
+pub fn split(key: &HybridKey, bytes: &[u8]) -> bool {
+    key
+        .
+        sign (
+            pick(),
+            bytes,
+        )
+        .is_ok()
+}
+pub fn turbofish(op: &mut Operation, key: &HybridKey) -> bool {
+    op.approve::<u8>(0, key, 1).is_ok()
+}
+=== C11 FAIL a bare call after return
+pub fn prove_now(key: &HybridKey, descriptor: &[u8], challenge: &Challenge) -> Result<HybridSignature, ProofError> {
+    return sign_challenge(key, descriptor, challenge);
+}
+=== C12 FAIL a test item on the same line does not hide the code after it
+#[cfg(test)] fn t() {} pub fn after(key: &HybridKey, bytes: &[u8]) -> bool { key.sign(pick(), bytes).is_ok() }
+=== C13 FAIL code after a test module is code
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        let _ = 1;
+    }
+}
+pub fn after_tests(key: &HybridKey, bytes: &[u8]) -> bool {
+    key.sign(pick(), bytes).is_ok()
+}
+=== C14 FAIL cfg(any(test, feature)) is shipped with the feature, so it is scanned
+#[cfg(any(test, feature = "test-value-signing"))]
+pub fn feature_signer(key: &HybridKey, bytes: &[u8]) -> bool {
+    key.sign(pick(), bytes).is_ok()
+}
+=== C15 FAIL one sign_input more than the allow-list permits in the payment handler
+impl OperationHandler for PaymentHandler {
+    fn sign(&self, plan: &OperationPlan, signer: &KindSigner<'_>, _view: &ChainView<'_>) -> Result<SignedOperation, Refusal> {
+        let mut transfer = plan_transfer(plan)?;
+        let key = signer.key(KeySlot::Primary, Purpose::Spend)?;
+        for index in 0..transfer.inputs.len() {
+            transfer.sign_input(index, key).map_err(|_| Refusal::SigningFailed)?;
+        }
+        transfer.sign_input(0, key).map_err(|_| Refusal::SigningFailed)?;
+        finish(transfer)
+    }
+}
+=== C16 FAIL @wallet-core/src/capability.rs a Domain:: path inside an allowed raw signature
+impl TradeApproval<'_> {
+    pub fn approve_slot(&self, operation: &TradeOperation, slot: u8, signer: &SignerIdentity) -> Result<HybridSignature, Refusal> {
+        let payload = operation.signing_payload(slot, signer.descriptor()).map_err(|_| Refusal::SigningFailed)?;
+        self.key.key.sign(Domain::Transaction, &payload).map_err(|_| Refusal::SigningFailed)
+    }
+}
+=== C17 FAIL @desktop/src/wallet_v2.rs the desktop signs with a key it holds
+pub(crate) fn sign_for_host(key: &HybridKey, bytes: &[u8]) -> Option<HybridSignature> {
+    key.sign(Domain::Transaction, bytes).ok()
+}
+=== C18 FAIL @desktop/src/wallet_controller_v2.rs the desktop approves a trading operation itself
+pub(crate) fn co_sign(op: &mut Operation, key: &HybridKey) -> bool {
+    op.approve(1, key, 1).is_ok()
+}
+=== C19 FAIL a renamed import of a signing routine
+use mutiny_crypto_v2::treasury_proof_v1::sign_challenge as answer;
+pub fn prove_renamed(key: &HybridKey, descriptor: &[u8], challenge: &Challenge) -> bool {
+    answer(key, descriptor, challenge).is_ok()
+}
+=== C20 FAIL @desktop/src/wallet_controller_v2.rs a second approval taken by the controller
+impl ActivePlan {
+    pub(crate) fn authorize<S: Signer + ?Sized>(&mut self, signer: &S, view: &ChainView<'_>) -> std::result::Result<SignedOperation, Refusal> {
+        let approval = self.session.approve(view)?;
+        let spare = self.session.approve(view)?;
+        drop(spare);
+        self.session.authorize(signer, approval, view)
+    }
+}
+=== P1 PASS @wallet-core/src/capability.rs the trading capability as it is (domain from domain_for, payload from consensus)
+impl TradeApproval<'_> {
+    pub fn approve_slot(
+        &self,
+        operation: &TradeOperation,
+        slot: u8,
+        signer: &SignerIdentity,
+    ) -> Result<HybridSignature, Refusal> {
+        let payload = operation
+            .signing_payload(slot, signer.descriptor())
+            .map_err(|_| Refusal::SigningFailed)?;
+        self.key
+            .key
+            .sign(self.domain, &payload)
+            .map_err(|_| Refusal::SigningFailed)
+    }
+}
+=== P2 PASS the payment handler's spending through its transfer capability as it is
+impl OperationHandler for PaymentHandler {
+    fn sign(
+        &self,
+        plan: &OperationPlan,
+        signer: &KindSigner<'_>,
+        _view: &ChainView<'_>,
+    ) -> Result<SignedOperation, Refusal> {
+        let mut transfer = plan_transfer(plan)?;
+        let spend = signer.transfer_spend(KeySlot::Primary)?;
+        for index in 0..transfer.inputs.len() {
+            spend
+                .authorize_input(&mut transfer, index)
+                .map_err(|_| Refusal::SigningFailed)?;
+        }
+        finish(transfer)
+    }
+}
+=== P3 PASS comments, string, raw-string and char literals, and test items are not code
+// key.sign(Domain::Transaction, bytes) in a line comment
+/* op.approve(0, key, 1) and HybridKey::sign(key, Domain::NodeWork, b) in a block comment */
+/// Doc: `transfer.sign_input(0, key)` is how consensus signs an input.
+pub fn text() -> (&'static str, &'static str, char) {
+    ("key.sign(Domain::Transaction, b)", r#"op.approve(0, key, 1); "sign_challenge(k, d, c)""#, '(')
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn signs_in_a_test() {
+        let _ = key().sign(Domain::Transaction, b"x");
+        let _ = op().approve(0, &key(), 1);
+    }
+}
+#[cfg(all(test, feature = "test-value-signing"))]
+fn only_in_tests_with_the_feature() {
+    let _ = HybridKey::sign(&key(), Domain::Transaction, b"x");
+}
+=== P4 PASS definitions, payloads, digests and verification are not signing calls
+pub trait Approve {
+    fn approve(&mut self) -> bool;
+    fn sign_all(&mut self) -> bool;
+}
+pub fn signing_payload_of(op: &Operation, slot: u8, descriptor: &[u8]) -> Vec<u8> {
+    let payload = op.signing_payload(slot, descriptor).unwrap_or_default();
+    let _digest = transfer().signing_digest(0);
+    let _ok = key().public().verify(Domain::Transaction, &payload, &signature());
+    let _signer = plan().signer();
+    let _sig = proof().signature();
+    let _assigned = book().pending_assignment(id());
+    let designer = signed_bytes(&payload);
+    designer
+}
+=== C21 FAIL @wallet-core/src/ops/treasury.rs a handler signs a payload itself again (the pre-W4 pattern)
+impl OperationHandler for TreasuryHandler {
+    fn sign(&self, plan: &OperationPlan, signer: &KindSigner<'_>, _view: &ChainView<'_>) -> Result<SignedOperation, Refusal> {
+        let body = self.plan_freeze_body(plan)?;
+        let signature = signer.sign(KeySlot::Primary, Purpose::Spend, &body)?;
+        finish(body, signature)
+    }
+}
+=== C22 FAIL @wallet-core/src/capability.rs a second raw signature in an allowed capability function
+impl TransferSpend<'_> {
+    pub fn authorize_input(&self, transfer: &mut Transfer, index: usize) -> Result<(), TxError> {
+        transfer.sign_input(index, &self.key.key)?;
+        transfer.sign_input(index + 1, &self.key.key)
+    }
+}
+=== C23 FAIL @wallet-core/src/capability.rs a new capability function that signs raw bytes
+impl KindSigner<'_> {
+    pub fn sign_bytes(&self, payload: &[u8]) -> Result<HybridSignature, Refusal> {
+        self.ring.primary.key.sign(self.grant(Capability::TradeApproval)?, payload).map_err(|_| Refusal::SigningFailed)
+    }
+}

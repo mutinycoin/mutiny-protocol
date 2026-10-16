@@ -1,0 +1,60 @@
+== Summary ==
+* Action: Send MUT
+  Summary: Send 0.01000000 MUT to umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 with a network fee of 0.00003505 MUT.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: c387c3811385da684eef929d4a150ee4a5c66871ef7d6ed0bd77dbccf14e825b
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  Input 0: this wallet signs; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Sender: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Recipient: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (an external address; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Money ==
+* Pays: 0.01000000 MUT (1000000 STRIKES) to umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (an external address; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+* Type to confirm destination: tq6dxch0
+  Returns to this wallet: 0.03996495 MUT (3996495 STRIKES) to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+* Amount: 0.01000000 MUT (1000000 STRIKES)
+* Network fee: 0.00003505 MUT (3505 STRIKES); at least one atom per byte of the signed encoding; paid by this wallet, signed size 3505 bytes
+* Total leaving this wallet: 0.01003505 MUT
+  Inputs: 1 coin(s) worth 0.05000000 MUT
+  Input 0: 0101010101010101010101010101010101010101010101010101010101010101:0 worth 0.05000000 MUT (this wallet)
+
+== Conditions ==
+  Validity window: Valid only for blocks 101 to 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval).
+  Inputs: All 1 input coin(s) must still be unspent when the payment is included; a conflicting spend of any of them cancels this payment.
+  Fee rule: The fee must be at least the encoded size of the signed payment: 3505 bytes, so 3505 atoms.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Spends 1 coin(s) worth 0.05000000 MUT. A spent coin cannot be recovered once the payment is included.
+# Irreversible: Pays 0.01000000 MUT to umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (an external address). The recipient controls it from inclusion; there is no recall.
+  Effect: Returns 0.03996495 MUT to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet).
+# Irreversible: Pays a network fee of 0.00003505 MUT to the block producer.
+# Irreversible: Once signed, the payment cannot be revoked: it stays valid until it is included or until block 245.
+
+== You must acknowledge ==
+* Required: I checked every destination address
+* Required: I checked the amount
+* Required: I checked the fee and who pays it
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+
+== Binding ==
+  Review digest: 86b1a4776e49998aa3655b045901cf6de642d628e7547fd29738d7232d7fd65e

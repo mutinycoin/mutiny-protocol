@@ -1,0 +1,61 @@
+== Summary ==
+* Action: Withdraw a bond
+  Summary: Withdraw lot 51515151..51515151: the protocol pays 150.00000000 MUT to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 259209
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: 059767b4f2d5f54f4829929e1fbfda3d86d390ae22698a3f922b0e5f6b1c89df
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  The bond owner signature: this wallet signs; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Owner: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Money ==
+  The protocol pays: 150.00000000 MUT (15000000000 STRIKES) to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+* Amount: 150.00000000 MUT (15000000000 STRIKES)
+* Network fee: 0.00000000 MUT (0 STRIKES); the protocol defines no fee for this operation; not applicable
+
+== Conditions ==
+  Lot: Lot 5151515151515151515151515151515151515151515151515151515151515151 of node 169a7d7a3a73a72664e83bb93e7767c96a131d1503451a79aea4ea84247d396f (lineage 1212121212121212121212121212121212121212121212121212121212121212, generation 1): 150.00000000 MUT (15000000000 STRIKES), locked since block 10 (B), unbonding since block 20 (U), confirmed sequence 1.
+  Sequence: This operation carries sequence 2: the lot's confirmed sequence 1 plus one, read from verified state.
+  Signed inclusion window: Valid from block 259210 through 259354 inclusive. The signed reference is canonical block 259209 (0303030303030303030303030303030303030303030303030303030303030303); retained history must prove it at inclusion. Timing eligibility is evaluated at actual inclusion.
+  Withdrawal rule: W >= B + 259200 and W >= U + 43200: the floor is block 259210 = max(10 + 259200, 20 + 43200); actual inclusion W must satisfy this floor within the signed window (next eligible block 259210).
+  Payout: The protocol creates coin 9ab30bf479ad3feefba5b5f9d57c59502c3d7cc5cbecfd84cdcbaacd6f08334c:0 of 150.00000000 MUT (15000000000 STRIKES) owned by the original owner umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet).
+  Slashes first: Valid timely equivocation evidence in the actual inclusion block W settles before withdrawal (next eligible block 259210): a lot burned in that block pays nothing and the withdrawal has no effect.
+  Bond authority: The owner umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f signs with its current key, resolved through the wallet book as consensus resolves it: key generation 1, address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f. A key that was rotated away cannot sign.
+
+== Timing ==
+  Valid from block: 259210
+  Valid until block: 259354 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+* Earliest height: 259210 (1 blocks after the verified block; about 1 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Ends the bond at actual finalized inclusion W (next eligible block 259210): lot 5151515151515151515151515151515151515151515151515151515151515151 becomes Withdrawn and the protocol pays 150.00000000 MUT to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet).
+# Irreversible: Once signed, the withdrawal cannot be revoked; its signed inclusion window is 259210 through 259354.
+  Effect: This wallet receives 150.00000000 MUT.
+
+== Warnings ==
+! Notice: Evidence in the same block settles first; a lot burned there pays nothing.
+! Caution: These signatures expire after block 259354. The wallet never rebases their reference or inclusion bounds; changed bytes require a new review and signatures.
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Type to confirm: CONFIRM 2858DE44
+
+== Binding ==
+  Review digest: 2858de4447a22b5a6a509a36e1de3ce43117e8ecf70e191280166ca3946314a0

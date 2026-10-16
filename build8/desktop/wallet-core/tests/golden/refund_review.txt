@@ -1,0 +1,71 @@
+== Summary ==
+* Action: Refund a hash lock
+  Summary: Take back 0.01000000 MUT from lock 6c6c6c6c..6c6c6c6c after its refund height. Network fee 0.00003742 MUT.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 149
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: d0cafcde179d1d8ff17f31eee3d528df2344b9419bd6a85df8b3f145dd3b8a03
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  Approval slot 0: this wallet signs; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Owner: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Lock recipient: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (an external address; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Money ==
+  The protocol pays: 0.01000000 MUT (1000000 STRIKES) to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Returns to this wallet: 0.00296258 MUT (296258 STRIKES) to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+* Amount: 0.01000000 MUT (1000000 STRIKES)
+* Network fee: 0.00003742 MUT (3742 STRIKES); the greater of 240 STRIKES and one atom per byte of the signed encoding; paid by this wallet, signed size 3742 bytes
+* Total leaving this wallet: 0.00003742 MUT
+  Inputs: 1 coin(s) worth 0.00300000 MUT
+  Input 0: 0303030303030303030303030303030303030303030303030303030303030303:0 worth 0.00300000 MUT (this wallet)
+
+== Conditions ==
+  Lock: Spends hash lock 6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c created at block 90 by the sender umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f: 0.01000000 MUT (1000000 STRIKES) locked for the recipient umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0.
+  Refund height: Refund allowed from block 150 on; the next block is 150.
+  Exclusivity: Claim and refund are mutually exclusive: if a claim of this lock is included first, this refund fails. Refund eligibility does not execute a refund: this operation must be included.
+  Fee coins: The fee is paid from 1 separate coin(s) of the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f; the locked amount is returned in full.
+  Finality: The refund is final only when a certified block that includes it is part of this wallet's verified chain and this host's own replay-derived index confirms its inclusion. A queued record is stored locally only; authenticated submission or peer acknowledgement is not confirmation. Inclusion in a proposed, uncertified block is not finality either.
+  Trade commitments: TradeID 2121212121212121212121212121212121212121212121212121212121212121 and ContractHash 2222222222222222222222222222222222222222222222222222222222222222 are opaque 32-byte commitments: shown, not interpreted or verified.
+  Trade generation: 1. A claim or refund of a lock carries the generation, TradeID and ContractHash of the lock.
+  Validity window: Valid only for blocks 150 to 294 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval).
+  Inputs: All 1 input coin(s) must still be unspent coins of the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f when the operation is included; a conflicting spend of any of them cancels it.
+  Fee rule: The fee must be at least the greater of 240 STRIKES and the encoded size of the complete signed operation (every approval included): 3742 bytes, so 3742 atoms.
+  Approvals still required: the approval of the refund owner (slot 0, this wallet).
+
+== Timing ==
+  Valid from block: 150
+  Valid until block: 294 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+* Earliest height: 150 (1 blocks after the verified block; about 1 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Returns the locked 0.01000000 MUT to the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet) and ends the lock: the recipient can no longer claim it.
+# Irreversible: Spends 1 coin(s) worth 0.00300000 MUT of the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f. A spent coin cannot be recovered once the operation is included.
+  Effect: Returns 0.00296258 MUT of change to the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet).
+# Irreversible: Pays a network fee of 0.00003742 MUT to the block producer.
+# Irreversible: Once signed, the operation cannot be revoked: it stays valid until it is included or until block 294.
+
+== Warnings ==
+! Caution: TradeID and ContractHash are opaque commitments: check them against the trade agreement you hold. This wallet shows them but cannot check what they commit to.
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+
+== Binding ==
+  Review digest: 79be6c4683bb3c559244a2bea0819fe6253ed9ac784258ffa0dc45dc71ebaa92

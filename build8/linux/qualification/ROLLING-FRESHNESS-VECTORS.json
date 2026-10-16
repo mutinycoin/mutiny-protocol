@@ -1,0 +1,1049 @@
+{
+  "schema": "BUILD8-ROLLING-FRESHNESS-VECTORS-V1",
+  "cases": [
+    {
+      "committed_height": 0,
+      "challenge": "65ae8bb10efcd0e553f915142ea1948abbf09110a203119002f6e1598b87aa45",
+      "operation": null,
+      "record": "860158200303030303030303030303030303030303030303030303030303030303030303015821020217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed0058207d8674170ab82e3b9e9753686f472717eb2eb733aa5075c4ce7b8ece3b98623e",
+      "eligibility": [
+        {
+          "slot": 0,
+          "eligible": false
+        },
+        {
+          "slot": 1,
+          "eligible": true
+        },
+        {
+          "slot": 2,
+          "eligible": true
+        },
+        {
+          "slot": 3,
+          "eligible": true
+        },
+        {
+          "slot": 4,
+          "eligible": true
+        },
+        {
+          "slot": 5,
+          "eligible": true
+        },
+        {
+          "slot": 6,
+          "eligible": true
+        },
+        {
+          "slot": 7,
+          "eligible": true
+        },
+        {
+          "slot": 8,
+          "eligible": true
+        },
+        {
+          "slot": 9,
+          "eligible": true
+        },
+        {
+          "slot": 10,
+          "eligible": true
+        },
+        {
+          "slot": 11,
+          "eligible": true
+        },
+        {
+          "slot": 12,
+          "eligible": true
+        },
+        {
+          "slot": 13,
+          "eligible": true
+        },
+        {
+          "slot": 14,
+          "eligible": true
+        },
+        {
+          "slot": 15,
+          "eligible": true
+        },
+        {
+          "slot": 16,
+          "eligible": true
+        },
+        {
+          "slot": 17,
+          "eligible": true
+        },
+        {
+          "slot": 18,
+          "eligible": true
+        },
+        {
+          "slot": 19,
+          "eligible": true
+        },
+        {
+          "slot": 20,
+          "eligible": true
+        },
+        {
+          "slot": 21,
+          "eligible": true
+        },
+        {
+          "slot": 22,
+          "eligible": true
+        },
+        {
+          "slot": 23,
+          "eligible": true
+        },
+        {
+          "slot": 24,
+          "eligible": true
+        },
+        {
+          "slot": 25,
+          "eligible": true
+        },
+        {
+          "slot": 26,
+          "eligible": true
+        },
+        {
+          "slot": 27,
+          "eligible": true
+        },
+        {
+          "slot": 28,
+          "eligible": true
+        },
+        {
+          "slot": 29,
+          "eligible": true
+        },
+        {
+          "slot": 30,
+          "eligible": true
+        },
+        {
+          "slot": 31,
+          "eligible": true
+        },
+        {
+          "slot": 32,
+          "eligible": true
+        },
+        {
+          "slot": 33,
+          "eligible": true
+        },
+        {
+          "slot": 34,
+          "eligible": true
+        },
+        {
+          "slot": 35,
+          "eligible": true
+        },
+        {
+          "slot": 36,
+          "eligible": true
+        },
+        {
+          "slot": 37,
+          "eligible": true
+        },
+        {
+          "slot": 38,
+          "eligible": true
+        },
+        {
+          "slot": 39,
+          "eligible": true
+        },
+        {
+          "slot": 40,
+          "eligible": true
+        },
+        {
+          "slot": 41,
+          "eligible": true
+        },
+        {
+          "slot": 42,
+          "eligible": true
+        },
+        {
+          "slot": 43,
+          "eligible": true
+        },
+        {
+          "slot": 44,
+          "eligible": true
+        },
+        {
+          "slot": 45,
+          "eligible": true
+        },
+        {
+          "slot": 46,
+          "eligible": true
+        },
+        {
+          "slot": 47,
+          "eligible": true
+        },
+        {
+          "slot": 48,
+          "eligible": true
+        },
+        {
+          "slot": 49,
+          "eligible": true
+        },
+        {
+          "slot": 50,
+          "eligible": true
+        },
+        {
+          "slot": 51,
+          "eligible": true
+        },
+        {
+          "slot": 52,
+          "eligible": true
+        },
+        {
+          "slot": 53,
+          "eligible": true
+        },
+        {
+          "slot": 54,
+          "eligible": true
+        },
+        {
+          "slot": 55,
+          "eligible": true
+        },
+        {
+          "slot": 56,
+          "eligible": true
+        },
+        {
+          "slot": 57,
+          "eligible": true
+        },
+        {
+          "slot": 58,
+          "eligible": true
+        },
+        {
+          "slot": 59,
+          "eligible": true
+        },
+        {
+          "slot": 60,
+          "eligible": true
+        },
+        {
+          "slot": 61,
+          "eligible": false
+        }
+      ]
+    },
+    {
+      "committed_height": 59,
+      "challenge": "71abf62a5cf23d86be48f9e51467c7c9b508d23d55dc98d27218533be51fe94d",
+      "operation": "8a010c1a4d555401582001010101010101010101010101010101010101010101010101010101010101015820020202020202020202020202020202020202020202020202020202020202020258200303030303030303030303030303030303030303030303030303030303030303183b183b825820fcc11b7ac6bf980eb71ae3d25d674e3bb51f11583d671d5330a3e11547ef68400181582071abf62a5cf23d86be48f9e51467c7c9b508d23d55dc98d27218533be51fe94d",
+      "record": "860158200303030303030303030303030303030303030303030303030303030303030303015821020217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed183b5820b0302571aa3934a67456ffcd873cf291b53687f9dca30c67053747db851c1420",
+      "eligibility": [
+        {
+          "slot": 58,
+          "eligible": false
+        },
+        {
+          "slot": 59,
+          "eligible": false
+        },
+        {
+          "slot": 60,
+          "eligible": true
+        },
+        {
+          "slot": 61,
+          "eligible": true
+        },
+        {
+          "slot": 62,
+          "eligible": true
+        },
+        {
+          "slot": 63,
+          "eligible": true
+        },
+        {
+          "slot": 64,
+          "eligible": true
+        },
+        {
+          "slot": 65,
+          "eligible": true
+        },
+        {
+          "slot": 66,
+          "eligible": true
+        },
+        {
+          "slot": 67,
+          "eligible": true
+        },
+        {
+          "slot": 68,
+          "eligible": true
+        },
+        {
+          "slot": 69,
+          "eligible": true
+        },
+        {
+          "slot": 70,
+          "eligible": true
+        },
+        {
+          "slot": 71,
+          "eligible": true
+        },
+        {
+          "slot": 72,
+          "eligible": true
+        },
+        {
+          "slot": 73,
+          "eligible": true
+        },
+        {
+          "slot": 74,
+          "eligible": true
+        },
+        {
+          "slot": 75,
+          "eligible": true
+        },
+        {
+          "slot": 76,
+          "eligible": true
+        },
+        {
+          "slot": 77,
+          "eligible": true
+        },
+        {
+          "slot": 78,
+          "eligible": true
+        },
+        {
+          "slot": 79,
+          "eligible": true
+        },
+        {
+          "slot": 80,
+          "eligible": true
+        },
+        {
+          "slot": 81,
+          "eligible": true
+        },
+        {
+          "slot": 82,
+          "eligible": true
+        },
+        {
+          "slot": 83,
+          "eligible": true
+        },
+        {
+          "slot": 84,
+          "eligible": true
+        },
+        {
+          "slot": 85,
+          "eligible": true
+        },
+        {
+          "slot": 86,
+          "eligible": true
+        },
+        {
+          "slot": 87,
+          "eligible": true
+        },
+        {
+          "slot": 88,
+          "eligible": true
+        },
+        {
+          "slot": 89,
+          "eligible": true
+        },
+        {
+          "slot": 90,
+          "eligible": true
+        },
+        {
+          "slot": 91,
+          "eligible": true
+        },
+        {
+          "slot": 92,
+          "eligible": true
+        },
+        {
+          "slot": 93,
+          "eligible": true
+        },
+        {
+          "slot": 94,
+          "eligible": true
+        },
+        {
+          "slot": 95,
+          "eligible": true
+        },
+        {
+          "slot": 96,
+          "eligible": true
+        },
+        {
+          "slot": 97,
+          "eligible": true
+        },
+        {
+          "slot": 98,
+          "eligible": true
+        },
+        {
+          "slot": 99,
+          "eligible": true
+        },
+        {
+          "slot": 100,
+          "eligible": true
+        },
+        {
+          "slot": 101,
+          "eligible": true
+        },
+        {
+          "slot": 102,
+          "eligible": true
+        },
+        {
+          "slot": 103,
+          "eligible": true
+        },
+        {
+          "slot": 104,
+          "eligible": true
+        },
+        {
+          "slot": 105,
+          "eligible": true
+        },
+        {
+          "slot": 106,
+          "eligible": true
+        },
+        {
+          "slot": 107,
+          "eligible": true
+        },
+        {
+          "slot": 108,
+          "eligible": true
+        },
+        {
+          "slot": 109,
+          "eligible": true
+        },
+        {
+          "slot": 110,
+          "eligible": true
+        },
+        {
+          "slot": 111,
+          "eligible": true
+        },
+        {
+          "slot": 112,
+          "eligible": true
+        },
+        {
+          "slot": 113,
+          "eligible": true
+        },
+        {
+          "slot": 114,
+          "eligible": true
+        },
+        {
+          "slot": 115,
+          "eligible": true
+        },
+        {
+          "slot": 116,
+          "eligible": true
+        },
+        {
+          "slot": 117,
+          "eligible": true
+        },
+        {
+          "slot": 118,
+          "eligible": true
+        },
+        {
+          "slot": 119,
+          "eligible": true
+        },
+        {
+          "slot": 120,
+          "eligible": false
+        }
+      ]
+    },
+    {
+      "committed_height": 60,
+      "challenge": "7f5259dc37cc26c49aabc840d63b91e4320158668fa8794b06cd9043dfc033bd",
+      "operation": "8a010c1a4d555401582001010101010101010101010101010101010101010101010101010101010101015820020202020202020202020202020202020202020202020202020202020202020258200303030303030303030303030303030303030303030303030303030303030303183c183c825820fae42d67ad05e0a058c4f4404a21b2e69ff8073db01c43d9fd8d589c17f34c3c018158207f5259dc37cc26c49aabc840d63b91e4320158668fa8794b06cd9043dfc033bd",
+      "record": "860158200303030303030303030303030303030303030303030303030303030303030303015821020217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed183c5820fc10806a3bcd186a75a89f062eb9fd36ddd7e44b9eda166dd57d9c3d03c1bb49",
+      "eligibility": [
+        {
+          "slot": 59,
+          "eligible": false
+        },
+        {
+          "slot": 60,
+          "eligible": false
+        },
+        {
+          "slot": 61,
+          "eligible": true
+        },
+        {
+          "slot": 62,
+          "eligible": true
+        },
+        {
+          "slot": 63,
+          "eligible": true
+        },
+        {
+          "slot": 64,
+          "eligible": true
+        },
+        {
+          "slot": 65,
+          "eligible": true
+        },
+        {
+          "slot": 66,
+          "eligible": true
+        },
+        {
+          "slot": 67,
+          "eligible": true
+        },
+        {
+          "slot": 68,
+          "eligible": true
+        },
+        {
+          "slot": 69,
+          "eligible": true
+        },
+        {
+          "slot": 70,
+          "eligible": true
+        },
+        {
+          "slot": 71,
+          "eligible": true
+        },
+        {
+          "slot": 72,
+          "eligible": true
+        },
+        {
+          "slot": 73,
+          "eligible": true
+        },
+        {
+          "slot": 74,
+          "eligible": true
+        },
+        {
+          "slot": 75,
+          "eligible": true
+        },
+        {
+          "slot": 76,
+          "eligible": true
+        },
+        {
+          "slot": 77,
+          "eligible": true
+        },
+        {
+          "slot": 78,
+          "eligible": true
+        },
+        {
+          "slot": 79,
+          "eligible": true
+        },
+        {
+          "slot": 80,
+          "eligible": true
+        },
+        {
+          "slot": 81,
+          "eligible": true
+        },
+        {
+          "slot": 82,
+          "eligible": true
+        },
+        {
+          "slot": 83,
+          "eligible": true
+        },
+        {
+          "slot": 84,
+          "eligible": true
+        },
+        {
+          "slot": 85,
+          "eligible": true
+        },
+        {
+          "slot": 86,
+          "eligible": true
+        },
+        {
+          "slot": 87,
+          "eligible": true
+        },
+        {
+          "slot": 88,
+          "eligible": true
+        },
+        {
+          "slot": 89,
+          "eligible": true
+        },
+        {
+          "slot": 90,
+          "eligible": true
+        },
+        {
+          "slot": 91,
+          "eligible": true
+        },
+        {
+          "slot": 92,
+          "eligible": true
+        },
+        {
+          "slot": 93,
+          "eligible": true
+        },
+        {
+          "slot": 94,
+          "eligible": true
+        },
+        {
+          "slot": 95,
+          "eligible": true
+        },
+        {
+          "slot": 96,
+          "eligible": true
+        },
+        {
+          "slot": 97,
+          "eligible": true
+        },
+        {
+          "slot": 98,
+          "eligible": true
+        },
+        {
+          "slot": 99,
+          "eligible": true
+        },
+        {
+          "slot": 100,
+          "eligible": true
+        },
+        {
+          "slot": 101,
+          "eligible": true
+        },
+        {
+          "slot": 102,
+          "eligible": true
+        },
+        {
+          "slot": 103,
+          "eligible": true
+        },
+        {
+          "slot": 104,
+          "eligible": true
+        },
+        {
+          "slot": 105,
+          "eligible": true
+        },
+        {
+          "slot": 106,
+          "eligible": true
+        },
+        {
+          "slot": 107,
+          "eligible": true
+        },
+        {
+          "slot": 108,
+          "eligible": true
+        },
+        {
+          "slot": 109,
+          "eligible": true
+        },
+        {
+          "slot": 110,
+          "eligible": true
+        },
+        {
+          "slot": 111,
+          "eligible": true
+        },
+        {
+          "slot": 112,
+          "eligible": true
+        },
+        {
+          "slot": 113,
+          "eligible": true
+        },
+        {
+          "slot": 114,
+          "eligible": true
+        },
+        {
+          "slot": 115,
+          "eligible": true
+        },
+        {
+          "slot": 116,
+          "eligible": true
+        },
+        {
+          "slot": 117,
+          "eligible": true
+        },
+        {
+          "slot": 118,
+          "eligible": true
+        },
+        {
+          "slot": 119,
+          "eligible": true
+        },
+        {
+          "slot": 120,
+          "eligible": true
+        },
+        {
+          "slot": 121,
+          "eligible": false
+        }
+      ]
+    },
+    {
+      "committed_height": 120,
+      "challenge": "96f140134b0cbe0d9efcfcf1fd6f01f1ee1d6dca1deef565ae398273eb07d0f4",
+      "operation": "8a010c1a4d55540158200101010101010101010101010101010101010101010101010101010101010101582002020202020202020202020202020202020202020202020202020202020202025820030303030303030303030303030303030303030303030303030303030303030318781878825820702d826b95a16a9a80547a61acc3a482f87992915a6bab5b57a846f60f0230b10181582096f140134b0cbe0d9efcfcf1fd6f01f1ee1d6dca1deef565ae398273eb07d0f4",
+      "record": "860158200303030303030303030303030303030303030303030303030303030303030303015821020217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed18785820ab82238535158019cf93655c90492a9fc2a254fb701c73d48b0682fb96226684",
+      "eligibility": [
+        {
+          "slot": 119,
+          "eligible": false
+        },
+        {
+          "slot": 120,
+          "eligible": false
+        },
+        {
+          "slot": 121,
+          "eligible": true
+        },
+        {
+          "slot": 122,
+          "eligible": true
+        },
+        {
+          "slot": 123,
+          "eligible": true
+        },
+        {
+          "slot": 124,
+          "eligible": true
+        },
+        {
+          "slot": 125,
+          "eligible": true
+        },
+        {
+          "slot": 126,
+          "eligible": true
+        },
+        {
+          "slot": 127,
+          "eligible": true
+        },
+        {
+          "slot": 128,
+          "eligible": true
+        },
+        {
+          "slot": 129,
+          "eligible": true
+        },
+        {
+          "slot": 130,
+          "eligible": true
+        },
+        {
+          "slot": 131,
+          "eligible": true
+        },
+        {
+          "slot": 132,
+          "eligible": true
+        },
+        {
+          "slot": 133,
+          "eligible": true
+        },
+        {
+          "slot": 134,
+          "eligible": true
+        },
+        {
+          "slot": 135,
+          "eligible": true
+        },
+        {
+          "slot": 136,
+          "eligible": true
+        },
+        {
+          "slot": 137,
+          "eligible": true
+        },
+        {
+          "slot": 138,
+          "eligible": true
+        },
+        {
+          "slot": 139,
+          "eligible": true
+        },
+        {
+          "slot": 140,
+          "eligible": true
+        },
+        {
+          "slot": 141,
+          "eligible": true
+        },
+        {
+          "slot": 142,
+          "eligible": true
+        },
+        {
+          "slot": 143,
+          "eligible": true
+        },
+        {
+          "slot": 144,
+          "eligible": true
+        },
+        {
+          "slot": 145,
+          "eligible": true
+        },
+        {
+          "slot": 146,
+          "eligible": true
+        },
+        {
+          "slot": 147,
+          "eligible": true
+        },
+        {
+          "slot": 148,
+          "eligible": true
+        },
+        {
+          "slot": 149,
+          "eligible": true
+        },
+        {
+          "slot": 150,
+          "eligible": true
+        },
+        {
+          "slot": 151,
+          "eligible": true
+        },
+        {
+          "slot": 152,
+          "eligible": true
+        },
+        {
+          "slot": 153,
+          "eligible": true
+        },
+        {
+          "slot": 154,
+          "eligible": true
+        },
+        {
+          "slot": 155,
+          "eligible": true
+        },
+        {
+          "slot": 156,
+          "eligible": true
+        },
+        {
+          "slot": 157,
+          "eligible": true
+        },
+        {
+          "slot": 158,
+          "eligible": true
+        },
+        {
+          "slot": 159,
+          "eligible": true
+        },
+        {
+          "slot": 160,
+          "eligible": true
+        },
+        {
+          "slot": 161,
+          "eligible": true
+        },
+        {
+          "slot": 162,
+          "eligible": true
+        },
+        {
+          "slot": 163,
+          "eligible": true
+        },
+        {
+          "slot": 164,
+          "eligible": true
+        },
+        {
+          "slot": 165,
+          "eligible": true
+        },
+        {
+          "slot": 166,
+          "eligible": true
+        },
+        {
+          "slot": 167,
+          "eligible": true
+        },
+        {
+          "slot": 168,
+          "eligible": true
+        },
+        {
+          "slot": 169,
+          "eligible": true
+        },
+        {
+          "slot": 170,
+          "eligible": true
+        },
+        {
+          "slot": 171,
+          "eligible": true
+        },
+        {
+          "slot": 172,
+          "eligible": true
+        },
+        {
+          "slot": 173,
+          "eligible": true
+        },
+        {
+          "slot": 174,
+          "eligible": true
+        },
+        {
+          "slot": 175,
+          "eligible": true
+        },
+        {
+          "slot": 176,
+          "eligible": true
+        },
+        {
+          "slot": 177,
+          "eligible": true
+        },
+        {
+          "slot": 178,
+          "eligible": true
+        },
+        {
+          "slot": 179,
+          "eligible": true
+        },
+        {
+          "slot": 180,
+          "eligible": true
+        },
+        {
+          "slot": 181,
+          "eligible": false
+        }
+      ]
+    }
+  ],
+  "continuous_period_credits": [
+    60,
+    60,
+    60
+  ],
+  "physical_evidence_fixture_only": true,
+  "sixty_of_sixty_achievable": true,
+  "period_mapping_unchanged": true
+}

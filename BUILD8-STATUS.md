@@ -10,9 +10,13 @@ The accepted Linux projection has been reconstructed separately and verified aga
 
 The catalogs share 2,231 byte-identical files, have eight differing common files, 350 Desktop-only files and 30 Linux-only files. They are distinct platform projections. No single coherent combined source or final candidate is asserted. Their identities are recorded in [source provenance](docs/build8/source-provenance.json); [the difference review](docs/build8/platform-differences.md) accounts for all eight relationships. A local publication candidate preserves the two projections in separate directories rather than merging their security and replay changes into an untested combination.
 
-The source payloads have not been added by this documentation change. Public source synchronization remains held for the exact machine-identity disclosure decision and verified Vercel deployment rules. The local candidate is separate from the exact frozen snapshots; its explicit omissions and comment-only path changes require their own reproducible manifest. Existing V1 source and history are preserved.
+The local integration now contains the approved source projection under `build8/linux/` and `build8/desktop/`: **4,769 files, 142,296,715 bytes** (Linux 2,230; Desktop 2,539). Its sorted SHA256/TAB/candidate-relative-path/LF roster is `b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258`; the full byte inventory is [source-roster.json](docs/build8/source-roster.json). Git blobs preserve the exact approved bytes without host newline/filter conversion. All eight platform variants remain separate; source security guards and machine identifiers remain unchanged.
 
-The local paired projection contains 4,763 files (2,225 Linux and 2,538 Desktop), 141,023,286 bytes. All candidate paths, lengths and hashes were rechecked; 88 license/notice files are retained. The [projection review](docs/build8/publication-projection.json) records 95 omissions and the comment-only changes. The [reproducibility review](docs/build8/reproducibility-review.md) traces required test inputs: the withheld synthetic chain, two documents already absent from frozen Linux, and two Desktop helpers absent from Linux optional trading-service tests. A nested unused support copy has a dangling include but no traced compile edge. A six-path exact-input restoration overlay is prepared separately and requires public classification and fresh qualification. Consequently this projection is not yet a build-ready source commit. Restore only classified public test inputs, or use owner-reviewed replacements with explicit new identities, before claiming reproducibility.
+The restored chain and supplementary helpers/documents are **TEST inputs only: synthetic, non-Genesis, no custody or physical-profile data; generator not located; fresh qualification required**. The restored package is not claimed to pass. Architect approved retention of the original machine identifiers and exact synthetic inputs on 2026-10-16. Their public disclosure is intentional; this does not make those original-host checks portable or qualify another installation.
+
+The [reproducibility review](docs/build8/reproducibility-review.md) records the two restored chain copies and four exact Desktop supplements to Linux. Those supplements change Linux's publication identity relative to its frozen source; no platform code variants were merged. The 93 machine-path-bearing historical/operator records remain excluded. Both Chrony provenance comments use a repository-relative documentation path, with no operational configuration change. Existing V1 source and history remain preserved.
+
+Source publication is still held for the conditional Vercel decision: automatic Preview deployment is authorized only after confirmation that this exact branch/PR is excluded from production/custom-environment tracking. No public branch or PR is asserted by this local status.
 
 ## Recorded qualification evidence
 
@@ -32,14 +36,12 @@ The five no-key checks cover valid completion, nonzero exit, timeout, image mism
 
 In the later live attempt, the owner reports that the wallet refused with `Windows wallet protection failed` and exited naturally with code 1. The Node then closed through its supported shutdown route with its last generated height at 49. No LAN connection or payment admission occurred. The owner's terminal evidence remains the authority for detailed closure; this status does not turn cleanup into payment/restart success.
 
-## Conditions before source publication
+## Publication and qualification boundaries
 
-- Preserve the eight platform source differences or obtain a reviewed coherent integration; do not silently select one version.
-- Exclude generated chain state, private logs, keys, vaults, credentials, machine-private records and generated build caches. Retain applicable source licenses, notices and public test vectors.
-- Resolve the public classification of the existing machine-bound Windows installation and fixed TEST-control literals, including the additional Desktop principal, custody-path prefix and installed-file identity found in the complete snapshot. Preserve security guards; do not redact or generalize the checks without review and a new source identity.
-- Confirm the connected Vercel project's production tracking and the proposed branch/PR's Preview or custom-environment impact before publication. Explicit authorization must cover any automatic Preview deployment; preserve existing root layout and access protection.
-
-The existing root license declaration is unchanged. No new license terms are introduced by this documentation change.
+- Architect approved the unchanged machine identifiers and exact synthetic test-input scope. Private operator records remain excluded; existing license declarations and third-party notices are retained.
+- Preserve the two platform projections and exact roster. Any later portability/security cleanup requires its own review, identity and qualification.
+- The restored package requires fresh compilation and tests. Existing shipping/TEST/Linux results below belong to their recorded source projections, not this restored publication package.
+- Before push or draft PR, confirm the project's production branch and absence of matching production/custom tracking rules for `integration/build8-source-20261016` and its PR. Automatic Preview deployment is conditionally authorized; no production promotion, main merge, release/tag, alias or protection/settings change is authorized.
 
 ## Deployment evidence
 

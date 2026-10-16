@@ -1,0 +1,524 @@
+StateRoot amendment: ARCHITECT-STATE-PROOF-MODEL-V2.txt and
+STATE-ROOT-AND-PROOF-V2.md are authoritative. V2 replaces the flat V1 state root
+before Genesis; keys, typed record encodings, and WorkHeader widths are unchanged.
+
+# Build8 decision packet V1 — technical annex
+
+Mining follow-up: ARCHITECT-GENESIS-POW-RESOLUTIONS-V1.txt resolves Genesis,
+timestamp/epoch and retarget details. WORK-AND-BLOCK-CODECS-V1.md records the
+implemented byte layouts and hash domains. ARCHITECT-FINALIZED-ANCHOR-AMENDMENT-V1.txt supersedes the earlier history link.
+previous_finalized_anchor identifies the finalized parent independently of round
+and signer subset; DecisionID remains round-specific evidence only. The PoW qualification
+manifest is qualification/GENESIS-POW-VECTORS.json; it does not certify complete
+node state execution or deployment readiness.
+
+Status: APPROVED AS AMENDED by ARCHITECT-AMENDMENTS-V1.txt (SHA-256
+
+198823d669cb2c1ef1fc5b4d8654861f68a12050eeeeb6637a61325e9dbed281).
+
+The source amendment controls any conflict. No routine reapproval is requested.
+
+ARCHITECT-BLOCKER-RESOLUTIONS-V1.txt resolves all three policy blockers. Its
+SHA-256 is 804500f20c008a31124d4123ab67ff8d7bec741f115086a3ae6ca815e5752f5b.
+It controls conflicts with earlier prose. No fingerprint or Genesis has been minted. This annex records accepted policy, not completed
+
+implementation/physical qualification.
+
+Wallet creation, lock/unlock and clean restore passed. Public report verified,
+
+AddressID/account hash derivations independently checked, temporary profile absent.
+
+Owner public key:
+
+`c18242e9bc272c9f9bb28d227852eaf178b451c5ddf13f898fd9aeaba09c6013`
+
+AddressID:
+
+`613565e219ac1f2e01e188ac3d6196e5237f5c3fb44a9c020fc4427708ec3a29`
+
+Account identity:
+
+`6d440b409bffa1504ff7fd84ac59f4c84e3ac19033a0778b5783cfb6ec9c5f5a`
+
+## 1. Quorum and the one-physical-node launch
+
+Approved: **quorum-gated PoW from Genesis on every transport**, with Node A the
+
+sole initial physical voter only AFTER attestation qualification. Vultr validates,
+
+relays, proposes PoW candidates and coordinates six miners, but has zero voting
+
+weight and cannot bond. The required launch classification is BOOTSTRAP_CENTRALIZED. Genesis physical voters receive approved provisional weight 1 until the first
+certified ContinuityPeriod boundary. It is then replaced by the direct formula
+(1007 for the first fully qualified unbonded period), never added to it.
+
+There is no zero-voter or cloud-weight fallback.
+
+Quorum is STRICTLY greater than two thirds of the entire committed eligible
+
+weight: `3 * signed_weight > 2 * total_weight`, with unique signers. Offline
+
+members stay in the denominator. Local discovery, a partition, missed heartbeats
+
+or switching to LoRa never shrink it. Membership/weight changes take effect only
+
+after certification by the previous committed set. New members must prove
+
+possession and accept the preceding checkpoint. No committee reshuffle on timeout.
+
+Use the established propose/prevote/precommit and durable-lock state machine
+
+described by CometBFT/Tendermint; a bag of signatures is insufficient. Persist
+
+votes and locks before signing. A valid PoW block is necessary but not sufficient
+
+for settlement: the commit certificate is also required. Conflicting certified
+
+blocks trigger an integrity halt, never an automatic longest-chain override.
+
+Uncertified candidate changes may be discarded; certified history cannot reorg.
+
+State-machine compatibility, crash/restart and partition tests precede Genesis.
+
+**Approved consequence:** initially Node A controls all Continuity
+
+weight, has no Byzantine redundancy, and its loss halts new settlement, including
+
+Vultr's miners. That is a real, explicitly centralized bootstrap, not a two-voter
+
+quorum. No cloud weight is manufactured to conceal it. With two physical voters
+
+of equal weight both are required; with three equal voters all three are required.
+
+Four similarly weighted physical nodes permit one absent/faulty node under the
+
+strict threshold. Node count alone is insufficient: the actual weight split matters.
+
+Before declaring fault-tolerant Survival acceptance, require at least four
+
+qualified physical voters and demonstrate that removal of each tested voter leaves
+
+more than two thirds. This may require more laptops than the first two-laptop
+
+LoRa link test; three relay radios are not three physical voting nodes. Reputation
+
+concentration can prevent this gate even with four nodes. Never rescale or cap
+
+reputation to manufacture a PASS. Prefer delaying that acceptance over falsifying it.
+
+Mining authorization binds the certified parent and next height. A fresh quorum
+
+liveness exchange is requested every 120 seconds; after 360 seconds without one,
+
+coordinators stop assigning work and miners enter WAITING_QUORUM while RUN remains
+
+set. This is a bounded failure detector, not instantaneous knowledge of failure.
+
+It never authorizes settlement; only commit votes do. Already-issued work may
+
+finish during detection. Timeouts back off with consensus rounds and do not alter
+
+validity, weight or locks. Same behavior over Internet and radio.
+
+The BOOTSTRAP_CENTRALIZED classification cannot end until at least four
+
+independently qualified physical TPM voters exist and every tested individual
+
+voter loss preserves strictly greater than 2/3 of the unchanged total committed
+
+weight. Until then do not claim decentralized fault tolerance, Continuity-survival
+
+qualification or single-node-loss tolerance.
+
+## 2. Direct, uncapped reputation and distinct clocks
+
+MiningEpoch is a 60-second protocol time interval. ContinuityPeriod is exactly
+
+60 certified canonical blocks. These have different types and wire fields; one
+
+must never substitute for the other. RetargetInterval is 60 canonical blocks.
+
+A stalled chain does not age reputation/bonds merely because mining time passes.
+
+For the node's persistent lineage:
+
+P = total qualified ContinuityPeriods;
+
+A = admission age in ContinuityPeriods;
+
+S = current consecutive qualified ContinuityPeriod streak;
+
+H = total qualified ContinuityPeriods on the current attested hardware generation;
+
+Q = sum of active qualifying bond lots' locked_atoms * (1 + bond age in
+
+ContinuityPeriods). All counters derive from certified state, never self-reported
+
+uptime. S resets on a missed qualification; a top-up is a new bond lot.
+
+```
+
+GrossReputation = 1000*P + A + 4*S + 2*H + floor(Q / 10^10)
+
+VotingReputation = max(0, GrossReputation - ObjectivePenalties)
+
+```
+
+This REPLACES the previous additive accumulator. Never add the computed score
+
+to a previous score. No cap, saturation, normalization, logarithmic compression
+
+or undocumented +1. Only qualifying canonical physical-TPM lineages contribute.
+Software TPMs and vTPMs alone have zero weight and no bond eligibility regardless
+of numerical counters. Under Path B, remote/VM/cloud node execution backed by an
+otherwise qualifying physical TPM is not itself an exclusion. Registry uniqueness,
+authentication, accepted profiles and existing monetary/signing rules still apply.
+
+Qualification uses rolling canonical-height freshness (Forge amendment in
+PARTICIPATION-FRESHNESS-BOUNDARY-DECISION-V1.md). A refresh committed at H binds
+FinalizedAnchor(H-1), is verified against parent physical registry, and applies
+to slots H+1..H+60 inclusive. GenesisPhysicalAttestationV1 establishes slots
+1..60 with a Genesis-specific supervised challenge, without GenesisBlockHash.
+Only parent-state freshness may authorize a ParticipationAck; no same-block
+self-authorization. The fixed periods and 54 distinct heights out of 60 remain
+unchanged. Attestation timing never resets or shifts a ContinuityPeriod.
+
+The closing certified result installs next-period weights; count a unique proof
+
+once. Frozen committed membership/weight roots govern quorum until that valid
+
+transition. No local timeout removes membership or alters the current denominator.
+
+Use checked integer arithmetic and fail closed on overflow. Qualification's
+
+reference model checks u64 fields, maximum 64 u64 bond lots and u256 intermediate
+
+operations. At the conservative u64 counter maxima, the tested aggregate quorum
+
+comparison uses 113 bits, below 256. Invalid fields and overflows are rejected.
+
+The formula controls. Total reputation may decrease when S resets, an unbond
+request removes its lot from Q, H resets on authorized physical migration, or
+an already-defined numeric penalty applies. Objective equivocation adds no new
+numeric D deduction; it burns applicable lots and revokes lineage eligibility.
+P and lineage history remain. No downtime burn, extra downtime penalty, high-water
+clamp or ghost bond reputation is introduced. The provisional Genesis unit is
+available only to physically qualified Genesis registry members; later joiners
+start with zero actual history and receive no provisional unit.
+
+At every committed state report largest share, top-N cumulative shares, each
+single-voter-loss result against the unchanged denominator, and current Survival
+redundancy. Exactly one third fails single-loss tolerance. Accepted concentration
+does not invalidate otherwise valid live consensus; report CONTINUITY_LIVE and
+SURVIVAL_REDUNDANCY_NOT_MET when appropriate. Later concentration never re-enables
+bootstrap recovery or reverts decentralized activation.
+
+## 3. Physical TPM eligibility and trust model
+
+Approved production admission requires authenticated qualifying physical TPM evidence,
+fresh TPM2_MakeCredential/TPM2_ActivateCredential proof of the required EK/AK
+relationship, accepted platform-profile checks, and canonical enforcement of one
+active voting/reputation lineage per qualifying physical TPM. Software TPMs and
+vTPMs alone do not qualify. The independently approved roots, profiles and other
+existing admission requirements remain binding; this amendment supplies no new
+committee or permanent discretionary admission authority.
+
+Validate exact EK credentials and AK public attributes/Name. Bind the approved
+network, Genesis and rule context and fresh challenge. Reject substituted keys,
+stale or replayed responses and cross-context reuse. A claimant-created success
+transcript or a witness signature alone is not actual activation evidence under
+an independently specified verifier trust model. Keep activation secrets, TPM
+authorization values, seeds and private material outside public evidence and logs.
+Retain exact bounded authenticated public evidence for deterministic replay.
+
+Enforce physical lineage uniqueness across active membership, pending admissions,
+supported EK aliases, RSA/ECC identities, certificate reissuance, AK changes,
+rotation and recovery. Qualified platform-specific authenticated relationships
+must establish equivalence; an applicant assertion or a single EK hash does not
+establish one physical TPM. A class without demonstrable uniqueness is unqualified.
+Authorized rotation/recovery changes the existing lineage under its existing
+authority and possession rules and preserves applicable bonds, age, reputation
+and penalty history. A changed AK requires fresh activation. Bind the exact
+consensus public-key tuple in the typed statement and preserve hybrid
+BOTH_REQUIRED signing. An AK is not the consensus signing key; quoting a public-key
+hash alone does not prove that key resides in the TPM.
+
+Public EK certificates, public key areas, CRLs and nonsecret activation records
+may be distributed as authenticated admission evidence to the extent required
+for independent verification and replay. This material identifies hardware; it
+is not anonymous. Private material and activation secrets remain excluded.
+
+Canonical participation freshness follows rolling height windows, independently
+of ContinuityPeriod boundaries. A refresh committed in H binds the finalized
+parent anchor H-1 and becomes eligible at H+1 through H+60. Reconnect challenges
+bind NetworkID, GenesisID, NodeID, the peer challenge and authenticated channel;
+reconnect evidence alone does not replace the canonical rolling record or award
+participation credit. There is no mandatory period-checkpoint anchor. TPM key attributes,
+
+algorithm, certified Name and quote signature must agree. Unknown/revoked roots,
+
+replayed nonces, mismatched logs, missing physical admission or failed policy mean
+
+NO admission/NO new credit. A local attestation failure does not let a partition
+
+rewrite the committed quorum denominator. Revocation is an on-chain quorum action.
+
+**Approved trust limits (Path B, direct Architect decision 2026-10-05):**
+Remote node execution, VM execution backed by otherwise qualifying physical TPM
+evidence, and TPM request forwarding are accepted limitations. Do not reject an
+otherwise qualifying lineage solely for those execution locations or forwarding.
+Admission does not prove that the whole node executes on the TPM's physical host,
+and PCR/profile evidence describes the attested TPM platform, not a remote VM.
+Canonical registry/consensus rules must prevent additional voting lineages or
+duplicate reputation independently of TPM throughput, network latency and process
+count. No relay-specific penalties, artificial timing tests, DRTM, TEE or PUF
+requirement is introduced. This supersedes the prior execution-locality condition
+of hard stop E; qualifying hardware authenticity, lineage uniqueness, fresh
+activation, accepted profiles and other admission checks remain mandatory.
+A failed linkage rejects the attempted transition without granting a new identity,
+resetting history, transferring bonds or requiring destruction of existing hardware.
+Already authorized recovery remains available where its rules permit it. TPM
+replacement or endorsement-identity change requires its specified admission or
+recovery treatment; a changed key alone does not establish fresh hardware.
+
+The authorization is DESIGN, not implementation or physical qualification. Exact
+changes and outstanding inputs are tracked in
+`qualification/candidate-3/CODEX-PATH-B-ADMISSION-DESIGN-20261005.md`.
+
+Node A is the physical Linux server laptop formerly administered as Node2,
+accessed through the mutiny-node2 SSH alias. It receives entirely fresh Build8
+node, authentication, TPM voting and state identities. No Build7 identity or
+configuration authority may be reused. The Architect has explicitly confirmed
+this physical machine as the supervised initial-voter candidate; all technical
+qualification checks remain mandatory.
+
+The Dell Precision 3561 is only the development, Desktop V8, wallet and admin
+workstation. Its TPM probes are excluded from all Node A admission and Genesis
+inputs. No substitute voter is authorized if Linux Node A fails qualification;
+stop for Forge in that event. Vultr is Node B, with zero Continuity weight and
+no bond eligibility. Each actual node coordinates six miners.
+
+## 4. Bonds, penalties and hardware lineage
+
+Optional physical-only Continuity Bonds: minimum 100 MUT per lot, maximum 64
+
+outstanding lots per node, minimum lock 4,320 ContinuityPeriods, followed by
+
+720 ContinuityPeriods' unbond notice. Nominally 180 and 30 days at the target
+
+rate; actual certification controls age. No interest and no downtime slashing.
+
+A committed unbond request at U removes the lot from Q in state U, effective for
+voting from U+1. Principal remains locked until at least U+43,200 canonical heights.
+Only lots qualifying at offense E are slashable for that offense. Timely evidence
+(E < H and H-E <=43,200) is settled before any same-height withdrawal. This supersedes
+the earlier notice-period Q contribution rule. Exit or rotation cannot bypass the
+evidence safety window. See ARCHITECT-EQUIVOCATION-SETTLEMENT-AMENDMENT-V1.md.
+No live Bitcoin dependency.
+
+Proven contradictory votes at the same height/round/step burn the slashable bond,
+
+revoke eligibility, preserve objective penalty/evidence history and tombstone the
+
+compromised generation. No allegation-based slash. An arithmetic zero today does
+
+not replace permanent revocation: future age growth must not resurrect eligibility.
+
+HardwareRotateV1 preserves the lineage NodeID, original admission, P, A, active
+
+bond amounts/lot ages and objective penalties. A legitimate change of physical
+
+TPM resets H=0 and installs a freshly attested generation/voting key atomically;
+
+old generations cannot vote or continue earning reputation. Preserve S unless an
+
+actual missed qualification breaks its streak; hardware replacement alone is not
+
+permission to fabricate qualifying history. Same-TPM verified key rotation may
+
+retain H. Unauthorized replacement inherits none of the old lineage or bonds.
+
+Require the committed existing node/owner recovery authority and new physical
+
+attestation. Owner recovery authorization permits loss of the old TPM key, but
+
+DOES NOT itself bypass old-set certification. With surviving old-set quorum the
+
+transition is ordinary consensus. Without it, only the explicitly authorized bootstrap recovery ceremony below
+may replace permanently lost hardware while bootstrap recovery remains enabled.
+After decentralized activation, insufficient legitimate old-set authority halts
+the chain indefinitely; no owner, cloud or inactivity override exists.
+
+Canonical lifecycle definitions and reserved issuance encoding are recorded in
+
+CANONICAL-BUILD8-SPEC-V1.md; the resolved bootstrap-only recovery exception is specified in
+BOOTSTRAP-RECOVERY-V1.md.
+
+## 5. Canonical Continuity Certificate
+
+Use RFC 8949 deterministic CBOR, fixed-position arrays, shortest definite integer
+
+and length encodings; no maps, floats, tags, indefinite lengths or unknown fields.
+
+Specify bounded 32-byte big-endian unsigned reputation values as byte strings.
+
+Re-encoding must reproduce exact input bytes. Hash SHA-256 with a distinct ASCII
+
+object-domain plus NUL and the canonical bytes; signatures sign the resulting
+
+32-byte digest using the declared established algorithm.
+
+Certificate V1 array, in order:
+
+`[version, NetworkID, GenesisID, ProtocolFingerprint, purpose, height, mining_epoch, continuity_period,
+
+round, step, previous_finalized_anchor, parent_block_hash, proposed_block_hash,
+
+state_root, membership_root, reputation_root, attestation_evidence_root,
+
+signer_entries]`.
+
+Each sorted unique signer entry is `[NodeID, key_version, signature]`; its weight
+
+is looked up in the preceding committed registry, never trusted from the message.
+
+Purpose separates prevote/precommit/work-liveness/admission so signatures cannot
+
+cross roles. TPM votes use P-256 ECDSA/SHA-256 with fixed 64-byte r||s, strict
+
+range checks and canonical low-s normalization. No threshold/aggregate crypto.
+
+Registry/policy changes and evidence are content-addressed canonical objects.
+
+Maximum 1,024 eligible voters, 256 KiB per complete certificate/evidence envelope;
+
+reject oversize or duplicate signer lists before expensive verification. Offline
+
+relays may fragment the SAME signed object but cannot alter its interpretation.
+
+Transport NetworkTag is first 16 bytes of SHA-256(domain-NUL || NetworkID ||
+
+GenesisID || ProtocolFingerprint); validators always check the full bindings too.
+
+Certificate IDs may differ with different valid signer subsets; block identity
+
+does not include the certificate's signer list and remains the same.
+
+## 6. Approved consensus/economic choices
+
+These choices are approved by the amendment, with its changes reflected below.
+
+| Topic | Approved V1 decision |
+
+|---|---|
+
+| Canonical objects | Deterministic CBOR restrictions above, SHA-256 object domains; Ed25519 wallet/Worker/network authentication; separate TPM P-256 voting keys. Full byte schemas and positive/negative vectors reviewed before Genesis. |
+
+| State | UTXO amounts in 10^-8 coin atoms; no floats; exact conservation, duplicate-input rejection, Ed25519 owner authorization. Deterministic authenticated state roots over sorted keys. |
+
+| PoW | SHA-256d over the domain-bound canonical work header, valid only with fresh licensed Worker attribution and certified-parent work authorization. No inherited Argon2 parameters. Both nodes may coordinate candidate work; Continuity certifies a valid proposal. |
+
+| Timing/difficulty | 60-second target; 60-second MiningEpoch; 60-block ContinuityPeriod and retarget, integer target adjustment clamped to 1/4..4 of prior target; median-past-11 timestamp rule (strictly greater than the median) plus, from Architect decision D3 (2026-10-03), a block timestamp that is not earlier than its parent's. [SUPERSEDED 2026-10-03 by Architect decision D3: there is no wall-clock hold on candidate or proposal admission; see the amendment note at the end of this file. Superseded text, preserved: "Future >2 hours held until locally admissible, never used to choose a competing certified chain."] Initial target calibrated from the real ESP32 reference benchmark before Genesis, with the exact number recorded in Genesis; no later reset to a new chain. |
+
+| Issuance | 1 coin per certified non-Genesis block, perpetual tail issuance, no halving, no premine, zero Genesis balances. Coinbase matures after 100 certified blocks. Intentionally uncapped supply: nominally 525,600 MUT per 365-day year, subject to actual production. |
+
+| Reward/fees | Coinbase reward and fees go to the licensed winning Worker's owner address, not an arbitrary coordinator. Minimum fee 1 atom per canonical signed transaction byte; no treasury cut. |
+
+| Treasury/Bitcoin | No treasury custody or multisig in V1; no live Bitcoin peg/oracle/chain dependency. Bitcoin is historical purchase evidence only. Changing this requires an explicit amendment to this packet. |
+
+| Licenses | Exactly 12 fresh Genesis licenses assigned to the verified new owner; public purchase commitment only. One active Worker binding per license. Owner-signed transfer/rotation effective at the next MiningEpoch, retiring old assignments. Genesis new_license_issuance_enabled=false. LicenseIssueV1 and extensible LicenseRecordV1 exist now; twelve is the launch allocation, not a lifetime protocol maximum. Activation requires a formally authorized consensus/governance change. No hidden operator mint function. |
+
+| Transactions | Signed absolute expiry height, maximum horizon 10,080 blocks; remain pending across unrelated blocks/MiningEpochs/restarts if valid. Competing spends require objective canonical-state reconciliation; an unaccepted conflicting transaction does not erase the accepted one. No automatic fee replacement in V1. |
+
+| Limits/storage | Ordinary projection 64 KiB block body, 16 KiB transaction; authenticated parent-selected A2 capacity amendment (A2-BODY-CAPACITY-V3.md) permits ONE exact typed oversized operation, complete body262150/envelope1942044/proposal270871, unchanged transport2097152 and ordinary quotas. Small A2 items consume the ordinary budget; two oversized items refuse atomically. Unmarked history keeps original limits. 16 KiB transaction, 128 inputs/outputs each, maximum 10 million live UTXOs; transactions may not exceed resulting state cap. Mempool 64 MiB with explicit typed capacity rejection and no silent eviction of an admitted transaction. Relay signed queue 8 MiB, backpressure on full. Prunable spent state and certified checkpoints; bounded node working storage, optional archival nodes. |
+
+| Exact observations | Per-Worker monotonic sequence and hash-chain commitment, authenticated result binding, durable high-water mark and retained bounded unacknowledged window. Acknowledged repeats cannot increment totals; conflicting current sequence is rejected. Archive details optional, never an unbounded correctness dependency. |
+
+| Finality/changes | Certified history final; candidate fork churn cannot trigger Genesis replay. No transport-dependent consensus mode and no automatic quorum escape hatch. Protocol upgrades require an explicit version/fingerprint transition; no silent parameter rewrite. |
+
+Bound registry/tombstone records together with live state at ten million entries;
+
+admission beyond the declared cap receives an explicit capacity rejection. A
+
+permanently revoked device is never forgotten merely to reclaim space. This is
+
+an explicit admission/state capacity limit, not a cap on a miner's lifetime
+
+accepted observations. Snapshot roots must commit revocations as well as live
+
+UTXOs, licenses, membership, reputation and bonds.
+
+Avoid circular Genesis hashes: GenesisID is the domain-separated hash of a
+
+canonical Genesis descriptor (fresh nonce, owner, purchase commitment, fixed
+
+parameters, admitted node keys and license indices), excluding derived IDs and
+
+state root. Fresh LicenseIDs derive from GenesisID plus license index; the initial
+
+state root is then computed, and the Genesis block commits both. The protocol
+
+fingerprint hashes the schema/algorithm/parameter manifest, not itself. Pin all
+
+three independently in the release manifest and test recomputation from scratch.
+
+Initial difficulty calibration is an implementation measurement under the approved
+
+rule, not permission to invent an economic policy. Hardware work must remain
+
+within authorization: no production factory flashing yet, no eFuse/Secure Boot/
+
+Flash Encryption activation. If measurement requires a destructive action outside
+
+scope, stop under G/H. The selected PoW is a conscious Build8 choice; it does not
+
+claim ASIC resistance.
+
+## Approval and remaining gates
+
+The Architect approved the packet as amended. Preserve this authorization; do not
+
+ask for routine reapproval. Implement the approved semantics, regenerate vectors
+
+and run adversarial qualification, verify purchase entitlement and physical TPM,
+
+then finalize the complete parameter manifest/fingerprint and Genesis after
+implementation and physical qualification pass. The three previously exposed
+policy blockers are resolved; no routine decision stop remains.
+
+The full accepted LoRa Survival Transport Specification V1 remains needed before
+
+radio implementation/transmission. No TPM clear, BIOS/Secure Boot modification,
+
+flash encryption/eFuse activation or secret export is authorized by these edits.
+
+Primary references informing the design (not endorsements of these proposed values):
+
+- TPM key attestation and EK trust: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/component-updates/tpm-key-attestation
+
+- TPM device identity/ActivateCredential: https://trustedcomputinggroup.org/wp-content/uploads/TPM-2p0-Keys-for-Device-Identity-and-Attestation_v1_r12_pub10082021.pdf
+
+- Windows VBS: https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+
+- Consensus locks and weighted quorum: https://raw.githubusercontent.com/cometbft/cometbft/main/spec/consensus/consensus.md
+
+- Deterministic CBOR: https://www.rfc-editor.org/rfc/rfc8949.html
+
+
+## Amendment note (2026-10-03, Architect decision D3)
+
+The row "Timing/difficulty" above is amended. The local two-hour future hold no longer exists: unfinalized candidates and proposals are not held or refused on a receiver wall clock in either direction. Whether this validator signs a fresh block vote is decided only by its qualified clock (block.timestamp <= qualified UTC now, zero allowance); replay and finalized ingestion never read a clock. The consensus timestamp rules are median-past-11 (strictly greater, unchanged) and a block timestamp that is not earlier than its parent's (equal permitted only when the median rule also permits it).
+
+The text of this file as found, before this amendment, is preserved in git history (commit 204c891 on branch succ/docs), sha256 19fbd1b35af022bb20884be4d456f4cffad99c3935d51926f2042f4b03b5a877. See SPEC-AMENDMENT-REGISTER-D3-V1.md.
+
+## Amendment note (2026-10-04, direct user decisions K1 and K2)
+
+The physical-admission clause "Keep raw EK/platform identifying material in restricted admission evidence; peers verify the committed admission and fresh attestation evidence" (lines 242-244 before this amendment) is narrowly amended: public EK certificates, public key areas, CRLs and nonsecret activation records may be distributed as authenticated admission evidence to the extent required for independent validation and replay. Private keys, seeds, TPM authorization values, activation secrets and other private material remain excluded. The design must specify canonical encoding, size bounds, authentication, availability and retention. Certificate, revocation and freshness verification is bound to the specified admission context; historical replay uses its committed reference time and never a current local clock or live network lookup. Public EK material identifies devices and is not anonymous; distribution and logging are limited to verification requirements. A signed activation-result record alone proves neither credential activation nor physical-host association.
+
+The prior K2 execution-locality condition of hard stop E is superseded by the direct Path B decision on 2026-10-05. It is retained in historical Git source, not current authority. Production requires authentic qualifying physical TPM evidence, fresh credential activation and canonical one-physical-TPM lineage uniqueness; missing hardware, activation, lineage or profile qualification still refuses admission. Forwarding and remote/VM execution alone do not justify refusal. EK/AK verification still does not prove node execution locality, and no such claim is made. The launch dependency is hardware authenticity, uniqueness, activation and physical qualification, not proof of execution on the TPM host. No new committee, witness-only shortcut, threshold or production authorization follows from this DESIGN amendment.
+
+The integration copy alone is amended; the original checkout remains untouched. The exact changed clauses and prepared design are recorded in qualification/candidate-3/CODEX-WITNESS-ENROLLMENT-DESIGN-20261004.md and qualification/candidate-3/CODEX-TAKEOVER-DECISIONS-20261004.md. No production admission, signing or sealing is authorized by this amendment.
+
+## Amendment note (2026-10-05, direct Architect Path B decision)
+
+Path B supersedes execution-locality exclusions in the prior annex/hardening references and K2/A6 continuation design. Section3 admission/trust limits and Section2 reputation eligibility above now express the exact physical-TPM lineage requirement. Original imports and historical fingerprints remain preserved; this successor must regenerate its normative fingerprint inputs before qualification. Exact changed clauses and the byte-for-byte user decision are retained in qualification/candidate-3/CODEX-PATH-B-CLAUSE-CHANGES-20261005.json and CODEX-PATH-B-USER-DECISION-20261005.txt. DESIGN authorization supplies neither implementation PASS nor physical qualification.

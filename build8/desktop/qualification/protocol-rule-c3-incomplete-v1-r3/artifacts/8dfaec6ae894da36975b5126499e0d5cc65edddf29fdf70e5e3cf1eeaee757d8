@@ -1,0 +1,584 @@
+//! Authenticated host dispatch. No socket, radio, wallet or consensus verifier.
+//! Callers pace each returned frame; no remote control creates a send loop.
+use crate::{
+    Error, Result, Session,
+    objects::{Bitmap, ObjectKind, ObjectQueue, Offer},
+};
+use std::collections::BTreeMap;
+pub enum Event {
+    Offered(Offer),
+    Requested,
+    FragmentReceived,
+    /// Exact hash-checked opaque bytes. Endpoint semantic verification is mandatory.
+    Completed {
+        offer: Offer,
+        bytes: Vec<u8>,
+    },
+    ReceiptRecorded,
+}
+/// One bounded locally selected missing-fragment window. The caller paces this
+/// control frame and waits for progress; receiving an offer never starts a loop.
+pub struct RequestWindow {
+    pub start: u16,
+    pub count: u16,
+    pub frame: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Context, Endpoint, InitiatorPending, ResponderPending};
+    use mutiny_crypto_v2::{HybridKey, Role};
+    fn pair(a: &HybridKey, b: &HybridKey) -> (Session, Session) {
+        let ctx = Context::pinned(
+            [1; 32],
+            [2; 32],
+            Endpoint::pinned(a.public().clone(), 1).unwrap(),
+            Endpoint::pinned(b.public().clone(), 1).unwrap(),
+        )
+        .unwrap();
+        let (i, hello) = InitiatorPending::start(ctx.clone(), a).unwrap();
+        let (r, response) = ResponderPending::accept(ctx, b, &hello).unwrap();
+        let (i, finish) = i.accept(a, &response).unwrap();
+        let (r, tag) = r.finish(&finish).unwrap();
+        (i.finish(&tag).unwrap(), r)
+    }
+    #[test]
+    fn bounded_windows_round_robin_and_persistent_retry_exhaustion() {
+        let a = HybridKey::generate(Role::Transport).unwrap();
+        let b = HybridKey::generate(Role::Transport).unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "build8-link-bounds-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let (i, r) = pair(&a, &b);
+        let qi = ObjectQueue::open(&directory.join("send.sqlite"), i.peer_id()).unwrap();
+        let qr = ObjectQueue::open(&directory.join("recv.sqlite"), r.peer_id()).unwrap();
+        let mut send = ObjectLink::new(i, qi).unwrap();
+        let mut recv = ObjectLink::new(r, qr).unwrap();
+        let mut offers = Vec::new();
+        for n in 1..=8 {
+            let (offer, have) = send
+                .enqueue(ObjectKind::ContinuityVote, &[n; 281], 0)
+                .unwrap();
+            recv.receive(&have).unwrap();
+            let request = recv.request_missing(&offer.id, 0, 3, 0, false).unwrap();
+            send.receive(&request).unwrap();
+            offers.push(offer);
+        }
+        assert_eq!(send.wanted.len(), 8);
+        assert!(matches!(
+            send.enqueue(ObjectKind::ContinuityVote, &[9; 281], 0),
+            Err(Error::Limit)
+        ));
+        let mut round = std::collections::BTreeSet::new();
+        for _ in 0..8 {
+            let frame = send.send_one().unwrap().unwrap();
+            let id: [u8; 32] = frame[60..92].try_into().unwrap();
+            recv.receive(&frame).unwrap();
+            assert!(round.insert(id));
+        }
+        assert_eq!(round.len(), 8);
+        // Repeated authenticated NACKs cannot refund the persistent retry budget.
+        let offer = &offers[0];
+        send.wanted.clear();
+        let (mut meta, _) = offer.have(0).unwrap();
+        meta.kind = 5;
+        let payload = Bitmap {
+            start: 0,
+            bits: vec![true],
+        }
+        .encode(3)
+        .unwrap();
+        for _ in 1..8 {
+            let request = recv.session.seal(&meta, &payload).unwrap();
+            send.receive(&request).unwrap();
+            assert!(send.send_one().unwrap().is_some());
+        }
+        let request = recv.session.seal(&meta, &payload).unwrap();
+        send.receive(&request).unwrap();
+        assert!(send.send_one().unwrap().is_none());
+        let qi = send.disconnect();
+        let qr = recv.disconnect();
+        let (i, r) = pair(&a, &b);
+        let mut send = ObjectLink::new(i, qi).unwrap();
+        let mut recv = ObjectLink::new(r, qr).unwrap();
+        let request = recv.session.seal(&meta, &payload).unwrap();
+        send.receive(&request).unwrap();
+        assert!(send.send_one().unwrap().is_none());
+        drop(send);
+        drop(recv);
+        for name in ["send.sqlite", "recv.sqlite"] {
+            std::fs::remove_file(directory.join(name)).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
+    #[test]
+    fn authenticated_dispatch_loss_retry_receipts_reconnect_and_peer_binding() {
+        let a = HybridKey::generate(Role::Transport).unwrap();
+        let b = HybridKey::generate(Role::Transport).unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "build8-object-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let (i, _) = pair(&a, &b);
+        let wrong = ObjectQueue::open(&directory.join("wrong.sqlite"), [9; 32]).unwrap();
+        assert!(matches!(ObjectLink::new(i, wrong), Err(Error::Context)));
+        let (i, r) = pair(&a, &b);
+        let send_peer = i.peer_id();
+        let recv_peer = r.peer_id();
+        assert_ne!(send_peer, recv_peer);
+        let send = ObjectQueue::open(&directory.join("send.sqlite"), send_peer).unwrap();
+        let recv = ObjectQueue::open(&directory.join("recv.sqlite"), recv_peer).unwrap();
+        let mut send = ObjectLink::new(i, send).unwrap();
+        let mut recv = ObjectLink::new(r, recv).unwrap();
+        let raw = vec![37; 7001];
+        let (offer, have) = send
+            .enqueue(ObjectKind::SignedTransaction, &raw, 1)
+            .unwrap();
+        let mut damaged = have.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        assert!(matches!(recv.receive(&damaged), Err(Error::Crypto)));
+        assert!(recv.queue.describe(&offer.id).is_err());
+        assert!(matches!(recv.receive(&have), Ok(Event::Offered(_))));
+        assert!(matches!(recv.receive(&have), Err(Error::Replay)));
+        for _ in 0..16 {
+            let progress = recv.missing_window(&offer.id, 0, 51).unwrap();
+            assert_eq!(progress.start, 0);
+            assert_eq!(progress.bits, vec![true; 51]);
+        }
+        assert!(recv.missing_window(&offer.id, 0, 0).is_err());
+        assert!(recv.missing_window(&offer.id, 50, 2).is_err());
+        assert!(recv.missing_window(&[0; 32], 0, 1).is_err());
+        let wanted = recv.request_missing(&offer.id, 0, 51, 1, false).unwrap();
+        assert!(matches!(send.receive(&wanted), Ok(Event::Requested)));
+        let mut frames = 0;
+        let mut skipped = None;
+        while let Some(frame) = send.send_one().unwrap() {
+            frames += 1;
+            if frames == 3 {
+                skipped = Some(frame);
+                continue;
+            }
+            assert!(matches!(recv.receive(&frame), Ok(Event::FragmentReceived)));
+        }
+        assert_eq!(frames, 51);
+        assert!(recv.completed(&offer.id).is_err());
+        let missing = recv.missing_window(&offer.id, 0, 51).unwrap();
+        assert_eq!(missing.bits.iter().filter(|v| **v).count(), 1);
+        assert!(missing.bits[2]);
+        let receipt = recv.receipt(&offer.id, 0, 51, 1).unwrap();
+        assert!(matches!(send.receive(&receipt), Ok(Event::ReceiptRecorded)));
+        let ack = send.acknowledged(&offer.id, 0, 51).unwrap();
+        assert_eq!(ack.bits.iter().filter(|x| **x).count(), 50);
+        assert!(!ack.bits[2]);
+        let request = recv.request_missing(&offer.id, 0, 51, 1, true).unwrap();
+        send.receive(&request).unwrap();
+        let frame = send.send_one().unwrap().unwrap();
+        assert_ne!(frame, skipped.clone().unwrap());
+        match recv.receive(&frame).unwrap() {
+            Event::Completed { offer: got, bytes } => {
+                assert_eq!(got, offer);
+                assert_eq!(bytes, raw)
+            }
+            _ => panic!("missing completion"),
+        }
+        assert!(send.send_one().unwrap().is_none());
+        // An old, previously unseen sequence can arrive harmlessly within the
+        // replay window, but cannot redeliver an already complete object.
+        assert!(matches!(
+            recv.receive(&skipped.unwrap()),
+            Ok(Event::FragmentReceived)
+        ));
+        let receipt = recv.receipt(&offer.id, 0, 51, 1).unwrap();
+        send.receive(&receipt).unwrap();
+        assert!(
+            send.acknowledged(&offer.id, 0, 51)
+                .unwrap()
+                .bits
+                .iter()
+                .all(|b| *b)
+        );
+        let mut meta = offer.have(0).unwrap().0;
+        meta.kind = 2;
+        meta.count += 1;
+        let malformed = recv
+            .session
+            .seal(
+                &meta,
+                &Bitmap {
+                    start: 0,
+                    bits: vec![true],
+                }
+                .encode(meta.count)
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(send.receive(&malformed), Err(Error::Context)));
+        assert!(send.wanted.is_empty());
+        let send_queue = send.disconnect();
+        let recv_queue = recv.disconnect();
+        let (i, r) = pair(&a, &b);
+        let mut send = ObjectLink::new(i, send_queue).unwrap();
+        let mut recv = ObjectLink::new(r, recv_queue).unwrap();
+        assert!(recv.receive(&have).is_err());
+        assert!(send.send_one().unwrap().is_none());
+        assert_eq!(recv.completed(&offer.id).unwrap().1, raw);
+        let repeat = send.advertise(&offer.id, 0).unwrap();
+        assert!(matches!(recv.receive(&repeat), Ok(Event::Offered(_))));
+        drop(send);
+        drop(recv);
+        let restored = ObjectQueue::open(&directory.join("send.sqlite"), send_peer).unwrap();
+        assert!(
+            restored
+                .acknowledged(&offer.id, 0, 51)
+                .unwrap()
+                .bits
+                .iter()
+                .all(|b| *b)
+        );
+        drop(restored);
+        for name in ["send.sqlite", "recv.sqlite", "wrong.sqlite"] {
+            std::fs::remove_file(directory.join(name)).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
+}
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::{Context, Endpoint, InitiatorPending, ResponderPending};
+    use mutiny_crypto_v2::{HybridKey, Role};
+    fn pair(a: &HybridKey, b: &HybridKey) -> (Session, Session) {
+        let context = Context::pinned(
+            [1; 32],
+            [2; 32],
+            Endpoint::pinned(a.public().clone(), 1).unwrap(),
+            Endpoint::pinned(b.public().clone(), 1).unwrap(),
+        )
+        .unwrap();
+        let (i, hello) = InitiatorPending::start(context.clone(), a).unwrap();
+        let (r, response) = ResponderPending::accept(context, b, &hello).unwrap();
+        let (i, finish) = i.accept(a, &response).unwrap();
+        let (r, tag) = r.finish(&finish).unwrap();
+        (i.finish(&tag).unwrap(), r)
+    }
+    #[test]
+    fn durable_missing_windows_do_not_advance_past_holes_and_resume_after_reconnect() {
+        let a = HybridKey::generate(Role::Transport).unwrap();
+        let b = HybridKey::generate(Role::Transport).unwrap();
+        let mut random = [0; 16];
+        mutiny_crypto_v2::fill_os_random(&mut random).unwrap();
+        let base =
+            std::env::temp_dir().join(format!("build8-missing-window-{}", hex::encode(random)));
+        std::fs::create_dir(&base).unwrap();
+        let (i, r) = pair(&a, &b);
+        let qi = ObjectQueue::open(&base.join("send.sqlite"), i.peer_id()).unwrap();
+        let qr = ObjectQueue::open(&base.join("recv.sqlite"), r.peer_id()).unwrap();
+        let mut send = ObjectLink::new(i, qi).unwrap();
+        let mut recv = ObjectLink::new(r, qr).unwrap();
+        let raw = vec![79; crate::MAX_PAYLOAD * crate::objects::MAX_BITMAP_BITS as usize + 1];
+        let (offer, have) = send.enqueue(ObjectKind::CertifiedBlock, &raw, 0).unwrap();
+        recv.receive(&have).unwrap();
+        let window = recv
+            .next_missing_request(&offer.id, 0, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((window.start, window.count), (0, 1080));
+        send.receive(&window.frame).unwrap();
+        let mut frames = 0;
+        while let Some(frame) = send.send_one().unwrap() {
+            frames += 1;
+            if frames != 1 {
+                assert!(matches!(recv.receive(&frame), Ok(Event::FragmentReceived)));
+            }
+        }
+        assert_eq!(frames, 1080);
+        let receipt = recv.receipt(&offer.id, 0, 1080, 0).unwrap();
+        send.receive(&receipt).unwrap();
+        assert_eq!(
+            send.acknowledged(&offer.id, 0, 1080)
+                .unwrap()
+                .bits
+                .iter()
+                .filter(|v| **v)
+                .count(),
+            1079
+        );
+        // Persisted holes, not volatile packet counters, choose the next window.
+        let qi = send.disconnect();
+        let qr = recv.disconnect();
+        let (i, r) = pair(&a, &b);
+        let mut send = ObjectLink::new(i, qi).unwrap();
+        let mut recv = ObjectLink::new(r, qr).unwrap();
+        let retry = recv
+            .next_missing_request(&offer.id, 0, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!((retry.start, retry.count), (0, 1080));
+        send.receive(&retry.frame).unwrap();
+        let frame = send.send_one().unwrap().unwrap();
+        assert!(matches!(recv.receive(&frame), Ok(Event::FragmentReceived)));
+        assert!(send.send_one().unwrap().is_none());
+        let next = recv
+            .next_missing_request(&offer.id, 0, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((next.start, next.count), (1080, 1));
+        send.receive(&next.frame).unwrap();
+        let Event::Completed { bytes, .. } =
+            recv.receive(&send.send_one().unwrap().unwrap()).unwrap()
+        else {
+            panic!("missing complete object")
+        };
+        assert_eq!(bytes, raw);
+        assert!(
+            recv.next_missing_request(&offer.id, 0, false)
+                .unwrap()
+                .is_none()
+        );
+        assert!(recv.next_missing_request(&[0; 32], 0, false).is_err());
+        drop(send);
+        drop(recv);
+        for name in [
+            "send.sqlite",
+            "recv.sqlite",
+            "send.sqlite-wal",
+            "recv.sqlite-wal",
+            "send.sqlite-shm",
+            "recv.sqlite-shm",
+        ] {
+            let p = base.join(name);
+            if p.exists() {
+                std::fs::remove_file(p).unwrap();
+            }
+        }
+        std::fs::remove_dir(base).unwrap();
+    }
+}
+pub struct ObjectLink {
+    session: Session,
+    queue: ObjectQueue,
+    wanted: BTreeMap<[u8; 32], (Bitmap, u8)>,
+    last_served: Option<[u8; 32]>,
+}
+impl ObjectLink {
+    /// Pinned identity authenticated by the live hybrid session, not an object field.
+    pub fn peer_id(&self) -> [u8; 32] {
+        self.session.peer_id()
+    }
+    pub fn matches_network(&self, genesis: [u8; 32], fingerprint: [u8; 32]) -> bool {
+        self.session.matches_network(genesis, fingerprint)
+    }
+    /// Binds a socket carrier to this exact completed handshake, not only a peer.
+    pub fn session_id(&self) -> [u8; 32] {
+        self.session.id()
+    }
+    pub fn new(session: Session, queue: ObjectQueue) -> Result<Self> {
+        if session.peer_id() != queue.peer_id() {
+            return Err(Error::Context);
+        }
+        Ok(Self {
+            session,
+            queue,
+            wanted: BTreeMap::new(),
+            last_served: None,
+        })
+    }
+    pub fn enqueue(
+        &mut self,
+        kind: ObjectKind,
+        bytes: &[u8],
+        hops: u8,
+    ) -> Result<(Offer, Vec<u8>)> {
+        if hops > 16 {
+            return Err(Error::Encoding);
+        }
+        let offer = self.queue.enqueue(kind, bytes)?;
+        let frame = self.advertise(&offer.id, hops)?;
+        Ok((offer, frame))
+    }
+    pub fn advertise(&mut self, id: &[u8; 32], hops: u8) -> Result<Vec<u8>> {
+        let (offer, complete) = self.queue.describe(id)?;
+        if !complete {
+            return Err(Error::Context);
+        }
+        let (meta, payload) = offer.have(hops)?;
+        self.session.seal(&meta, &payload)
+    }
+    fn control(&mut self, id: &[u8; 32], bitmap: &Bitmap, hops: u8, kind: u8) -> Result<Vec<u8>> {
+        let (offer, _) = self.queue.describe(id)?;
+        let (mut meta, _) = offer.have(hops)?;
+        meta.kind = kind;
+        let payload = bitmap.encode(meta.count)?;
+        self.session.seal(&meta, &payload)
+    }
+    /// Local scheduling chooses the next bounded window. No unbounded response
+    /// amplification; the peer must call send_one at its own pacing boundary.
+    pub fn request_missing(
+        &mut self,
+        id: &[u8; 32],
+        start: u16,
+        count: u16,
+        hops: u8,
+        nack: bool,
+    ) -> Result<Vec<u8>> {
+        let bitmap = self.queue.missing(id, start, count)?;
+        self.control(id, &bitmap, hops, if nack { 5 } else { 2 })
+    }
+    /// Find the first missing durable window, including after reconnect. At most
+    /// ceil(MAX_OBJECT_BYTES / MAX_PAYLOAD / MAX_BITMAP_BITS) bounded reads.
+    /// Never infer progress from packet count (duplicates may arrive).
+    pub fn next_missing_request(
+        &mut self,
+        id: &[u8; 32],
+        hops: u8,
+        nack: bool,
+    ) -> Result<Option<RequestWindow>> {
+        let (offer, complete) = self.queue.describe(id)?;
+        if complete {
+            return Ok(None);
+        }
+        let total: u16 = offer
+            .length
+            .div_ceil(crate::MAX_PAYLOAD)
+            .try_into()
+            .map_err(|_| Error::Limit)?;
+        let mut start = 0u16;
+        while start < total {
+            let count = (total - start).min(crate::objects::MAX_BITMAP_BITS);
+            let bitmap = self.queue.missing(id, start, count)?;
+            if bitmap.bits.iter().any(|missing| *missing) {
+                let frame = self.control(id, &bitmap, hops, if nack { 5 } else { 2 })?;
+                return Ok(Some(RequestWindow {
+                    start,
+                    count,
+                    frame,
+                }));
+            }
+            start = start.checked_add(count).ok_or(Error::Limit)?;
+        }
+        // A complete fragment set without the durable hash-checked completion
+        // marker is a storage inconsistency, not successful delivery.
+        Err(Error::Storage)
+    }
+    /// Local durable progress only. No frame, send-attempt reservation or
+    /// settlement authority is produced by this bounded read.
+    pub fn missing_window(&self, id: &[u8; 32], start: u16, count: u16) -> Result<Bitmap> {
+        self.queue.missing(id, start, count)
+    }
+    pub fn receipt(&mut self, id: &[u8; 32], start: u16, count: u16, hops: u8) -> Result<Vec<u8>> {
+        let mut bitmap = self.queue.missing(id, start, count)?;
+        for bit in &mut bitmap.bits {
+            *bit = !*bit;
+        }
+        self.control(id, &bitmap, hops, 4)
+    }
+    pub fn receive(&mut self, frame: &[u8]) -> Result<Event> {
+        // Authentication/replay checks precede all persistent object operations.
+        let (meta, payload) = self.session.open(frame)?;
+        match meta.kind {
+            1 => {
+                let offer = Offer::parse(&meta, &payload)?;
+                self.queue.offer(&offer)?;
+                Ok(Event::Offered(offer))
+            }
+            3 => match self.queue.receive(&meta, &payload)? {
+                Some(bytes) => {
+                    let (offer, _) = self.queue.describe(&meta.object)?;
+                    Ok(Event::Completed { offer, bytes })
+                }
+                None => Ok(Event::FragmentReceived),
+            },
+            2 | 4 | 5 => {
+                let (offer, complete) = self.queue.describe(&meta.object)?;
+                let (expected, _) = offer.have(meta.hops)?;
+                if !complete || meta.fragment != 0 || meta.count != expected.count {
+                    return Err(Error::Context);
+                }
+                let bitmap = Bitmap::parse(&payload, meta.count)?;
+                if meta.kind == 4 {
+                    self.queue.acknowledge(&meta.object, &bitmap)?;
+                    Ok(Event::ReceiptRecorded)
+                } else {
+                    if !self.wanted.contains_key(&meta.object)
+                        && self.wanted.len() >= crate::objects::MAX_REQUESTS
+                    {
+                        return Err(Error::Limit);
+                    }
+                    self.wanted.insert(meta.object, (bitmap, meta.hops));
+                    Ok(Event::Requested)
+                }
+            }
+            _ => Err(Error::Encoding),
+        }
+    }
+    /// At most one frame per call, with at most eight queued request windows.
+    /// Storage commits retry consumption before encryption. A sealing failure
+    /// may consume an attempt; it never resets retries or permits nonce reuse.
+    pub fn send_one(&mut self) -> Result<Option<Vec<u8>>> {
+        while let Some(id) = self
+            .last_served
+            .and_then(|last| {
+                self.wanted
+                    .range((std::ops::Bound::Excluded(last), std::ops::Bound::Unbounded))
+                    .next()
+                    .map(|(id, _)| *id)
+            })
+            .or_else(|| self.wanted.keys().next().copied())
+        {
+            let (wanted, hops) = self.wanted.get_mut(&id).ok_or(Error::Context)?;
+            match self.queue.next_fragment(&id, wanted, *hops)? {
+                Some((meta, payload)) => {
+                    let frame = self.session.seal(&meta, &payload)?;
+                    wanted.bits[(meta.fragment - wanted.start) as usize] = false;
+                    self.last_served = Some(id);
+                    return Ok(Some(frame));
+                }
+                None => {
+                    self.wanted.remove(&id);
+                }
+            }
+        }
+        Ok(None)
+    }
+    pub fn acknowledged(&self, id: &[u8; 32], start: u16, count: u16) -> Result<Bitmap> {
+        self.queue.acknowledged(id, start, count)
+    }
+    /// Allows idempotent application delivery after restart. Object hash is
+    /// checked again; the endpoint must independently validate canonical meaning.
+    pub fn completed(&self, id: &[u8; 32]) -> Result<(Offer, Vec<u8>)> {
+        let (offer, complete) = self.queue.describe(id)?;
+        if !complete {
+            return Err(Error::Context);
+        }
+        Ok((offer, self.queue.read_complete(id)?))
+    }
+    pub fn submission_offers(&self) -> Result<Vec<Offer>> {
+        self.queue.submission_offers()
+    }
+    pub fn describe(&self, id: &[u8; 32]) -> Result<(Offer, bool)> {
+        self.queue.describe(id)
+    }
+    /// Local-only administration; no wire message dispatches object deletion.
+    pub fn discard(&mut self, id: &[u8; 32]) -> Result<()> {
+        self.queue.discard(id)?;
+        self.wanted.remove(id);
+        Ok(())
+    }
+    /// Reconnection drops traffic keys and transient requests. Reattach the
+    /// durable public queue only to a freshly authenticated same-peer session.
+    pub fn disconnect(self) -> ObjectQueue {
+        self.queue
+    }
+}

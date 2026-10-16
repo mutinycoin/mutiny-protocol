@@ -1,0 +1,76 @@
+Architect decision: adopt Path B and amend hard stop E.
+
+Evidence status: DESIGN authorization. This settles the execution-location policy dependency; it does not establish implementation or physical qualification.
+
+1. Replace the execution-location requirement
+
+Production admission requires authenticated qualifying physical TPM evidence, fresh proof of the required key relationship, and enforcement of one active voting lineage per qualifying physical TPM.
+
+Software TPMs and vTPMs alone do not qualify. Remote node execution and TPM request forwarding are accepted limitations. They must not create additional voting lineages or duplicate reputation.
+
+Do not reject an otherwise qualifying identity solely because its node software executes remotely or inside a VM. Do not claim that admission proves the entire node executes on the TPM’s physical host.
+
+This supersedes the earlier requirement to stop solely because physical-host execution association cannot be demonstrated. It does not waive hardware authenticity, lineage uniqueness, accepted platform-profile checks or other admission requirements.
+
+2. Enforce uniqueness in canonical state
+
+Deduplicate the canonical hardware lineage across active membership, pending admission, supported EK identities, AK changes, key rotation and recovery.
+
+Reject a second independent admission for an already represented lineage. An authorized recovery or rotation updates the existing lineage through its existing rules; presenting a duplicate identity is not itself recovery authorization.
+
+Certificate reissuance, alternate encodings, supported RSA/ECC identities and additional attestation keys must not create additional reputation lineages. Use authenticated relationships and qualified platform-specific rules. Do not trust an applicant’s assertion that two keys represent either the same or different hardware.
+
+If a hardware class cannot demonstrate the necessary uniqueness property, report that class as unqualified. Do not substitute “one EK hash” for “one physical TPM” without supporting evidence.
+
+3. Complete fresh credential activation
+
+Implement and verify TPM2_MakeCredential/TPM2_ActivateCredential admission workflows with validated EK credentials, exact AK public attributes and Name, fresh challenges and the approved network/Genesis/rule context.
+
+Reject substituted keys, replayed responses, stale challenges and cross-context reuse. Ensure the evidence mechanism demonstrates actual activation under its stated verifier trust model; a claimant-created success transcript is insufficient.
+
+Keep activation secrets, authorization values and private material out of logs, public witnesses and repositories. Retain the approved public evidence needed for deterministic verification.
+
+Credential activation establishes the required TPM key relationship. It does not establish node execution location.
+
+4. Preserve lineage through rotation and recovery
+
+Use fresh activation when establishing a changed AK’s relationship to the registered hardware identity.
+
+Bind the exact consensus public-key tuple through the typed enrollment or rotation statement, preserving required authorization and possession proofs. Keep Mutiny’s existing hybrid BOTH_REQUIRED signature policy.
+
+Do not confuse the TPM attestation key with the consensus signing keys. A quote containing a public-key hash does not, by itself, prove that key resides inside the TPM.
+
+A failed linkage must reject the attempted transition. It must not automatically grant a new identity, reset history, transfer bonds or require destruction of the existing hardware. Continue through the already authorized recovery rules where applicable.
+
+TPM replacement or endorsement-identity changes require the specified admission/recovery treatment. Do not infer fresh hardware from a changed key alone.
+
+5. Do not rely on hardware throughput
+
+Registry and consensus rules must enforce the identity limit independently of TPM speed, network latency or process count.
+
+Preserve existing objective continuity and signing rules. Add no relay-specific penalties, artificial timing tests, DRTM, TEE or PUF dependency.
+
+PCR/profile evidence describes the attested TPM platform. Do not claim it also measures a remotely executing VM.
+
+6. Required acceptance evidence
+
+Demonstrate:
+
+- Many concurrent clients using one qualified lineage cannot obtain multiple active or pending voting identities.
+- Supported EK aliases, certificate reissuance and AK rotation cannot duplicate lineage.
+- An unrelated software key cannot pass the required TPM-binding checks.
+- Replays, substituted challenges and network/Genesis/context mismatches reject.
+- Authorized rotation/recovery preserves the applicable bond, age, reputation and penalty history without duplication.
+- Concurrent admission races, failed transactions and crash/reopen preserve uniqueness atomically.
+- A forwarded, otherwise valid exchange is not rejected solely for forwarding and still yields at most one voting lineage.
+- Existing A2 revocation, pending-join cancellation and monetary-rights protections remain intact.
+
+Label simulations and TEST-VALUE results accurately. Physical qualification requires actual hardware evidence.
+
+7. Continue the existing takeover assignment
+
+Update the decision ledger, admission design, specification references, implementation and release-dependency list to reflect this amendment.
+
+Remove “proof of node execution on the TPM’s physical host” as a launch dependency. Retain demonstrable hardware authenticity, lineage uniqueness, credential activation and physical qualification as completion requirements.
+
+Continue authorized implementation, testing and review without another policy confirmation. This does not authorize TPM clearing, endorsement-seed replacement, production signing or Genesis sealing.

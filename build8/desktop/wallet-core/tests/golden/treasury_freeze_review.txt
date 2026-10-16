@@ -1,0 +1,70 @@
+== Summary ==
+* Action: Authorize a Treasury offer freeze
+  Summary: Authorize the MUT proceeds of Treasury offer f91776dc..1ff2e2cc (0.01000000 MUT against 50000 satoshis, Bitcoin network code 3) to settle to the Treasury destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (generation 1). Signs no Bitcoin transaction.
+! Chain class: TEST-VALUE chain: nothing here has real value
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 1
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: bc8f1efa2791c075cb4a804e2b0ba1cd197de7010e8118287737952827bfad52
+  Chain class: TEST-VALUE (nothing on this chain has real value)
+
+== Signing wallet ==
+  Signing address: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Key generation: 1
+  Wallet authority: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Profile: Treasury profile
+
+== Required authorizations ==
+  The Treasury offer-freeze signature: this wallet signs; wallet tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Parties ==
+  Treasury: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Money ==
+  Locks: 0.01000000 MUT (1000000 STRIKES) to tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+* Amount: 0.01000000 MUT (1000000 STRIKES)
+* Network fee: 0.00000000 MUT (0 STRIKES); the protocol defines no fee for this operation; not applicable
+
+== Conditions ==
+  What is signed: One Domain::Transaction signature (Ed448 and FN-DSA, both required) by the wallet descriptor with hash 6755fd53f7b5143f00f118e3c02d9d7eb8deb633db447b5fd8bc3219d5ce3e0e over the 4393-byte freeze body: the chain context, the creation head (block 1 0303030303030303030303030303030303030303030303030303030303030303), its state root bc8f1efa2791c075cb4a804e2b0ba1cd197de7010e8118287737952827bfad52, Treasury eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6, generation 1, destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca, the TradeID, the ContractHash, the complete offer body and that descriptor. Nothing else: not the maker's offer signature, not any funding hash lock, no Bitcoin data beyond the two integer terms.
+  Creation head: Prepared against block 1 with state root bc8f1efa2791c075cb4a804e2b0ba1cd197de7010e8118287737952827bfad52: this wallet signs this witness only while that block is its verified head. It does not prove a canonical listing or a pre-rotation commitment. At first canonical funding the maker must still hold current authority; after rotation an unfunded offer needs fresh review and signatures.
+  Treasury destination: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet): generation 1 of Treasury eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6, active since block 0 and still active at block 1 (checked).
+  Offer: Offer f91776dcb0cd7e665ffd57ff73e8add9d71a5e5c5dae41405f3aa1e81ff2e2cc of maker descriptor commitment ff6aa7f8eebd6c35a36db63dc7b7fcdd98ad3716cd721a3dd7943807a4c2ddea, nonce 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a: open from block 1 (the creation block) to block 1000 (999 blocks after the verified block; about 16 h 39 min, approximate at the 60 s target interval). Its signed WalletOwner is bound to recipient/Treasury settlement wallet tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca, destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca, maximum fee 100000 STRIKES and condition none. Current maker authority is required at first canonical funding; this freeze witness creates no historical-authority exception.
+  Offer terms: 1000000 STRIKES (0.01000000 MUT) for the Treasury against 50000 satoshis on Bitcoin network code 3 (regtest). Integer data fields only: this wallet does not build, parse, sign or verify any Bitcoin transaction. Bitcoin settlement not verified by this wallet.
+  Maker's offer signature: Verified by this wallet over exactly this offer before the plan was built (a plan exists only after that check).
+  Trade commitments: TradeID 2121212121212121212121212121212121212121212121212121212121212121 and ContractHash 2222222222222222222222222222222222222222222222222222222222222222 are opaque 32-byte commitments: shown, not interpreted or verified.
+  Use: Only a hash lock that fills this exact single-fill offer, names this TradeID and ContractHash, locks exactly 1000000 STRIKES and pays tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca as its recipient can rely on this authorization. The maker must still hold current authority at first canonical funding. Once finalized, that funded lock keeps its exact terms and destination under existing claim/refund rules, including its signed routing generation 1. An unfunded witness has no historical-authority exception after rotation.
+  Signing wallet: Descriptor hash 6755fd53f7b5143f00f118e3c02d9d7eb8deb633db447b5fd8bc3219d5ce3e0e: the wallet that controls tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca in the verified wallet book (this wallet).
+  Bitcoin custody: This authorizes the MUT destination of a Treasury offer ONLY. It does not touch Bitcoin custody: no Bitcoin key, address, script or transaction is created, parsed, signed or verified by this wallet.
+  Finality: An off-chain authorization: it is never included in a block by itself. A queued record is stored locally only and is not delivered.
+
+== Timing ==
+  Valid from block: 2
+  Valid until block: 1000 (999 blocks after the verified block; about 16 h 39 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: This exported witness is valid only under current authority at first canonical funding, through block 1000. Historical state and an old signature do not preserve an unfunded offer after rotation. Once finalized, the funded lock keeps its exact terms and destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca under existing claim/refund rules.
+  Effect: Moves no coin, pays no fee and is not included on chain by itself.
+  Effect: Signs no Bitcoin transaction and touches no Bitcoin key, address or custody.
+
+== Warnings ==
+! Notice: This is a TEST-VALUE chain: nothing here has real value.
+! Caution: This authorizes the MUT destination of a Treasury offer only. Bitcoin custody is separate and untouched.
+! Caution: The Bitcoin leg (50000 satoshis, network code 3) is integer data from the offer: Bitcoin settlement not verified by this wallet, and Bitcoin custody stays outside it.
+! Caution: TradeID and ContractHash are opaque commitments: check them against the trade agreement you hold. This wallet shows them but cannot check what they commit to.
+! Notice: This wallet can sign this freeze only while block 1 is its verified head.
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Required: I understand that payment or Bitcoin evidence outside this chain is not verified by this wallet
+* Required: I understand this changes MUT Treasury authority only and does not touch Bitcoin custody
+* Type to confirm: CONFIRM F9FA5CC7
+
+== Binding ==
+  Review digest: f9fa5cc77af9b1f2644c68c2ac92251098ca7efb0159880fe982b05f1c7dee18

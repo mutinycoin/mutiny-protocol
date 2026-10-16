@@ -6,7 +6,7 @@ Mutiny Protocol is decentralized proof-of-work infrastructure designed around br
 
 ## Build 8 development
 
-[Build 8 development status](BUILD8-STATUS.md) records the current source synchronization and separate test gates. Build 8 source integration and qualification remain incomplete; no Build 8 production release or deployment is claimed.
+[Build 8 development status](BUILD8-STATUS.md) records the current source synchronization and separate test gates. The local integration retains separate [Linux](build8/linux/) and [Desktop](build8/desktop/) frozen test source projections, with original machine identifiers unchanged. Restored fixtures are TEST inputs only: synthetic, non-Genesis, no custody or physical-profile data; generator not located; fresh qualification required. No restored-package pass or Build 8 production release/deployment is claimed.
 
 ## Current production authority
 

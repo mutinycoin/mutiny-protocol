@@ -1,0 +1,1015 @@
+//! Durable storage of the clock anchor (BUILD8-CLOCK-ANCHOR-V2; format and threat model:
+//! docs/CLOCK-PROFILE-V1.md, "Persistent clock anchor"). The encoding, the integrity hash and the
+//! rollback rule live in `mutiny_consensus_v8::holdover_clock_v1` and are pure; this module only
+//! moves bytes.
+//!
+//! Two files in one directory:
+//! * `<anchor_file>`      the V2 anchor record (fixed length, canonical, integrity hash);
+//! * `<anchor_file>.seq`  the write-ahead LINEAGE MARK: the highest sequence number for which a write
+//!   was ever started, plus the high-water lower bound at that time.
+//!
+//! Writing record `n`: (1) write and sync the mark `n`, (2) write and sync the anchor `n`. Each is a
+//! temp file created exclusively with owner-only permissions, synced, renamed over the target, and
+//! (on unix) the directory is synced. A record is current only if its sequence equals the mark's, so
+//! a stale record put back within a boot is detected, and invalidating the anchor needs only a new
+//! mark. The mark also carries the high-water lower bound and is rewritten with the SAME sequence
+//! when only that advances (`refresh_high_water`), so the durable ratchet follows what consumers saw.
+//! Whenever a write fails, the record on disk may be OLDER than the live state (for example it still
+//! carries a leap claim that new information ended); the store then REMOVES it (`fail_closed`) so a
+//! restart does not even find it (Order C5). There is no unauthenticated fallback anywhere in this
+//! module: whatever cannot be proven current, intact and written by this lineage is refused.
+//!
+//! Single writer is ENFORCED (Order C12): the store can only be opened over a [`ClockStateDir`],
+//! whose exclusive OS lock it keeps for its whole life (the live node: the life of the process), and
+//! that directory was verified owner-only at start-up (Order C8). A second instance fails closed
+//! before reading anything. Since Order C4 nothing read here grants qualification: a record is
+//! evidence and lineage, the mark a high-water ratchet that can only refuse. No wall-clock reads
+//! happen here.
+use super::state_dir::ClockStateDir;
+use mutiny_consensus_v8::holdover_clock_v1::{
+    AnchorError, LegacySummary, LineageMark, PersistedAnchor, inspect_legacy_v1, lineage_check,
+};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+/// Why a stored record was refused even as evidence. Every case means (as for an accepted record
+/// since Order C4): no anchor, unqualified until an authenticated recalibration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// A version-1 anchor: never adopted (it carries no leap claim, persist readings or lineage).
+    /// The summary is for a log line only.
+    Legacy(Option<LegacySummary>),
+    /// Truncated, oversized, unknown version, corrupted or not canonical.
+    Format(AnchorError),
+    /// The anchor file could not be read.
+    Unreadable(String),
+    /// A valid record that is not the latest one this lineage wrote (stale, ahead of the mark, or
+    /// no valid mark).
+    Lineage(AnchorError),
+    /// The clock refused the record (profile, boot change, suspend, expiry, ...).
+    Verification(AnchorError),
+}
+
+/// What the store can say about the record on disk relative to this process (Order C5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreCondition {
+    /// The record on disk is the one this process last wrote (or found current at start-up) and its
+    /// lineage mark matches it.
+    Current,
+    /// Nothing on disk is this process's live state: nothing written yet, invalidated, or a
+    /// possibly stale record was removed after a failed write.
+    NoLiveRecord,
+    /// A write failed AND the record that may now be OLDER than the live state could not be
+    /// removed: an explicit condition, reported with every failed sync until a later write or
+    /// invalidation succeeds. It cannot grant anything on restore: since Order C4 no stored record
+    /// qualifies a restarted clock (`AnchorStore::GRANTS_RESTART_QUALIFICATION`).
+    StaleNotInvalidated,
+}
+/// Order C5: may a live process keep claiming its continuing qualification while its store is in
+/// `condition`? Only if stale restart state cannot grant qualification after a restart: always for
+/// a backend without that capability (the unkeyed file store: Order C4), and for a backend WITH it
+/// (none exists) never while a possibly stale record could not be invalidated.
+pub const fn live_qualification_may_continue(
+    grants_restart_qualification: bool,
+    condition: StoreCondition,
+) -> bool {
+    !(grants_restart_qualification && matches!(condition, StoreCondition::StaleNotInvalidated))
+}
+
+/// What `AnchorStore::open` found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoadOutcome {
+    /// No anchor file.
+    Empty,
+    /// A V2 record that is intact, canonical and current for its lineage. It is evidence only:
+    /// `HoldoverClock::assess_restart` checks it (profile, boot, continuity, budget) for the log,
+    /// and no record grants qualification after a restart (Order C4).
+    Record(Box<PersistedAnchor>),
+    Refused(Refusal),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Loaded {
+    pub outcome: LoadOutcome,
+    /// Highest high-water lower bound learned from VERIFIED stored bytes (the lineage mark, or any
+    /// record that decodes). A ratchet: the host raises its own mark to it, never lowers.
+    pub high_water_ms: u64,
+}
+
+pub struct AnchorStore {
+    /// The verified, exclusively locked directory (Order C8, C12): held for the store's lifetime.
+    _state: ClockStateDir,
+    anchor: PathBuf,
+    lineage: PathBuf,
+    next_sequence: u64,
+    /// Sequence of the record on disk that this process wrote or loaded AND whose lineage mark
+    /// matches it, so dropping the live anchor must invalidate it. `None` whenever nothing on disk
+    /// is confirmed current (after a failed write, the mark may be ahead of or behind the record).
+    live_sequence: Option<u64>,
+    /// A file that is not confirmed current may still be on disk and could not be removed.
+    stale_file: bool,
+    /// The high-water lower bound held by the mark file on disk.
+    mark_high_water: u64,
+    last_written: Option<PersistedAnchor>,
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+/// Read at most `limit` bytes (plus one, so an oversized file is recognisable). On unix a symbolic
+/// link at the name is never followed (Order C8): opening it fails and the file is refused.
+fn read_limited(path: &Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = match options.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut buf = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut buf)?;
+    Ok(Some(buf))
+}
+/// Directory that holds `path` (the current directory for a bare file name).
+#[cfg(any(unix, test))]
+fn dir_of(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    }
+}
+#[cfg(unix)]
+fn sync_dir(path: &Path) -> Result<(), String> {
+    std::fs::File::open(dir_of(path))
+        .and_then(|d| d.sync_all())
+        .map_err(|e| format!("anchor: {e}"))
+}
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> Result<(), String> {
+    // No directory flush claim on Windows. The checked Windows backend synchronizes the actual
+    // file handle before and after native replacement; that does not prove power-loss durability
+    // of a directory or device. Production HostClock::start still requires Linux.
+    Ok(())
+}
+/// Atomic replace: exclusive temp file (owner-only on unix), write, sync, rename, sync directory.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let tmp = sibling(path, ".tmp");
+    // A temp file left by a crash is replaced; `create_new` then refuses to write through anything
+    // else that sits at that name (a pre-created file or link).
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("anchor: {e}")),
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp).map_err(|e| format!("anchor: {e}"))?;
+    file.write_all(bytes).map_err(|e| format!("anchor: {e}"))?;
+    file.sync_all().map_err(|e| format!("anchor: {e}"))?;
+    drop(file);
+    std::fs::rename(&tmp, path).map_err(|e| format!("anchor: {e}"))?;
+    sync_dir(path)
+}
+
+impl AnchorStore {
+    fn read(&self, path: &Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+        #[cfg(windows)]
+        if let Some(result) = self._state.windows_read(path, limit) {
+            return result.map_err(std::io::Error::other);
+        }
+        read_limited(path, limit)
+    }
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        #[cfg(windows)]
+        if let Some(result) = self._state.windows_write(path, bytes) {
+            return result.map_err(|e| e.to_string());
+        }
+        write_atomic(path, bytes)
+    }
+    fn remove(&self, path: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        if let Some(result) = self._state.windows_remove(path) {
+            return result.map_err(std::io::Error::other);
+        }
+        std::fs::remove_file(path)
+    }
+    /// Order C4 capability: whether a record of this backend may grant production qualification
+    /// after a process restart. The unkeyed file store can NEVER claim it: its integrity hash is
+    /// unkeyed, its lineage mark is a plain file, and both are writable by the node's own account
+    /// (a MAC alone would not be rollback protection, and a key beside the writable files would not
+    /// be outside the writer's authority). A protected backend would need authenticated records,
+    /// rollback-resistant lineage and protection outside the anchor-file writer's authority; none
+    /// exists, and no code path acts on this value being true.
+    pub const GRANTS_RESTART_QUALIFICATION: bool = false;
+    /// The condition of the record on disk (Order C5).
+    pub fn condition(&self) -> StoreCondition {
+        if self.stale_file {
+            StoreCondition::StaleNotInvalidated
+        } else if self.live_sequence.is_some() {
+            StoreCondition::Current
+        } else {
+            StoreCondition::NoLiveRecord
+        }
+    }
+    /// Open the store in its verified, locked directory and read what is there. Nothing is written.
+    pub fn open(state: ClockStateDir) -> (Self, Loaded) {
+        let anchor_file = state.anchor_file().to_path_buf();
+        let mut store = Self {
+            _state: state,
+            lineage: sibling(&anchor_file, ".seq"),
+            anchor: anchor_file,
+            next_sequence: 1,
+            live_sequence: None,
+            stale_file: false,
+            mark_high_water: 0,
+            last_written: None,
+        };
+        let loaded = store.load();
+        (store, loaded)
+    }
+    fn load(&mut self) -> Loaded {
+        // An unreadable, truncated or corrupt mark is "no mark": a record can then not be proven
+        // current and is refused (LineageMissing), never trusted.
+        let mark = self
+            .read(&self.lineage, LineageMark::LEN)
+            .ok()
+            .flatten()
+            .and_then(|raw| LineageMark::decode(&raw).ok());
+        let mut high_water_ms = mark.map_or(0, |m| m.high_water_ms);
+        self.mark_high_water = high_water_ms;
+        let mut highest = mark.map_or(0, |m| m.sequence);
+        let outcome = match self.read(&self.anchor, PersistedAnchor::LEN) {
+            Ok(None) => LoadOutcome::Empty,
+            Err(e) => LoadOutcome::Refused(Refusal::Unreadable(e.to_string())),
+            Ok(Some(raw)) => match PersistedAnchor::decode(&raw) {
+                Ok(record) => {
+                    high_water_ms = high_water_ms.max(record.high_water_ms);
+                    highest = highest.max(record.sequence);
+                    match lineage_check(record.sequence, mark.as_ref()) {
+                        Ok(()) => {
+                            self.live_sequence = Some(record.sequence);
+                            self.last_written = Some(record.clone());
+                            LoadOutcome::Record(Box::new(record))
+                        }
+                        Err(e) => LoadOutcome::Refused(Refusal::Lineage(e)),
+                    }
+                }
+                Err(AnchorError::Legacy) => {
+                    LoadOutcome::Refused(Refusal::Legacy(inspect_legacy_v1(&raw)))
+                }
+                Err(e) => LoadOutcome::Refused(Refusal::Format(e)),
+            },
+        };
+        // New writes continue AFTER every sequence number seen on disk, so nothing that was ever
+        // stored can be mistaken for the latest record.
+        self.next_sequence = highest.saturating_add(1);
+        Loaded {
+            outcome,
+            high_water_ms,
+        }
+    }
+    /// The clock refused the record that was loaded: it is not live.
+    pub fn note_refused(&mut self) {
+        self.live_sequence = None;
+        self.last_written = None;
+    }
+    /// Sequence number the next record must carry.
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+    /// True when a record this process wrote or loaded sits in the anchor file (so it must be
+    /// invalidated when the live anchor is gone), or a file that could not be removed may remain.
+    pub fn live_record(&self) -> bool {
+        self.live_sequence.is_some() || self.stale_file
+    }
+    /// True when `record` differs from what was last written in anything but its sequence,
+    /// persist-time readings and high-water mark (calibration evidence or leap claim changed).
+    pub fn needs_write(&self, record: &PersistedAnchor) -> bool {
+        self.last_written
+            .as_ref()
+            .is_none_or(|written| !written.same_evidence(record))
+    }
+    /// Spend the next sequence number. A failed attempt may already have replaced the mark, so the
+    /// number is never reused.
+    fn spend(&mut self) -> Result<u64, String> {
+        let seq = self.next_sequence;
+        self.next_sequence = seq.checked_add(1).ok_or("anchor: sequence exhausted")?;
+        Ok(seq)
+    }
+    /// Write `record` (its sequence must be `next_sequence`): mark first, then the anchor. On ANY
+    /// failure the record on disk may be older than the live state, so it is removed
+    /// (`fail_closed`) and the next attempt starts from nothing.
+    pub fn commit(&mut self, record: &PersistedAnchor) -> Result<(), String> {
+        if record.sequence != self.next_sequence {
+            return Err("anchor: sequence out of order".into());
+        }
+        let seq = match self.spend() {
+            Ok(seq) => seq,
+            Err(e) => {
+                self.fail_closed();
+                return Err(e);
+            }
+        };
+        // The disk is about to change: nothing on it is confirmed current until this completes.
+        self.live_sequence = None;
+        let mark = LineageMark {
+            sequence: seq,
+            high_water_ms: record.high_water_ms,
+        };
+        let written = self
+            .write(&self.lineage, &mark.encode())
+            .and_then(|()| self.write(&self.anchor, &record.encode()));
+        match written {
+            Ok(()) => {
+                self.live_sequence = Some(seq);
+                self.stale_file = false;
+                self.mark_high_water = record.high_water_ms;
+                self.last_written = Some(record.clone());
+                Ok(())
+            }
+            Err(e) => {
+                self.fail_closed();
+                Err(e)
+            }
+        }
+    }
+    /// The live anchor is gone (expired, transition, suspend, ...): make every stored record stale.
+    /// A new mark alone does that (the old record's sequence is behind it); the file is also removed
+    /// so nothing misleading is left behind.
+    pub fn invalidate(&mut self, high_water_ms: u64) -> Result<(), String> {
+        let seq = match self.spend() {
+            Ok(seq) => seq,
+            Err(e) => {
+                self.fail_closed();
+                return Err(e);
+            }
+        };
+        self.live_sequence = None;
+        let mark = LineageMark {
+            sequence: seq,
+            high_water_ms,
+        };
+        if let Err(e) = self.write(&self.lineage, &mark.encode()) {
+            self.fail_closed();
+            return Err(e);
+        }
+        self.mark_high_water = high_water_ms;
+        self.last_written = None;
+        // Whether or not the file can be removed, the new mark already refuses it.
+        self.stale_file = false;
+        match self.remove(&self.anchor) {
+            Ok(()) => sync_dir(&self.anchor),
+            #[cfg(windows)]
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                self.stale_file = true;
+                Err(format!(
+                    "anchor invalidated by mark but record unlink failed: {e}"
+                ))
+            }
+            Err(_) => Ok(()),
+        }
+    }
+    /// Only the high-water lower bound advanced (nothing else changed): rewrite the MARK with the same
+    /// sequence so the durable ratchet follows what consumers saw. The lineage is untouched: the record
+    /// on disk is still the one the mark names. Does nothing without a confirmed-current record.
+    pub fn refresh_high_water(&mut self, high_water_ms: u64) -> Result<(), String> {
+        let Some(sequence) = self.live_sequence else {
+            return Ok(());
+        };
+        if high_water_ms <= self.mark_high_water {
+            return Ok(());
+        }
+        let mark = LineageMark {
+            sequence,
+            high_water_ms,
+        };
+        self.write(&self.lineage, &mark.encode())?;
+        self.mark_high_water = high_water_ms;
+        Ok(())
+    }
+    /// A write failed, so the record on disk may be OLDER than the live state (an old leap claim, an
+    /// older calibration). Remove it (Order C5: invalidated, not merely outdated); if even that
+    /// fails the file is remembered (`StaleNotInvalidated`) and invalidated as soon as a write
+    /// works again.
+    pub fn fail_closed(&mut self) {
+        self.live_sequence = None;
+        self.last_written = None;
+        self.stale_file = match self.remove(&self.anchor) {
+            Ok(()) => {
+                let _ = sync_dir(&self.anchor);
+                false
+            }
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        };
+    }
+}
+
+/// A genuine version-1 anchor (the retired encoding, byte for byte), for tests that prove an old
+/// file never qualifies the clock.
+#[cfg(test)]
+pub(crate) fn legacy_v1_bytes(
+    profile: [u8; 32],
+    lower_ms: u64,
+    upper_ms: u64,
+    high_water_ms: u64,
+) -> Vec<u8> {
+    use mutiny_consensus_v8::domain_hash;
+    let mut b = Vec::new();
+    b.extend_from_slice(b"MCLKANC1");
+    b.extend_from_slice(&profile);
+    for v in [lower_ms, upper_ms, 1u64, 2u64] {
+        b.extend_from_slice(&v.to_be_bytes());
+    }
+    b.extend_from_slice(&5u128.to_be_bytes());
+    b.extend_from_slice(&high_water_ms.to_be_bytes());
+    let sum = domain_hash(b"MUTINY-CLOCK-ANCHOR-V1", &b);
+    b.extend_from_slice(&sum);
+    b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mutiny_consensus_v8::holdover_clock_v1::{
+        ClockProfile, ControlledElapsed, HoldoverClock, LeapView, SourceSample,
+    };
+
+    fn profile() -> ClockProfile {
+        ClockProfile {
+            max_source_uncertainty_ms: 248,
+            max_calibration_half_width_ms: 250,
+            min_sources: 1,
+            max_faulty_sources: 0,
+            drift_bound_ppb: 8680,
+            max_holdover_ms: 86_400_000,
+            max_interval_half_width_ms: 1000,
+            max_suspend_gap_ms: 50,
+            confirm_calibrations: 1,
+        }
+    }
+    /// A fresh directory created atomically for this test: never reused, never removed by a test.
+    fn dir(tag: &str) -> PathBuf {
+        static UNIQUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let mut salt = [0u8; 8];
+            getrandom::getrandom(&mut salt).unwrap();
+            let d = std::env::temp_dir().join(format!(
+                "build8-anchor-store-{tag}-{}-{}-{}",
+                std::process::id(),
+                UNIQUE.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                hex::encode(salt)
+            ));
+            if std::fs::create_dir(&d).is_ok() {
+                return d;
+            }
+        }
+    }
+    /// A real engine record (not a hand-built one) at sequence `seq`.
+    fn record(seq: u64) -> PersistedAnchor {
+        let e = ControlledElapsed::start(5);
+        let c = HoldoverClock::new(profile(), e.clone()).unwrap();
+        c.set_leap_view(LeapView::Clear {
+            valid_until_ms: u64::MAX,
+        });
+        let at = e.now();
+        let sample = SourceSample {
+            source: "chrony-nts".into(),
+            authenticated: true,
+            utc_ms: 1_790_899_300_000,
+            uncertainty_ms: 13,
+            at,
+        };
+        c.calibrate(&[sample]).unwrap();
+        c.persisted(seq, 1).unwrap()
+    }
+    /// These unit tests inspect what a LATER process would load while the writing store is still
+    /// alive, so they use the unlocked test double; the lock is tested in `state_dir` and at host
+    /// level (where every restart first drops the previous process).
+    fn open(path: &Path) -> (AnchorStore, Loaded) {
+        AnchorStore::open(ClockStateDir::unlocked_for_test(path))
+    }
+    fn mark_path(anchor: &Path) -> PathBuf {
+        sibling(anchor, ".seq")
+    }
+
+    #[test]
+    fn commit_then_open_round_trips_and_continues_the_lineage() {
+        let anchor = dir("rt").join("clock.anchor");
+        let (mut s, l) = open(&anchor);
+        assert_eq!(l.outcome, LoadOutcome::Empty);
+        assert_eq!(s.next_sequence(), 1);
+        assert!(!s.live_record());
+        let r1 = record(1);
+        assert!(s.needs_write(&r1));
+        s.commit(&r1).unwrap();
+        assert!(s.live_record());
+        assert!(!s.needs_write(&r1), "unchanged evidence is not rewritten");
+        assert_eq!(std::fs::read(&anchor).unwrap(), r1.encode());
+        let m = LineageMark::decode(&std::fs::read(mark_path(&anchor)).unwrap()).unwrap();
+        assert_eq!((m.sequence, m.high_water_ms), (1, r1.high_water_ms));
+        // A new process finds the same record, current, and continues after it.
+        let (mut s2, l2) = open(&anchor);
+        assert_eq!(l2.outcome, LoadOutcome::Record(Box::new(r1.clone())));
+        assert_eq!(l2.high_water_ms, r1.high_water_ms);
+        assert_eq!(s2.next_sequence(), 2);
+        assert!(s2.live_record());
+        // The wrong sequence number is refused before anything is written.
+        assert!(s2.commit(&record(9)).is_err());
+        assert_eq!(std::fs::read(&anchor).unwrap(), r1.encode());
+        s2.commit(&record(2)).unwrap();
+        assert_eq!(
+            open(&anchor).1.outcome,
+            LoadOutcome::Record(Box::new(record(2)))
+        );
+    }
+
+    #[test]
+    fn a_stale_record_put_back_within_a_boot_is_detected() {
+        let anchor = dir("rollback").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        let old = std::fs::read(&anchor).unwrap();
+        s.commit(&record(2)).unwrap();
+        s.commit(&record(3)).unwrap();
+        // The anchor file alone is replaced by an older, perfectly valid record.
+        std::fs::write(&anchor, &old).unwrap();
+        let (s2, l) = open(&anchor);
+        assert_eq!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::Rollback))
+        );
+        assert!(!s2.live_record());
+        // The lineage continues after the highest number ever seen: nothing old can pass as latest.
+        assert_eq!(s2.next_sequence(), 4);
+        // A record newer than the mark (the mark was rolled back or lost) is refused too.
+        let (mut s3, _) = open(&dir("ahead").join("clock.anchor"));
+        s3.commit(&record(1)).unwrap();
+        s3.commit(&record(2)).unwrap();
+        let newest = std::fs::read(&s3.anchor).unwrap();
+        let first_mark = LineageMark {
+            sequence: 1,
+            high_water_ms: 0,
+        };
+        std::fs::write(&s3.lineage, first_mark.encode()).unwrap();
+        assert_eq!(newest, std::fs::read(&s3.anchor).unwrap());
+        let (_, l) = open(&s3.anchor);
+        assert_eq!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::Ahead))
+        );
+    }
+
+    #[test]
+    fn a_missing_or_damaged_mark_means_the_record_cannot_be_proven_current() {
+        let anchor = dir("nomark").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        let mark = mark_path(&anchor);
+        let good = std::fs::read(&mark).unwrap();
+        // Deleted.
+        std::fs::remove_file(&mark).unwrap();
+        let (s2, l) = open(&anchor);
+        assert_eq!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::LineageMissing))
+        );
+        assert_eq!(
+            s2.next_sequence(),
+            2,
+            "the lineage continues after the record that was seen"
+        );
+        // Truncated, bit-flipped, empty, oversized.
+        for bad in [
+            good[..good.len() - 1].to_vec(),
+            {
+                let mut b = good.clone();
+                b[12] ^= 1;
+                b
+            },
+            Vec::new(),
+            [good.clone(), vec![0]].concat(),
+        ] {
+            std::fs::write(&mark, bad).unwrap();
+            let (_, l) = open(&anchor);
+            assert_eq!(
+                l.outcome,
+                LoadOutcome::Refused(Refusal::Lineage(AnchorError::LineageMissing))
+            );
+        }
+        // A mark with no anchor (the anchor was invalidated or never written) restores nothing.
+        std::fs::write(&mark, good).unwrap();
+        std::fs::remove_file(&anchor).unwrap();
+        let (_, l) = open(&anchor);
+        assert_eq!(l.outcome, LoadOutcome::Empty);
+    }
+
+    #[test]
+    fn a_crash_between_the_mark_and_the_anchor_is_refused_fail_closed() {
+        let anchor = dir("crash").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        // The process died after the write-ahead mark for record 2 but before the anchor was replaced.
+        // The mark's high-water is HIGHER than the old record's, so honouring it is observable.
+        let higher = record(1).high_water_ms + 7;
+        let mark = LineageMark {
+            sequence: 2,
+            high_water_ms: higher,
+        };
+        std::fs::write(mark_path(&anchor), mark.encode()).unwrap();
+        let (s2, l) = open(&anchor);
+        assert_eq!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::Rollback))
+        );
+        assert_eq!(s2.next_sequence(), 3);
+        // The high-water of the mark is still honoured as a ratchet.
+        assert_eq!(l.high_water_ms, higher);
+    }
+
+    #[test]
+    fn legacy_unknown_corrupt_truncated_oversized_and_unreadable_files_are_never_adopted() {
+        let root = dir("formats");
+        let anchor = root.join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        let good = std::fs::read(&anchor).unwrap();
+        let legacy = legacy_v1_bytes(profile().id(), 10, 20, 77);
+        // A v1 file on its own (no mark, as left by a node that predates this format).
+        let v1_only = root.join("v1.anchor");
+        std::fs::write(&v1_only, &legacy).unwrap();
+        let (s1, l) = open(&v1_only);
+        let LoadOutcome::Refused(Refusal::Legacy(Some(summary))) = l.outcome else {
+            panic!("legacy refusal with a log summary")
+        };
+        assert_eq!(
+            (summary.lower_ms, summary.upper_ms, summary.high_water_ms),
+            (10, 20, 77)
+        );
+        // Reading a v1 file for the log is NOT adopting it: its high-water mark is not ratcheted
+        // (only verified v2 bytes are), nothing in it is restored, and the lineage starts fresh.
+        assert_eq!(l.high_water_ms, 0);
+        assert_eq!(s1.next_sequence(), 1);
+        assert!(!s1.live_record());
+        // The same v1 bytes where a v2 record and mark exist: refused as legacy too.
+        std::fs::write(&anchor, &legacy).unwrap();
+        let (_, l) = open(&anchor);
+        assert!(matches!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Legacy(Some(_)))
+        ));
+        let cases: Vec<(&str, Vec<u8>, Refusal)> = vec![
+            (
+                "unknown version",
+                {
+                    let mut b = good.clone();
+                    b[7] = b'3';
+                    b
+                },
+                Refusal::Format(AnchorError::Version(3)),
+            ),
+            (
+                "bit flip",
+                {
+                    let mut b = good.clone();
+                    b[130] ^= 1;
+                    b
+                },
+                Refusal::Format(AnchorError::Integrity),
+            ),
+            (
+                "truncated",
+                good[..good.len() - 1].to_vec(),
+                Refusal::Format(AnchorError::Length),
+            ),
+            (
+                "oversized",
+                [good.clone(), vec![0u8; 4096]].concat(),
+                Refusal::Format(AnchorError::Length),
+            ),
+            ("empty", Vec::new(), Refusal::Format(AnchorError::Length)),
+            (
+                "garbage",
+                vec![0xaa; 255],
+                Refusal::Format(AnchorError::Magic),
+            ),
+        ];
+        for (name, bytes, expected) in cases {
+            std::fs::write(&anchor, bytes).unwrap();
+            let (_, l) = open(&anchor);
+            assert_eq!(l.outcome, LoadOutcome::Refused(expected), "{name}");
+        }
+        // A directory where the file should be: unreadable, refused, never a panic.
+        std::fs::remove_file(&anchor).unwrap();
+        std::fs::create_dir(&anchor).unwrap();
+        let (_, l) = open(&anchor);
+        assert!(
+            matches!(l.outcome, LoadOutcome::Refused(Refusal::Unreadable(_))),
+            "{:?}",
+            l.outcome
+        );
+    }
+
+    #[test]
+    fn invalidation_makes_every_older_record_stale_and_removes_the_file() {
+        let anchor = dir("invalidate").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        let stale = std::fs::read(&anchor).unwrap();
+        s.invalidate(42).unwrap();
+        assert!(!s.live_record());
+        assert!(!anchor.exists());
+        let m = LineageMark::decode(&std::fs::read(mark_path(&anchor)).unwrap()).unwrap();
+        assert_eq!((m.sequence, m.high_water_ms), (2, 42));
+        let (s2, l) = open(&anchor);
+        assert_eq!(l.outcome, LoadOutcome::Empty);
+        assert_eq!(l.high_water_ms, 42);
+        assert_eq!(s2.next_sequence(), 3);
+        // Putting the invalidated record back does not resurrect it (the mark moved on).
+        std::fs::write(&anchor, &stale).unwrap();
+        let (_, l) = open(&anchor);
+        assert_eq!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::Rollback))
+        );
+    }
+
+    #[test]
+    fn writes_are_atomic_replace_a_stale_temp_file_and_leave_no_temp_behind() {
+        let anchor = dir("atomic").join("clock.anchor");
+        let tmp = sibling(&anchor, ".tmp");
+        let mark_tmp = sibling(&mark_path(&anchor), ".tmp");
+        // Leftovers of an earlier crash (garbage in both temp files).
+        std::fs::write(&tmp, b"half a record").unwrap();
+        std::fs::write(&mark_tmp, b"half a mark").unwrap();
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        assert!(!tmp.exists() && !mark_tmp.exists());
+        assert_eq!(std::fs::read(&anchor).unwrap(), record(1).encode());
+        // The failure to write never leaves a half-written target: here the temp name is a
+        // directory, so the write fails. The previous record may now be OLDER than the live state,
+        // so it is removed (fail closed) instead of being left restorable.
+        std::fs::create_dir(&tmp).unwrap();
+        assert!(s.commit(&record(2)).is_err());
+        assert!(!anchor.exists(), "a record that may be stale is removed");
+        assert!(!s.live_record());
+        assert_eq!(open(&anchor).1.outcome, LoadOutcome::Empty);
+        // The spent number is not reused: the next record is 3, and nothing old is restorable.
+        assert_eq!(s.next_sequence(), 3);
+        std::fs::remove_dir(&tmp).unwrap();
+        assert!(
+            s.needs_write(&record(3)),
+            "the failed record is retried from nothing"
+        );
+        s.commit(&record(3)).unwrap();
+        assert_eq!(
+            open(&anchor).1.outcome,
+            LoadOutcome::Record(Box::new(record(3)))
+        );
+    }
+
+    #[test]
+    fn refreshing_the_high_water_rewrites_only_the_mark_and_keeps_the_lineage() {
+        let anchor = dir("refresh").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        // Nothing live yet: nothing to refresh.
+        s.refresh_high_water(99).unwrap();
+        assert!(!mark_path(&anchor).exists());
+        let r1 = record(1);
+        s.commit(&r1).unwrap();
+        let anchor_bytes = std::fs::read(&anchor).unwrap();
+        // Not higher than what the mark holds: nothing is written.
+        s.refresh_high_water(r1.high_water_ms).unwrap();
+        s.refresh_high_water(1).unwrap();
+        let before = std::fs::read(mark_path(&anchor)).unwrap();
+        assert_eq!(
+            LineageMark::decode(&before).unwrap().high_water_ms,
+            r1.high_water_ms
+        );
+        // A higher mark is written with the SAME sequence; the record is untouched and still current.
+        s.refresh_high_water(r1.high_water_ms + 5_000).unwrap();
+        let m = LineageMark::decode(&std::fs::read(mark_path(&anchor)).unwrap()).unwrap();
+        assert_eq!((m.sequence, m.high_water_ms), (1, r1.high_water_ms + 5_000));
+        assert_eq!(std::fs::read(&anchor).unwrap(), anchor_bytes);
+        let (s2, l) = open(&anchor);
+        assert_eq!(l.outcome, LoadOutcome::Record(Box::new(r1.clone())));
+        assert_eq!(
+            l.high_water_ms,
+            r1.high_water_ms + 5_000,
+            "the refreshed ratchet is what a restart honours"
+        );
+        assert_eq!(s2.next_sequence(), 2);
+        // The refresh is invisible to the lineage: an older record is still a rollback.
+        let (mut s3, _) = open(&anchor);
+        s3.commit(&record(2)).unwrap();
+        std::fs::write(&anchor, &anchor_bytes).unwrap();
+        assert_eq!(
+            open(&anchor).1.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::Rollback))
+        );
+        // After the record is gone (invalidated) a refresh does nothing.
+        s3.invalidate(7).unwrap();
+        let mark = std::fs::read(mark_path(&anchor)).unwrap();
+        s3.refresh_high_water(u64::MAX).unwrap();
+        assert_eq!(std::fs::read(mark_path(&anchor)).unwrap(), mark);
+    }
+
+    #[test]
+    fn a_failed_write_removes_whatever_could_now_be_older_than_the_live_state() {
+        // (a) the anchor write fails AFTER the mark was advanced.
+        let anchor = dir("failclosed-a").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        std::fs::create_dir(sibling(&anchor, ".tmp")).unwrap();
+        assert!(s.commit(&record(2)).is_err());
+        assert!(!anchor.exists());
+        assert!(!s.live_record());
+        assert_eq!(open(&anchor).1.outcome, LoadOutcome::Empty);
+        // (b) the MARK write fails: the old record would still look current, so it is removed.
+        let anchor = dir("failclosed-b").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        let blocked = sibling(&mark_path(&anchor), ".tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(s.commit(&record(2)).is_err());
+        assert!(
+            !anchor.exists(),
+            "an old record with a matching mark must not survive a failed update"
+        );
+        assert_eq!(open(&anchor).1.outcome, LoadOutcome::Empty);
+        // (c) the same for an invalidation that cannot write its mark.
+        let anchor = dir("failclosed-c").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        let blocked = sibling(&mark_path(&anchor), ".tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(s.invalidate(5).is_err());
+        assert!(!anchor.exists());
+        // Once writes work again the store recovers from nothing.
+        std::fs::remove_dir(&blocked).unwrap();
+        assert!(s.needs_write(&record(1)));
+        s.commit(&record(s.next_sequence())).unwrap();
+        assert!(matches!(open(&anchor).1.outcome, LoadOutcome::Record(_)));
+        // (d) a failure to remove is remembered and the file is invalidated once writes work.
+        let anchor = dir("failclosed-d").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        s.live_sequence = None;
+        s.stale_file = true; // as after a removal that failed
+        assert!(
+            s.live_record(),
+            "a file that could not be removed is still invalidated later"
+        );
+        s.invalidate(9).unwrap();
+        assert!(!s.live_record());
+        assert!(!anchor.exists());
+    }
+
+    #[test]
+    fn a_bare_file_name_is_a_file_in_the_current_directory() {
+        assert_eq!(dir_of(Path::new("clock.anchor")), Path::new("."));
+        assert_eq!(
+            dir_of(Path::new("/var/lib/mutiny/clock.anchor")),
+            Path::new("/var/lib/mutiny")
+        );
+        assert_eq!(dir_of(Path::new("sub/clock.anchor")), Path::new("sub"));
+    }
+
+    #[test]
+    fn the_sequence_cannot_wrap() {
+        let anchor = dir("wrap").join("clock.anchor");
+        let m = LineageMark {
+            sequence: u64::MAX,
+            high_water_ms: 0,
+        };
+        std::fs::write(mark_path(&anchor), m.encode()).unwrap();
+        let (mut s, _) = open(&anchor);
+        assert_eq!(s.next_sequence(), u64::MAX);
+        assert!(
+            s.commit(&record(u64::MAX)).is_err(),
+            "exhausted lineage refuses to write"
+        );
+        assert!(s.invalidate(0).is_err());
+        assert!(!anchor.exists());
+    }
+
+    #[test]
+    fn a_mark_alone_still_ratchets_the_high_water() {
+        let anchor = dir("hw").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        std::fs::remove_file(&anchor).unwrap();
+        let (_, l) = open(&anchor);
+        assert_eq!(l.outcome, LoadOutcome::Empty);
+        assert_eq!(l.high_water_ms, record(1).high_water_ms);
+    }
+
+    #[test]
+    fn c5_the_unkeyed_store_never_grants_restart_qualification_and_the_continuation_rule() {
+        // Order C4: the file store can never claim the capability.
+        const { assert!(!AnchorStore::GRANTS_RESTART_QUALIFICATION) };
+        // Order C5, the rule for every backend: without the capability live qualification may
+        // always continue (no stale state can qualify a restart); with it (no such backend exists)
+        // never while a stale record could not be invalidated.
+        for condition in [
+            StoreCondition::Current,
+            StoreCondition::NoLiveRecord,
+            StoreCondition::StaleNotInvalidated,
+        ] {
+            assert!(
+                live_qualification_may_continue(false, condition),
+                "{condition:?}"
+            );
+            assert_eq!(
+                live_qualification_may_continue(true, condition),
+                condition != StoreCondition::StaleNotInvalidated,
+                "{condition:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn c5_the_condition_follows_writes_failures_and_removal() {
+        let anchor = dir("condition").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        assert_eq!(s.condition(), StoreCondition::NoLiveRecord);
+        s.commit(&record(1)).unwrap();
+        assert_eq!(s.condition(), StoreCondition::Current);
+        // A failed write whose possibly stale record WAS removed: nothing live remains.
+        let blocked = sibling(&mark_path(&anchor), ".tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(s.commit(&record(2)).is_err());
+        assert_eq!(s.condition(), StoreCondition::NoLiveRecord);
+        assert!(!anchor.exists());
+        std::fs::remove_dir(&blocked).unwrap();
+        s.commit(&record(3)).unwrap();
+        assert_eq!(s.condition(), StoreCondition::Current);
+        // A failed write whose record could NOT be removed (as after a failed removal): the
+        // explicit stale condition, until an invalidation or a write succeeds.
+        s.live_sequence = None;
+        s.stale_file = true;
+        assert_eq!(s.condition(), StoreCondition::StaleNotInvalidated);
+        s.invalidate(9).unwrap();
+        assert_eq!(s.condition(), StoreCondition::NoLiveRecord);
+        s.commit(&record(s.next_sequence())).unwrap();
+        assert_eq!(s.condition(), StoreCondition::Current);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c8_a_symbolic_link_at_the_record_or_mark_name_is_never_followed() {
+        // Unix only (runs in the Linux campaign, not on the Windows development host).
+        let root = dir("link");
+        let anchor = root.join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        // The real files move aside and links take their names.
+        let moved = root.join("moved.anchor");
+        std::fs::rename(&anchor, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &anchor).unwrap();
+        let (_, l) = open(&anchor);
+        assert!(
+            matches!(l.outcome, LoadOutcome::Refused(Refusal::Unreadable(_))),
+            "{:?}",
+            l.outcome
+        );
+        std::fs::remove_file(&anchor).unwrap();
+        std::fs::rename(&moved, &anchor).unwrap();
+        let mark = mark_path(&anchor);
+        let moved_mark = root.join("moved.seq");
+        std::fs::rename(&mark, &moved_mark).unwrap();
+        std::os::unix::fs::symlink(&moved_mark, &mark).unwrap();
+        let (_, l) = open(&anchor);
+        assert_eq!(
+            l.outcome,
+            LoadOutcome::Refused(Refusal::Lineage(AnchorError::LineageMissing)),
+            "an unreadable mark is no mark"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stored_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let anchor = dir("mode").join("clock.anchor");
+        let (mut s, _) = open(&anchor);
+        s.commit(&record(1)).unwrap();
+        for f in [anchor.clone(), mark_path(&anchor)] {
+            let mode = std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+}

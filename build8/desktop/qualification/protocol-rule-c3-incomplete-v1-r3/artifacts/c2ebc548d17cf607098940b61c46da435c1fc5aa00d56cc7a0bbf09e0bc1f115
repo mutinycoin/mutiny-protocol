@@ -1,0 +1,280 @@
+//! Encrypted Node-control custody; no production provisioning or generic signer.
+//! Independent from wallet, Continuity, TPM-native and Transport-role keys.
+use mutiny_consensus_v8::{
+    Hash, anchors::FinalizedAnchor, canonical_store_v2::CanonicalStore, continuity_exit_v2::Exit,
+    node_authority_v2::Authority, node_key_rotate_v2::NodeKeyRotate,
+};
+use mutiny_crypto_v2::{HybridKey, PublicKey, Role};
+type Result<T> = std::result::Result<T, String>;
+
+pub struct EncryptedNodeKey {
+    node: Hash,
+    context: Hash,
+    descriptor: Vec<u8>,
+    key: HybridKey,
+}
+impl EncryptedNodeKey {
+    pub(crate) fn sign_observation_intent(
+        &self,
+        descriptor: &[u8],
+        intent: &mutiny_consensus_v8::observation_receipt_v2::Intent,
+    ) -> Result<Vec<u8>> {
+        if descriptor != self.descriptor {
+            return Err("Observation Node generation".into());
+        }
+        let signature = self
+            .key
+            .sign(mutiny_crypto_v2::Domain::NodeObservation, intent.body())
+            .map_err(|_| "Observation signing failed")?;
+        intent
+            .finish(&signature)
+            .map_err(|_| "Observation signature verification failed".into())
+    }
+    pub(crate) fn worker_session_context(
+        &self,
+        chain: &CanonicalStore,
+        parent: &FinalizedAnchor,
+        license: Hash,
+        worker: Hash,
+        timestamp: u64,
+    ) -> mutiny_transport_v2::Result<mutiny_transport_v2::worker_context_v2::Context> {
+        self.current(chain, parent)
+            .map_err(|_| mutiny_transport_v2::Error::Context)?;
+        crate::worker_session_custody_v2::current_context(
+            chain,
+            parent,
+            license,
+            worker,
+            timestamp,
+            &self.descriptor,
+        )
+    }
+    pub(crate) fn sign_worker_session(
+        &self,
+        context: &mutiny_transport_v2::worker_context_v2::Context,
+        hello: &[u8],
+        body: &[u8],
+    ) -> mutiny_transport_v2::Result<mutiny_crypto_v2::HybridSignature> {
+        use mutiny_transport_v2::worker_handshake_v2::NodeSessionSigner;
+        self.key.sign_session(context, hello, body)
+    }
+    pub fn unlock(
+        chain: &CanonicalStore,
+        parent: &FinalizedAnchor,
+        node: Hash,
+        encrypted: &[u8],
+        password: &str,
+    ) -> Result<Self> {
+        let pins = chain
+            .current_node_authority(parent, node)
+            .map_err(|_| "Node canonical authority unavailable")?;
+        let (key, generation) =
+            HybridKey::open_for(Role::Node, password, &pins.context(), encrypted)
+                .map_err(|_| "Node custody authentication failed")?;
+        if key
+            .public()
+            .descriptor(generation)
+            .map_err(|_| "Node descriptor invalid")?
+            != pins.descriptor()
+        {
+            return Err("Node custody generation mismatch".into());
+        }
+        // Password KDF work can take time. Discard the key if canonical authority
+        // changed while unlocking; no stale successful unlock is returned.
+        let next = chain
+            .current_node_authority(parent, node)
+            .map_err(|_| "Node authority changed during unlock")?;
+        if next.context() != pins.context() {
+            return Err("Node custody context changed".into());
+        }
+        Ok(Self {
+            node,
+            context: pins.context(),
+            descriptor: pins.descriptor().to_vec(),
+            key,
+        })
+    }
+    /// Publish only an authenticated current Node envelope; never overwrites a
+    /// generation. A filesystem failure may leave a complete target to inspect.
+    #[cfg(target_os = "linux")]
+    pub fn publish_current_generation(
+        chain: &CanonicalStore,
+        parent: &FinalizedAnchor,
+        node: Hash,
+        directory: &std::path::Path,
+        encrypted: &[u8],
+        password: &str,
+    ) -> Result<()> {
+        let unlocked = Self::unlock(chain, parent, node, encrypted, password)?;
+        let (_, generation) = PublicKey::decode_descriptor(&unlocked.descriptor)
+            .map_err(|_| "Node descriptor invalid")?;
+        crate::continuity_generation_store_v2::publish_node(
+            directory,
+            unlocked.context,
+            generation,
+            encrypted,
+        )
+        .map_err(str::to_owned)?;
+        unlocked.current(chain, parent)?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    pub fn unlock_generation_file(
+        chain: &CanonicalStore,
+        parent: &FinalizedAnchor,
+        node: Hash,
+        directory: &std::path::Path,
+        password: &str,
+    ) -> Result<Self> {
+        let pins = chain
+            .current_node_authority(parent, node)
+            .map_err(|_| "Node canonical authority unavailable")?;
+        let (_, generation) = PublicKey::decode_descriptor(pins.descriptor())
+            .map_err(|_| "Node descriptor invalid")?;
+        let encrypted =
+            crate::continuity_generation_store_v2::read_node(directory, pins.context(), generation)
+                .map_err(str::to_owned)?;
+        Self::unlock(chain, parent, node, &encrypted, password)
+    }
+    fn current(&self, chain: &CanonicalStore, parent: &FinalizedAnchor) -> Result<Authority> {
+        let pins = chain
+            .current_node_authority(parent, self.node)
+            .map_err(|_| "Node authority unavailable")?;
+        if pins.context() != self.context || pins.descriptor() != self.descriptor {
+            return Err("Node custody retired or replaced".into());
+        }
+        Ok(pins)
+    }
+    /// Only the exact canonical Node authorizer path is available here. Owner
+    /// authorization must be produced independently in approved wallet custody.
+    pub fn authorize_rotation(
+        &self,
+        chain: &CanonicalStore,
+        operation: &mut NodeKeyRotate,
+    ) -> Result<()> {
+        let pins = self.current(chain, &operation.parent)?;
+        let control = pins.control();
+        if operation.node != self.node
+            || operation.hardware_generation != control.hardware_generation
+            || control.sequence.checked_add(1) != Some(operation.sequence)
+            || operation.current != self.descriptor
+            || operation.authorizer != self.descriptor
+        {
+            return Err("Node rotation control mismatch".into());
+        }
+        let body = operation.body().map_err(|_| "Node rotation encoding")?;
+        let (proposed, _) = PublicKey::decode_descriptor(&operation.proposed)
+            .map_err(|_| "Node replacement descriptor")?;
+        proposed
+            .verify(
+                mutiny_crypto_v2::Domain::NodeKeyRotatePossession,
+                &body,
+                &operation.possession,
+            )
+            .map_err(|_| "Node replacement possession")?;
+        let mut signed = operation.clone();
+        signed
+            .sign_authorization(&self.key)
+            .map_err(|_| "Node rotation signing failed")?;
+        self.current(chain, &operation.parent)?;
+        *operation = signed;
+        Ok(())
+    }
+    /// Sign only a same-hardware Continuity rotation whose separate owner,
+    /// native TPM and replacement-key proofs already validate in canonical state.
+    pub fn authorize_continuity_rotation(
+        &self,
+        chain: &CanonicalStore,
+        operation: &mut mutiny_consensus_v8::continuity_key_rotate_v2::KeyRotate,
+    ) -> Result<()> {
+        self.current(chain, &operation.parent)?;
+        if operation.binding.signer_descriptor() != self.descriptor {
+            return Err("Node binding signer mismatch".into());
+        }
+        chain
+            .validate_node_continuity_rotation(self.node, operation)
+            .map_err(|_| "Continuity rotation admission preflight failed")?;
+        let mut signed = operation.clone();
+        signed
+            .binding
+            .sign(&self.key)
+            .map_err(|_| "Node binding signing failed")?;
+        self.current(chain, &operation.parent)?;
+        *operation = signed;
+        Ok(())
+    }
+    /// Owner, replacement hybrid possession and fresh physical evidence must
+    /// validate first. The new native key then signs the completed Node binding.
+    pub fn authorize_hardware_rotation(
+        &self,
+        chain: &CanonicalStore,
+        operation: &mut mutiny_consensus_v8::hardware_rotate_v2::HardwareRotate,
+    ) -> Result<()> {
+        self.current(chain, &operation.parent)?;
+        if operation.binding.signer_descriptor() != self.descriptor {
+            return Err("Node binding signer mismatch".into());
+        }
+        chain
+            .validate_node_hardware_rotation(self.node, operation)
+            .map_err(|_| "Hardware rotation admission preflight failed")?;
+        let mut signed = operation.clone();
+        signed
+            .binding
+            .sign(&self.key)
+            .map_err(|_| "Node binding signing failed")?;
+        // Changing Node possession invalidates any previous native signature.
+        signed.native_possession = [0; 64];
+        self.current(chain, &operation.parent)?;
+        *operation = signed;
+        Ok(())
+    }
+    /// Typed physical-node work signing after full deterministic candidate
+    /// execution. The coordinator must separately reserve/persist its ticket
+    /// before calling and persist the signed offer before transport delivery.
+    pub fn authorize_work(
+        &self,
+        chain: &CanonicalStore,
+        parent: &FinalizedAnchor,
+        authority: &mut mutiny_consensus_v8::work_authority_v2::Authority,
+        body: &mutiny_consensus_v8::blocks::BlockBody,
+    ) -> Result<()> {
+        self.current(chain, parent)?;
+        chain
+            .validate_node_work(parent, self.node, authority, body)
+            .map_err(|_| "Node work canonical execution preflight failed")?;
+        let mut signed = authority.clone();
+        signed
+            .sign(&self.key)
+            .map_err(|_| "Node work signing failed")?;
+        self.current(chain, parent)?;
+        *authority = signed;
+        Ok(())
+    }
+    pub fn authorize_exit(
+        &self,
+        chain: &CanonicalStore,
+        parent: &FinalizedAnchor,
+        operation: &mut Exit,
+    ) -> Result<()> {
+        let pins = self.current(chain, parent)?;
+        let control = pins.control();
+        if operation.genesis != parent.genesis
+            || operation.fingerprint != parent.fingerprint
+            || operation.parent_anchor != parent.id()
+            || parent.height.checked_add(1) != Some(operation.height)
+            || operation.node != self.node
+            || operation.hardware_generation != control.hardware_generation
+            || control.sequence.checked_add(1) != Some(operation.sequence)
+            || operation.authorizer != self.descriptor
+        {
+            return Err("Node exit control mismatch".into());
+        }
+        let mut signed = operation.clone();
+        signed
+            .sign(&self.key)
+            .map_err(|_| "Node exit signing failed")?;
+        self.current(chain, parent)?;
+        *operation = signed;
+        Ok(())
+    }
+}

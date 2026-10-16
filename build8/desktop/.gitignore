@@ -1,0 +1,32 @@
+**/target/
+**/*.wallet
+**/*.sqlite*
+
+**/__pycache__/
+**/*.pyc
+
+# Local machine-identifying admission evidence; keep outside source history.
+qualification/node-a-*.json
+# Explicit spellings: do not rely on core.ignorecase (Linux / case-sensitive checkouts match these
+# patterns exactly). A pattern without a trailing slash also matches a DIRECTORY of that name and so
+# everything below it (for example qualification/node-a-linux/). Uppercase, lowercase, then every
+# capitalisation by character classes.
+qualification/NODE-A-*.json
+qualification/NODE-A-*
+qualification/node-a-*
+qualification/[Nn][Oo][Dd][Ee]-[Aa]-*
+qualification/*LIVE-TPM*
+qualification/*live-tpm*
+qualification/*[Ll][Ii][Vv][Ee]-[Tt][Pp][Mm]*
+qualification/*PRIVATE*
+qualification/*private*
+qualification/*[Pp][Rr][Ii][Vv][Aa][Tt][Ee]*
+# Former tracked host-derived admission fixtures, replaced by the TEST-VALUE fixtures
+# qualification/{JOIN,RECOVERY-MATERIAL,ROTATION}-TEST-VALUE-FIXTURE-V1.json. Real physical evidence
+# is supplied to the same checks at runtime by path and must never be committed under these names.
+qualification/JOIN-PHYSICAL-FIXTURE-V1.json
+qualification/RECOVERY-MATERIAL-PHYSICAL-FIXTURE-V1.json
+qualification/ROTATION-PHYSICAL-FIXTURE-V1.json
+**/*.tpm-private
+**/*.dpapi
+**/*.test-value-backup

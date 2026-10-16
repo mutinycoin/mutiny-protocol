@@ -1,6 +1,6 @@
 # Frozen platform source differences
 
-The Desktop and Linux catalogs identify different source projections. Their separate recorded gates must not be represented as a single combined candidate pass. No source payload is added by this documentation change.
+The Desktop and Linux catalogs identify different source projections. Their separate recorded gates must not be represented as a single combined candidate pass. The approved integration retains both exact platform variants; restored synthetic test inputs require fresh qualification.
 
 ## Five-file replay-parent cohort
 
@@ -38,6 +38,6 @@ The Linux file always performs the native public-key validity/decode checks and 
 
 All 2,589 frozen Desktop source files are now present and independently hash-verified against the same source record used by all four frozen compile jobs. The final internal 341-file publication is verified in full, including five overlapping independently recovered files. No source bytes remain missing.
 
-The proposed publication layout is `build8/linux/` and `build8/desktop/`, preserving the existing repository root and its history. This keeps all eight divergent common paths explicit. The exact private snapshots remain distinct from the publication projection: generated chain state and machine-path-bearing operator/history records are withheld, and one Chrony provenance comment uses a repository-relative path. Source security guards remain unchanged. The local candidate has not been built, staged or published; exact machine-identity classification and Vercel branch/PR behavior remain open.
+The proposed publication layout is `build8/linux/` and `build8/desktop/`, preserving the existing repository root and its history. This keeps all eight divergent common paths explicit. The exact private snapshots remain distinct from the publication projection: generated chain state and machine-path-bearing operator/history records are withheld, and one Chrony provenance comment uses a repository-relative path. Source security guards remain unchanged. The exact approved roster is staged locally, with original machine identifiers unchanged. It has not been built or published; Vercel branch/PR production exclusion remains open.
 
 Static include review exposes the withheld chain fixture, two Treasury documents already absent from frozen Linux, two Desktop test helpers absent from Linux optional trading-service tests, and a dangling include in an unused support copy. The exact-input restoration proposal is described in the reproducibility review. These are reproducibility gaps in the publication projection; the earlier platform gate results must not be attributed to this projection.

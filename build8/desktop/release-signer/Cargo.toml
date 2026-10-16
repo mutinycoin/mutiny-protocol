@@ -1,0 +1,62 @@
+[package]
+name = "mutiny-offline-release-signer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+mutiny-crypto-v2 = { path = "../crypto-v2", features = ["release-custody"] }
+minicbor = { version = "=0.26.5", features = ["std"] }
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+zeroize = "=1.9.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Console", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os="linux")'.dependencies]
+libc = "=0.2.189"
+
+[dev-dependencies]
+serde_json = "=1.0.151"
+
+[patch.crates-io]
+hkdf = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }
+
+# Test/dev profile only; release builds are unaffected. Same block as consensus/Cargo.toml.
+# The hybrid signature (FN-DSA), KDF and C crypto dependencies are far too slow at opt-level 0,
+# (consensus/Cargo.toml: debug tests there expired their wall-clock deadlines). Only dependencies are
+# optimized: this crate keeps debug assertions and overflow checks.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Shipping release profile (Build 8 configuration record: docs/BUILD-CONFIGURATIONS-V1.md).
+# Profile tables are honoured only in the ROOT manifest being built, so every shipped root
+# carries the same table. Cargo's release default would be overflow-checks = false while
+# all tests run with it on; release-signing arithmetic must behave identically in both.
+[profile.release]
+opt-level = 3
+# Checked integer arithmetic in the shipped binary (tests already run with checks on).
+overflow-checks = true
+debug-assertions = false
+# One codegen unit: deterministic, reproducible code generation.
+codegen-units = 1
+# Symbols are kept: the exclusion checks (build/check-shipping-config.sh) inspect them.
+strip = "none"
+# LTO off: it is not needed for correctness, and the C sources compiled by crypto-v2's build.rs
+# make cross-language LTO an unverified variable. Revisit only with a reproducibility test.
+lto = false
+# UNWIND, deliberately (the same value as every other shipped root). The signer starts no
+# thread of its own, but crypto-v2 runs every private-key operation it uses (custodian
+# creation, signing, vault seal and open) on a worker thread (crypto-v2/src/lib.rs
+# private_job) and maps a worker panic to Error::Worker through JoinHandle::join(); with
+# panic = "abort" a panic there would abort the whole process instead of returning an error
+# to the ceremony, and Zeroizing secret buffers are dropped (zeroized) only while unwinding.
+# Abort is not provably safe.
+panic = "unwind"

@@ -1,0 +1,789 @@
+AMENDMENT NOTICE (2026-10-03, Architect decision D3)
+The list items "MTP rules" and "local future-hold behavior" are amended (search "D3" and "SUPERSEDED"). Everything else is unchanged.
+The text as found, before amendment, is preserved in git history (commit 204c891 on branch succ/docs), sha256
+873b8d33e2b228f99fa1df9cc22e56e8136d4d705ae3cbab9ef7d6b06e4da76d. CONTINUITY-ANCHOR-DECISION-V1.md cites that hash as authority;
+the citation refers to the as-found text. See SPEC-AMENDMENT-REGISTER-D3-V1.md.
+----------------------------------------------------------------------------
+
+MUTINY PROTOCOL BUILD 8 —
+POST-GENESIS-POW CONTINUATION
+
+FORGE DECISION:
+
+BUILD8 GENESIS POW PHYSICAL QUALIFICATION:
+PASS
+
+GENESIS ACTIVE MINER SET:
+Miner01 through Miner12
+
+ALL12:
+RAM-ONLY QUALIFICATION PASS
+80 MHz
+NO FLASH MUTATION
+
+AGGREGATE MEASURED HASHRATE:
+84,323 hashes/second
+
+NOMINAL EXPECTED HASHES PER 60-SECOND BLOCK:
+5,059,380
+
+RUST / PYTHON / ESP32 C POW VECTORS:
+EXACT MATCH
+
+INITIAL 60-SECOND POW TARGET:
+DERIVED
+
+COM4:
+LORA DEVICE
+UNTOUCHED
+
+NO BUILD8 MINER FIRMWARE FLASH HAS OCCURRED.
+
+This closes the physical hashrate/initial-target prerequisite.
+
+Do NOT return merely to report this milestone.
+
+Continue automatically through the remaining pre-Genesis work.
+
+======================================================================
+1. LOCK POW QUALIFICATION ARTIFACTS
+======================================================================
+
+Lock exact:
+
+GENESIS-POW-VECTORS.json
+
+per-Miner rates
+
+aggregate rate
+
+InitialPoWTarget
+
+WorkHeaderV1 bytes/field offsets
+
+nonce representation
+
+SHA256d semantics
+
+hash-to-target integer mapping
+
+retarget vectors
+
+Rust/Python/C reference identities.
+
+Record exact source/toolchain hashes.
+
+Do not recompute the initial target from later synthetic estimates.
+
+If the active Genesis fleet changes before Genesis:
+remeasure/rederive from the actual qualified active fleet.
+
+======================================================================
+2. COMPLETE CONSENSUS IMPLEMENTATION
+======================================================================
+
+Implement the complete Build8 consensus runtime from the locked specification.
+
+Required:
+
+Genesis descriptor validation
+
+BlockHeader / BlockBody codecs
+
+WorkHeaderV1
+
+licensed Worker/Ticket validation
+
+PoW validation
+
+timestamps / Genesis-relative MiningEpoch
+
+MTP rules [and, from Architect decision D3 (2026-10-03), the parent-order rule: a block timestamp must not precede its parent's]
+
+local future-hold behavior [SUPERSEDED 2026-10-03 by Architect decision D3: there is no wall-clock hold; signing a fresh block vote is gated by the qualified clock alone]
+
+InitialPoWTarget
+
+60-block retarget
+
+UTXO/state transition
+
+fees
+
+coinbase
+
+100-block maturity
+
+1 MUT subsidy
+
+transaction expiry
+
+durable transaction lifecycle
+
+chain selection / reorg
+
+Continuity Consensus
+
+reputation
+
+TPM voter registry
+
+BootstrapRecoveryAuthority
+
+decentralized-activation disable transition.
+
+No in-memory struct hashing.
+
+Canonical bytes only.
+
+======================================================================
+3. BUILD8 GENESIS VECTORS
+======================================================================
+
+Produce immutable independent vectors for:
+
+Genesis descriptor
+
+Genesis state
+
+Genesis StateRoot
+
+Genesis hash
+
+GenesisID
+
+ProtocolFingerprint
+
+12 fresh Bootstrap LicenseRecords
+
+Build8 owner AddressID
+
+Continuity registry
+
+Node A bootstrap voter
+
+GenesisBootstrapVotingWeight=1
+
+BootstrapRecoveryAuthority
+
+InitialPoWTarget.
+
+Genesis itself:
+
+height0
+no PoW
+no mining subsidy
+no Worker/Ticket.
+
+Block1:
+first licensed PoW block.
+
+======================================================================
+4. NODE A TPM QUALIFICATION
+======================================================================
+
+Node A is:
+
+THE PHYSICAL LINUX SERVER LAPTOP
+
+NOT the Dell Precision 3561.
+
+Finish supervised physical TPM qualification on Node A.
+
+Require:
+
+bare-metal confirmation
+
+real TPM
+
+manufacturer/EK validation
+
+ActivateCredential
+
+non-exportable TPM P-256 Continuity voting key
+
+fresh quote
+
+measured-boot/platform binding
+
+restart persistence.
+
+No VM/vTPM.
+
+If Node A fails physical TPM qualification:
+HARD STOP FOR FORGE.
+
+Do not substitute the Dell automatically.
+
+======================================================================
+5. NODE B
+======================================================================
+
+Vultr is Build8 Node B.
+
+It may:
+
+validate
+synchronize
+serve wallet proofs
+coordinate6 miners
+relay traffic.
+
+It has:
+
+Continuity voting weight = 0
+
+Bond eligibility = NO.
+
+No cloud/vTPM exception.
+
+======================================================================
+6. FULL NODE RUNTIME
+======================================================================
+
+Build the runtime cleanly around independent state machines:
+
+PEER SESSION
+
+CANONICAL BASIS
+
+CONTINUITY
+
+CANDIDATE AUTHORITY
+
+DURABLE TRANSACTION LIFECYCLE
+
+WORKER SESSION
+
+ASSIGNMENT
+
+RESULT
+
+OBSERVATION ACCOUNTING.
+
+Do not reintroduce Build7.6 lifetime coupling.
+
+======================================================================
+7. DURABLE MEMPOOL FROM FIRST RELEASE
+======================================================================
+
+Once admitted:
+
+transaction remains durable:
+
+PENDING
+
+until explicit terminal:
+
+CONFIRMED
+EXPIRED
+SUPERSEDED
+INPUT_SPENT
+REJECTED.
+
+Ordinary block:
+does not delete valid pending transaction.
+
+Restart:
+does not lose valid pending transaction.
+
+Non-producing Node A/B role differences:
+do not change transaction lifecycle semantics.
+
+======================================================================
+8. CONTINUOUS MINING FROM FIRST RELEASE
+======================================================================
+
+RUN means operator intent.
+
+Normal:
+
+epoch transition
+parent change
+result accounting
+peer refresh
+archive retry
+session reconnect
+
+must NOT clear RUN.
+
+Worker session survives ordinary work retirement.
+
+Assignments retire independently.
+
+Fresh work issues automatically.
+
+======================================================================
+9. OBSERVATION ACCOUNTING V8
+======================================================================
+
+Implement V8 accounting without Build7.6's lifetime-cap design.
+
+Require:
+
+monotonic accepted-result total
+
+exact duplicate suppression
+
+attribution conflict detection
+
+crash-safe pending accounting
+
+bounded device storage
+
+host-backed exact membership/archive if needed
+
+no permanent RUN clearing for transient accounting failure.
+
+Backpressure and retry are acceptable.
+
+Permanent STOP is not.
+
+======================================================================
+10. PRODUCTION MINER FIRMWARE
+======================================================================
+
+Now convert the RAM-only qualified hashing path into the actual Build8 Miner
+firmware.
+
+Requirements:
+
+owner-neutral
+
+network-specific
+
+fresh installation state:
+FRESH / UNENROLLED
+
+supervised enrollment
+
+fresh Build8 WorkerID
+
+fresh enrollment key
+
+fresh License binding
+
+coordinator profile
+
+persistent RUN intent
+
+continuous worker session
+
+exact WorkHeader hashing
+
+qualified80-MHz production configuration
+
+Observation V8 accounting
+
+safe signed updates.
+
+Do not import Build7.6 WorkerIDs/configuration.
+
+======================================================================
+11. FIRMWARE QUALIFICATION BEFORE FLASH
+======================================================================
+
+Before touching all12 production miners:
+
+host/native tests
+
+C exact vectors
+
+work assignment vectors
+
+ticket expiry
+
+epoch rollover
+
+parent change
+
+session survival
+
+RUN persistence
+
+result/receipt
+
+accounting retry
+
+duplicate result
+
+wrong NetworkID
+
+wrong GenesisID
+
+wrong Worker
+
+wrong License
+
+reboot
+
+update
+
+crash/power-loss boundaries.
+
+Then flash ONE designated Miner first as Build8 canary.
+
+Only after canary PASS proceed to the other11.
+
+======================================================================
+12. TWELVE-MINER ASSIGNMENT
+======================================================================
+
+After firmware/enrollment qualification:
+
+Miner01..Miner06
+→ Node A physical Linux Server Laptop
+
+Miner07..Miner12
+→ Node B Vultr
+
+Use the12 fresh Build8 Bootstrap Licenses.
+
+One active Worker per License initially.
+
+Record for every Miner:
+
+physical Miner number
+
+base MAC
+
+fresh Build8 WorkerID
+
+enrollment public key
+
+Build8 LicenseID
+
+coordinator NodeID.
+
+======================================================================
+13. TWO-NODE PRE-GENESIS QUALIFICATION
+======================================================================
+
+Before Genesis lock, qualify the exact node binaries against synthetic/fixed
+Build8 vectors.
+
+Require:
+
+Node A / Node B authenticated P2P
+
+identical Genesis candidate/state construction
+
+transaction persistence
+
+candidate authority
+
+worker coordination
+
+PoW validation
+
+reorg
+
+restart
+
+proof APIs
+
+Continuity behavior.
+
+No actual Build8 Mainnet history yet.
+
+======================================================================
+14. GENESIS CEREMONY PRECHECK
+======================================================================
+
+Before executing Genesis:
+
+Wallet V8:
+PASS
+
+wallet restore:
+PASS
+
+12 historical Bootstrap purchase entitlement:
+VERIFIED
+
+12 fresh LicenseRecords:
+READY
+
+Node A physical TPM:
+QUALIFIED
+
+Node B:
+READY / zero Continuity weight
+
+Consensus runtime:
+PASS
+
+InitialPoWTarget:
+LOCKED
+
+12 Miners:
+qualified
+
+ProtocolFingerprint:
+LOCKED
+
+Genesis descriptor:
+LOCKED
+
+Genesis StateRoot:
+LOCKED
+
+GenesisID:
+LOCKED
+
+No unresolved consensus parameter.
+
+======================================================================
+15. GENESIS CEREMONY
+======================================================================
+
+Then perform the real Build8 Genesis Ceremony.
+
+Build8 Genesis becomes the actual new Mainnet history.
+
+No Build7.6 state enters it.
+
+Genesis:
+
+height0
+
+no PoW
+
+no reward
+
+12 licenses
+
+new owner wallet
+
+Node A provisional Continuity voting weight1
+
+BootstrapRecoveryAuthority enabled
+
+Build8 InitialPoWTarget.
+
+After ceremony:
+
+do not regenerate Genesis.
+
+All subsequent work uses the exact locked GenesisID.
+
+======================================================================
+16. FIRST POST-GENESIS BLOCK
+======================================================================
+
+After Genesis:
+
+enroll/start the intended miners.
+
+Height1 must be the first:
+
+licensed
+
+Ticket-authorized
+
+Continuity-certified
+
+SHA256d PoW block.
+
+Verify:
+
+parent = Genesis
+
+target = InitialPoWTarget
+
+reward = 1 MUT
+
+correct Worker/License owner
+
+correct state transition.
+
+This is the first real mining acceptance gate.
+
+======================================================================
+17. CONTINUE TO FULL12-MINER OPERATION
+======================================================================
+
+After block1 PASS:
+
+bring all12 miners online.
+
+Require:
+
+6 on Node A
+
+6 on Vultr
+
+all RUN
+
+all remain RUN
+
+assignments transition automatically
+
+worker sessions stable
+
+accounting exact.
+
+Do not stop after block1.
+
+Continue into the sustained100-block campaign.
+
+======================================================================
+18. 100-BLOCK CAMPAIGN
+======================================================================
+
+Require at least:
+
+100 canonical Build8 blocks
+
+all12 miners participating
+
+multiple retarget boundaries
+
+epoch transitions
+
+node peer reconnect tests
+
+Miner reconnect tests
+
+transaction pending persistence
+
+Observation V8 accounting
+
+node restart recovery.
+
+No manual Miner RUN recovery during ordinary lifecycle.
+
+======================================================================
+19. RETARGET PHYSICAL VALIDATION
+======================================================================
+
+At height60:
+
+verify first retarget uses:
+
+timestamp60 - GenesisTimestamp
+
+and exact InitialPoWTarget.
+
+At height61:
+
+new target applies.
+
+At height120:
+
+verify second retarget.
+
+Compare real block-time behavior to expected stochastic distribution.
+
+Do not modify target because individual blocks vary widely.
+
+======================================================================
+20. PAYMENT BEFORE LORA
+======================================================================
+
+After Internet-mode runtime is stable:
+
+use Desktop V8 for an ordinary payment.
+
+Create
+
+sign
+
+submit once
+
+PENDING
+
+mine unrelated blocks if necessary
+
+PENDING persists
+
+eventually CONFIRMED.
+
+Restart nodes/Desktop and verify durable status.
+
+This payment lifecycle must PASS before LoRa settlement integration.
+
+======================================================================
+21. LORA REMAINS IN BUILD8
+======================================================================
+
+After core Build8 payment/mining is stable:
+
+continue directly into the accepted:
+
+LoRa Survival Transport V1
+
+implementation.
+
+COM4 remains protected until its explicit LoRa hardware gate.
+
+Do not use COM4 for miner work.
+
+======================================================================
+22. REPORTING
+======================================================================
+
+Do not return merely because:
+
+consensus crate compiles
+
+firmware builds
+
+one Miner flashes
+
+block1 mines
+
+height60 retargets.
+
+Continue automatically.
+
+Return only for a HARD STOP or when the next genuinely Architect-level
+consensus/hardware decision appears.
+
+======================================================================
+23. HARD STOPS
+======================================================================
+
+STOP only if:
+
+Node A fails physical TPM qualification
+
+Genesis data cannot be made deterministic
+
+Rust/Python/C consensus bytes diverge
+
+production ESP32 PoW differs from qualified vectors
+
+wallet/custody security needs custom crypto
+
+consensus rules require a new Architect choice
+
+firmware requires destructive/eFuse action
+
+COM4 would need to be touched before LoRa authorization
+
+Build8 Genesis inputs become inconsistent.
+
+Routine defects:
+fix and continue.
+
+======================================================================
+24. TARGET RESULT
+======================================================================
+
+Next major terminal milestone should be:
+
+BUILD8 GENESIS READY —
+
+WALLET READY;
+NODE A TPM QUALIFIED;
+NODE B READY;
+CONSENSUS RUNTIME QUALIFIED;
+12 MINERS QUALIFIED;
+INITIAL POW TARGET LOCKED;
+GENESIS DESCRIPTOR LOCKED;
+GENESISID LOCKED;
+PROTOCOLFINGERPRINT LOCKED;
+NO UNRESOLVED CONSENSUS PARAMETERS.
+
+Then proceed directly into the real Genesis Ceremony unless a hard stop exists.

@@ -1,0 +1,199 @@
+//! Durable local evidence inbox; no receipt grants consensus authority.
+use super::*;
+use crate::equivocation::{Evidence, HistoricalAuthority};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceStatus {
+    Pending,
+    Included,
+    Expired,
+}
+
+impl EvidenceStatus {
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Included => "INCLUDED",
+            Self::Expired => "EXPIRED",
+        }
+    }
+    fn decode(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Pending),
+            1 => Ok(Self::Included),
+            2 => Ok(Self::Expired),
+            _ => Err(ChainError::Integrity),
+        }
+    }
+}
+pub(super) fn reconcile(db: &Connection, height: u64, state: &State) -> Result<()> {
+    let rows = {
+        let mut q = db.prepare("SELECT id,offense FROM incoming_equivocation WHERE status=0")?;
+        q.query_map([], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    for (id, offense) in rows {
+        let key: Hash = id
+            .as_slice()
+            .try_into()
+            .map_err(|_| ChainError::Integrity)?;
+        let status = if state.penalties.events.contains_key(&key) {
+            1
+        } else if !crate::bonds::actionable(
+            counter(offense)?,
+            height.checked_add(1).ok_or(Error::Overflow)?,
+        ) {
+            2
+        } else {
+            continue;
+        };
+        db.execute(
+            "UPDATE incoming_equivocation SET status=?2 WHERE id=?1",
+            params![id, status],
+        )?;
+    }
+    Ok(())
+}
+impl CanonicalStore {
+    /// Explicit local byte budget counts all retained payloads, including terminal
+    /// records. Capacity failure never evicts previously admitted evidence.
+    pub fn admit_equivocation(
+        &mut self,
+        proof: &Evidence,
+        byte_budget: u64,
+    ) -> Result<EvidenceStatus> {
+        if self.integrity_halted()? {
+            return Err(ChainError::Integrity);
+        }
+        let wire = proof.encode()?;
+        let id = proof.id();
+        let t = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let head = tip(&t)?;
+        let state = historical_state(&t, &head)?;
+        if let Some(event) = state.penalties.events.get(&id) {
+            if event.evidence.encode()? != wire {
+                return Err(Error::Duplicate.into());
+            }
+            return Ok(EvidenceStatus::Included);
+        }
+        if let Some((stored, status)) = t
+            .query_row(
+                "SELECT wire,status FROM incoming_equivocation WHERE id=?1",
+                [id.as_slice()],
+                |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, u8>(1)?)),
+            )
+            .optional()?
+        {
+            if stored != wire {
+                return Err(Error::Duplicate.into());
+            }
+            return EvidenceStatus::decode(status);
+        }
+        let e = proof.a.decision.height;
+        if !crate::bonds::actionable(e, head.height.checked_add(1).ok_or(Error::Overflow)?) {
+            return Err(Error::InvalidCounter.into());
+        }
+        let old = history_tip(&t, e.checked_sub(1).ok_or(Error::InvalidCounter)?)?;
+        let mut old_state = historical_state(&t, &old)?;
+        apply_accepted_recovery(&t, &old, &mut old_state)?;
+        let anchor = |tip: &Tip| FinalizedAnchor {
+            network: crate::NETWORK_ID,
+            genesis: self.genesis,
+            fingerprint: self.fingerprint,
+            height: tip.height,
+            block: tip.block,
+        };
+        proof.validate(
+            &anchor(&head),
+            &HistoricalAuthority {
+                parent: anchor(&old),
+                registry: old_state.continuity.ok_or(Error::UnqualifiedPhysical)?,
+            },
+        )?;
+        let used: u64 = t.query_row(
+            "SELECT COALESCE(sum(length(wire)),0) FROM incoming_equivocation",
+            [],
+            |r| r.get(0),
+        )?;
+        if used
+            .checked_add(wire.len() as u64)
+            .is_none_or(|n| n > byte_budget)
+        {
+            return Err(ChainError::EvidenceCapacity);
+        }
+        t.execute(
+            "INSERT INTO incoming_equivocation VALUES(?1,?2,?3,0)",
+            params![id.as_slice(), wire, e.to_be_bytes().as_slice()],
+        )?;
+        t.commit()?;
+        Ok(EvidenceStatus::Pending)
+    }
+    pub fn equivocation_status(&self, id: Hash) -> Result<Option<EvidenceStatus>> {
+        self.db
+            .query_row(
+                "SELECT status FROM incoming_equivocation WHERE id=?1",
+                [id.as_slice()],
+                |r| r.get::<_, u8>(0),
+            )
+            .optional()?
+            .map(EvidenceStatus::decode)
+            .transpose()
+    }
+    pub fn pending_equivocations(&self, byte_budget: usize) -> Result<Vec<Vec<u8>>> {
+        let mut q = self
+            .db
+            .prepare("SELECT wire FROM incoming_equivocation WHERE status=0 ORDER BY id")?;
+        let mut result = Vec::new();
+        let mut used = 0usize;
+        for row in q.query_map([], |r| r.get::<_, Vec<u8>>(0))? {
+            let wire = row?;
+            let next = used.checked_add(wire.len()).ok_or(Error::Overflow)?;
+            if next > byte_budget {
+                break;
+            }
+            Evidence::decode(&wire)?;
+            used = next;
+            result.push(wire);
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pending_evidence_expires_only_after_last_inclusion_slot() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE incoming_equivocation(id BLOB PRIMARY KEY,wire BLOB,offense BLOB,status INTEGER);").unwrap();
+        let id = [7u8; 32];
+        let offense = 9u64;
+        db.execute(
+            "INSERT INTO incoming_equivocation VALUES(?1,?2,?3,0)",
+            params![id.as_slice(), vec![42u8], offense.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+        let status = || {
+            db.query_row("SELECT status FROM incoming_equivocation", [], |r| {
+                r.get::<_, u8>(0)
+            })
+            .unwrap()
+        };
+        reconcile(&db, offense + 43_199, &State::default()).unwrap();
+        assert_eq!(status(), 0); // The next block is the inclusive last slot.
+        reconcile(&db, offense + 43_200, &State::default()).unwrap();
+        assert_eq!(status(), 2);
+        reconcile(&db, offense + 43_201, &State::default()).unwrap();
+        assert_eq!(status(), 2);
+        assert_eq!(
+            db.query_row("SELECT wire FROM incoming_equivocation", [], |r| r
+                .get::<_, Vec<u8>>(0))
+                .unwrap(),
+            vec![42u8]
+        );
+    }
+}

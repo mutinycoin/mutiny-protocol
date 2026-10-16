@@ -1,0 +1,309 @@
+use crate::{
+    Error, Result,
+    handshake::{Context, Keys},
+};
+use chacha20poly1305::{
+    ChaCha20Poly1305, KeyInit, Nonce,
+    aead::{Aead, Payload},
+};
+use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
+pub const MAX_PAYLOAD: usize = 140;
+const HEADER: usize = 99;
+const MAX_FRAMES: u64 = 1 << 20;
+const MAX_BYTES: u64 = 64 * 1024 * 1024;
+const LIFETIME: Duration = Duration::from_secs(3600);
+const MAX_OBJECTS: usize = 256;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Metadata {
+    /// 1=OBJECT_HAVE, 2=OBJECT_WANT, 3=FRAGMENT, 4=ACK, 5=NACK.
+    pub kind: u8,
+    pub object: [u8; 32],
+    pub fragment: u16,
+    pub count: u16,
+    pub hops: u8,
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Context, Endpoint};
+    use mutiny_crypto_v2::{HybridKey, Role};
+    use zeroize::Zeroizing;
+    pub(super) fn pair() -> (Session, Session) {
+        let a = HybridKey::generate(Role::Transport).unwrap();
+        let b = HybridKey::generate(Role::Transport).unwrap();
+        let ctx = Context::pinned(
+            [1; 32],
+            [2; 32],
+            Endpoint::pinned(a.public().clone(), 1).unwrap(),
+            Endpoint::pinned(b.public().clone(), 1).unwrap(),
+        )
+        .unwrap();
+        // Public test traffic keys only, never an API for constructing live sessions.
+        let a = Keys {
+            tx: Zeroizing::new([1; 32]),
+            rx: Zeroizing::new([2; 32]),
+            tx_prefix: [3; 4],
+            rx_prefix: [4; 4],
+            id: [5; 32],
+        };
+        let b = Keys {
+            tx: Zeroizing::new([2; 32]),
+            rx: Zeroizing::new([1; 32]),
+            tx_prefix: [4; 4],
+            rx_prefix: [3; 4],
+            id: [5; 32],
+        };
+        (
+            Session::new(ctx.clone(), a, true),
+            Session::new(ctx, b, false),
+        )
+    }
+    #[test]
+    fn exact_rekey_limits_and_unauthenticated_state_preservation() {
+        let (mut a, mut b) = pair();
+        let mut m = Metadata {
+            kind: 3,
+            object: [1; 32],
+            fragment: 0,
+            count: 1,
+            hops: 0,
+        };
+        a.next = MAX_FRAMES;
+        let final_frame = a.seal(&m, b"last sequence").unwrap();
+        assert!(b.open(&final_frame).is_ok());
+        assert_eq!(a.seal(&m, b"wrap prohibited").unwrap_err(), Error::Limit);
+        a.next = 1;
+        a.tx_bytes = MAX_BYTES - 1;
+        assert!(a.seal(&m, b"x").is_ok());
+        assert_eq!(a.seal(&m, b"x").unwrap_err(), Error::Limit);
+        a.tx_bytes = 0;
+        a.tx_objects.clear();
+        for n in 0u16..MAX_OBJECTS as u16 {
+            m.object[..2].copy_from_slice(&n.to_be_bytes());
+            assert!(a.seal(&m, b"x").is_ok());
+        }
+        m.object[..2].copy_from_slice(&(MAX_OBJECTS as u16).to_be_bytes());
+        assert_eq!(a.seal(&m, b"x").unwrap_err(), Error::Limit);
+        a.started = Instant::now() - LIFETIME - Duration::from_secs(1);
+        assert_eq!(a.seal(&m, b"x").unwrap_err(), Error::Expired);
+        b.started = Instant::now() - LIFETIME - Duration::from_secs(1);
+        assert_eq!(b.open(&final_frame).unwrap_err(), Error::Expired);
+        let (mut a, mut b) = pair();
+        m.object = [1; 32];
+        let f = a.seal(&m, b"auth failure cannot consume sequence").unwrap();
+        let mut bad = f.clone();
+        *bad.last_mut().unwrap() ^= 1;
+        assert_eq!(b.open(&bad).unwrap_err(), Error::Crypto);
+        assert_eq!(
+            (
+                b.highest,
+                b.seen,
+                b.rx_bytes,
+                b.rx_frames,
+                b.rx_objects.len()
+            ),
+            (0, 0, 0, 0, 0)
+        );
+        assert!(b.open(&f).is_ok());
+        b.rx_bytes = MAX_BYTES;
+        let f = a.seal(&m, b"x").unwrap();
+        assert_eq!(b.open(&f).unwrap_err(), Error::Limit);
+        b.rx_bytes = 0;
+        b.rx_frames = MAX_FRAMES;
+        assert_eq!(b.open(&f).unwrap_err(), Error::Limit);
+    }
+}
+#[cfg(test)]
+mod embedded_tests;
+impl Metadata {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !(1..=5).contains(&self.kind)
+            || self.object == [0; 32]
+            || self.count == 0
+            || self.count > 16384
+            || self.fragment >= self.count
+            || self.hops > 16
+        {
+            return Err(Error::Encoding);
+        }
+        Ok(())
+    }
+}
+/// Memory-only directional keys and replay state. Reboot/reconnect requires a
+/// full fresh authenticated handshake; serializing/cloning a Session is forbidden.
+pub struct Session {
+    keys: Keys,
+    context: Context,
+    direction: u8,
+    next: u64,
+    highest: u64,
+    seen: u128,
+    tx_bytes: u64,
+    rx_bytes: u64,
+    rx_frames: u64,
+    started: Instant,
+    tx_objects: BTreeSet<[u8; 32]>,
+    rx_objects: BTreeSet<[u8; 32]>,
+}
+impl Session {
+    pub(crate) fn new(context: Context, keys: Keys, initiator: bool) -> Self {
+        Self {
+            keys,
+            context,
+            direction: if initiator { 0 } else { 1 },
+            next: 1,
+            highest: 0,
+            seen: 0,
+            tx_bytes: 0,
+            rx_bytes: 0,
+            rx_frames: 0,
+            started: Instant::now(),
+            tx_objects: BTreeSet::new(),
+            rx_objects: BTreeSet::new(),
+        }
+    }
+    pub fn id(&self) -> [u8; 32] {
+        self.keys.id
+    }
+    /// Full pinned network/endpoint/generation context, never only the short tag.
+    pub fn matches_context(&self, expected: &Context) -> bool {
+        self.context.bytes == expected.bytes
+    }
+    pub fn matches_network(&self, genesis: [u8; 32], fingerprint: [u8; 32]) -> bool {
+        self.context.matches_network(genesis, fingerprint)
+    }
+    /// Peer identity authenticated by this session's completed hybrid handshake.
+    pub fn peer_id(&self) -> [u8; 32] {
+        if self.direction == 0 {
+            self.context.responder_id()
+        } else {
+            self.context.initiator_id()
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn expire_for_authorization_test(&mut self) {
+        self.started = Instant::now() - LIFETIME - Duration::from_secs(1);
+    }
+    /// Read-only bound for a local admitted-session proof. This exposes no keys
+    /// and does not refresh, extend or otherwise change the session lifetime.
+    pub fn lifetime_deadline(&self) -> Instant { self.started + LIFETIME }
+    pub(crate) fn live(&self) -> Result<()> {
+        if self.started.elapsed() > LIFETIME {
+            Err(Error::Expired)
+        } else {
+            Ok(())
+        }
+    }
+    pub fn seal(&mut self, meta: &Metadata, payload: &[u8]) -> Result<Vec<u8>> {
+        self.live()?;
+        meta.validate()?;
+        if payload.is_empty() || payload.len() > MAX_PAYLOAD {
+            return Err(Error::Encoding);
+        }
+        if self.next > MAX_FRAMES || self.tx_bytes + payload.len() as u64 > MAX_BYTES {
+            return Err(Error::Limit);
+        }
+        if !self.tx_objects.contains(&meta.object) && self.tx_objects.len() == MAX_OBJECTS {
+            return Err(Error::Limit);
+        }
+        let sequence = self.next;
+        // Reserve before encryption. Even an encryption failure cannot reuse this nonce.
+        self.next += 1;
+        self.tx_bytes += payload.len() as u64;
+        self.tx_objects.insert(meta.object);
+        let mut out = Vec::with_capacity(255);
+        out.extend_from_slice(&[2, meta.kind, self.direction, 0]);
+        out.extend_from_slice(&self.context.tag);
+        out.extend_from_slice(&self.keys.id);
+        out.extend_from_slice(&sequence.to_be_bytes());
+        out.extend_from_slice(&meta.object);
+        out.extend_from_slice(&meta.fragment.to_be_bytes());
+        out.extend_from_slice(&meta.count.to_be_bytes());
+        out.push(meta.hops);
+        out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&self.keys.tx_prefix);
+        nonce[4..].copy_from_slice(&sequence.to_be_bytes());
+        let ciphertext = ChaCha20Poly1305::new(self.keys.tx.as_ref().into())
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: payload,
+                    aad: &out,
+                },
+            )
+            .map_err(|_| Error::Crypto)?;
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+    pub fn open(&mut self, frame: &[u8]) -> Result<(Metadata, Vec<u8>)> {
+        self.live()?;
+        if !(HEADER + 17..=255).contains(&frame.len())
+            || frame[0] != 2
+            || frame[2] != 1 - self.direction
+            || frame[3] != 0
+        {
+            return Err(Error::Encoding);
+        }
+        if frame[4..20] != self.context.tag || frame[20..52] != self.keys.id {
+            return Err(Error::Context);
+        }
+        let sequence = u64::from_be_bytes(frame[52..60].try_into().unwrap());
+        if sequence == 0 || sequence > MAX_FRAMES || self.rx_frames >= MAX_FRAMES {
+            return Err(Error::Limit);
+        }
+        let length = u16::from_be_bytes(frame[97..99].try_into().unwrap()) as usize;
+        if length == 0 || length > MAX_PAYLOAD || frame.len() != HEADER + length + 16 {
+            return Err(Error::Encoding);
+        }
+        if self.rx_bytes + length as u64 > MAX_BYTES {
+            return Err(Error::Limit);
+        }
+        let meta = Metadata {
+            kind: frame[1],
+            object: frame[60..92].try_into().unwrap(),
+            fragment: u16::from_be_bytes(frame[92..94].try_into().unwrap()),
+            count: u16::from_be_bytes(frame[94..96].try_into().unwrap()),
+            hops: frame[96],
+        };
+        meta.validate()?;
+        if !self.rx_objects.contains(&meta.object) && self.rx_objects.len() == MAX_OBJECTS {
+            return Err(Error::Limit);
+        }
+        if sequence <= self.highest {
+            let age = self.highest - sequence;
+            if age >= 128 || (self.seen >> age) & 1 != 0 {
+                return Err(Error::Replay);
+            }
+        }
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&self.keys.rx_prefix);
+        nonce[4..].copy_from_slice(&sequence.to_be_bytes());
+        let plain = ChaCha20Poly1305::new(self.keys.rx.as_ref().into())
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &frame[HEADER..],
+                    aad: &frame[..HEADER],
+                },
+            )
+            .map_err(|_| Error::Crypto)?;
+        // Authentication failure never advances replay or resource accounting.
+        if sequence > self.highest {
+            let jump = sequence - self.highest;
+            self.seen = if jump >= 128 {
+                1
+            } else {
+                (self.seen << jump) | 1
+            };
+            self.highest = sequence;
+        } else {
+            self.seen |= 1 << (self.highest - sequence);
+        }
+        self.rx_bytes += length as u64;
+        self.rx_frames += 1;
+        self.rx_objects.insert(meta.object);
+        Ok((meta, plain))
+    }
+}

@@ -1,0 +1,121 @@
+use sha2::{Digest, Sha256};
+use std::path::{Component, Path};
+fn locked(root: &Path, lock: &Path, entry: Option<&str>) {
+    println!("cargo:rerun-if-changed={}", lock.display());
+    let v: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(lock).expect("source lock")).unwrap();
+    let files = match entry {
+        Some(k) => &v["sources"][k]["files"],
+        None => &v["files"],
+    };
+    let root = root.canonicalize().unwrap();
+    for (name, hash) in files.as_object().unwrap() {
+        let r = Path::new(name);
+        assert!(r.components().all(|c| matches!(c, Component::Normal(_))));
+        let p = root.join(r).canonicalize().unwrap();
+        assert!(p.starts_with(&root));
+        println!("cargo:rerun-if-changed={}", p.display());
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(p).unwrap())),
+            hash.as_str().unwrap()
+        );
+    }
+}
+fn main() {
+    // Only the reviewed default OS entropy providers are permitted. Cargo's
+    // effective target cfg exposes backend overrides from environment/config.
+    // This is a build-profile guard, not protection against a malicious compiler.
+    assert!(
+        std::env::var_os("CARGO_CFG_GETRANDOM_BACKEND").is_none(),
+        "Build8 forbids getrandom_backend overrides; use the reviewed OS provider"
+    );
+    let q = Path::new("../qualification");
+    let source = q.join("crypto-v2-sources");
+    locked(&source.join("kdf-custody-v1"), &q.join("KDF-CUSTODY-SOURCE-LOCK-V1.json"), None);
+    locked(
+        &source.join("rust-fn-dsa-custody-v2"),
+        &q.join("FNDSA-CUSTODY-SOURCE-LOCK-V2.json"),
+        None,
+    );
+    locked(
+        &source.join("openssl-3.5.9"),
+        &q.join("OPENSSL-CURVE448-SOURCE-LOCK-V1.json"),
+        None,
+    );
+    locked(
+        &source.join("c-fn-dsa"),
+        &q.join("CRYPTO-CANDIDATE-SOURCE-LOCK-V1.json"),
+        Some("c-fn-dsa"),
+    );
+    let custody = source.join("openssl-curve448-custody-v1");
+    locked(&custody, &q.join("OPENSSL-CURVE448-CUSTODY-SOURCE-LOCK-V1.json"), None);
+    let ossl = source.join("openssl-3.5.9");
+    let port = q.join("openssl-curve448-port");
+    let cfn = source.join("c-fn-dsa");
+    let mut b = cc::Build::new();
+    b.include(port.join("include"))
+        .include(ossl.join("include"))
+        .include(ossl.join("crypto/ec/curve448"))
+        .include(&cfn)
+        .define("FNDSA_AVX2", "0")
+        .define("FNDSA_SSE2", "0")
+        .define("FNDSA_UNALIGNED_64", "0")
+        .define("FNDSA_UNALIGNED_16", "0")
+        .flag_if_supported("/std:c11");
+    for n in [
+        "curve448.c",
+        "curve448_tables.c",
+        "eddsa.c",
+        "f_generic.c",
+        "scalar.c",
+        "arch_32/f_impl32.c",
+        "arch_64/f_impl64.c",
+    ] {
+        b.file(if matches!(n, "curve448.c" | "eddsa.c") {
+            custody.join(n)
+        } else {
+            ossl.join("crypto/ec/curve448").join(n)
+        });
+    }
+    b.file(port.join("shake_adapter.c"))
+        .file(port.join("profile_adapter.c"))
+        .file(cfn.join("sha3.c"))
+        .file("src/platform.c")
+        .file("src/wallet_entropy_tbs.c");
+    if std::env::var_os("CARGO_FEATURE_QUALIFICATION").is_some() {
+        b.define("BUILD8_QUALIFICATION", None);
+    }
+    println!("cargo:rerun-if-changed={}", port.display());
+    println!("cargo:rerun-if-changed=src/platform.c");
+    println!("cargo:rerun-if-changed=src/wallet_entropy_tbs.c");
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        println!("cargo:rustc-link-lib=tbs");
+        println!("cargo:rustc-link-lib=bcrypt");
+    }
+    b.compile("build8_hybrid_ed448");
+    if std::env::var_os("CARGO_FEATURE_QUALIFICATION").is_some() {
+        let mut reference = cc::Build::new();
+        reference.include(&cfn).define("FNDSA_AVX2", "0")
+            .define("FNDSA_UNALIGNED_64", "0")
+            .define("FNDSA_UNALIGNED_16", "0");
+        for n in [
+            "codec",
+            "mq",
+            "sysrng",
+            "util",
+            "kgen",
+            "kgen_fxp",
+            "kgen_gauss",
+            "kgen_mp31",
+            "kgen_ntru",
+            "kgen_poly",
+            "kgen_zint31",
+        ] {
+            reference.file(cfn.join(format!("{n}.c")));
+        }
+        reference.compile("build8_qualification_reference_keygen");
+        if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+            println!("cargo:rustc-link-lib=bcrypt");
+        }
+    }
+}

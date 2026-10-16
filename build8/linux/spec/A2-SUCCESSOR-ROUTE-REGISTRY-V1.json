@@ -1,0 +1,118 @@
+{
+  "authorization_class": "DESIGN_AND_TEST_VALUE_ONLY",
+  "entries": [
+    {
+      "namespace": "local-a2-operation-pool-schema",
+      "id": 2,
+      "application_id_hex": "4d413232",
+      "name": "A2OperationPoolV2",
+      "creation": "Explicit create-new only; no adoption or migration of any historical or earlier unfrozen pool schema",
+      "capacity": "One pending complete operation <=196608 bytes, at most two local archived complete operations each <=196608 bytes with reason <=1024 UTF-8 bytes, total SQLite page budget <=1048576 bytes",
+      "authority": "Full current-parent native preview before pending insert or each assembly/advertisement; archive reason is local only and supplies no consensus evidence",
+      "retention": "Explicit local owner archive-and-cancel inserts exact original bytes/reason and removes pending in one FULL-synchronous transaction; archive full rejects without eviction. Canonical retirement requires own verified replay and exact authenticated envelope bytes. ACK transport retirement additionally requires durable exact pending/archive/canonical bytes."
+    },
+    {
+      "namespace": "local-work-journal-schema",
+      "id": 3,
+      "application_id_hex": "4d574a33",
+      "name": "A2WorkJournalV3",
+      "historical_schema_preserved": 2,
+      "creation": "Explicit create-new; exact context version3 and authenticated store-issued historical capacity; no legacy schema migration or signing authorization from historical capabilities",
+      "capacity": "Complete body <=262150 bytes; existing 4096 Worker entries/64MiB SQLite disk budget unchanged"
+    },
+    {
+      "namespace": "local-observation-journal-schema",
+      "id": 3,
+      "application_id_hex": "4d4f4a33",
+      "name": "A2ObservationJournalV3",
+      "historical_schema_preserved": 2,
+      "creation": "Explicit create-new; exact context version3 and authenticated historical capacity; work and observation codec modes must match before reservation",
+      "capacity": "Complete body <=262150 bytes; existing 4096 Worker entries/256MiB disk budget unchanged",
+      "retention": "An exact historical committed receipt retry precedes lookup of newer issuance; no old receipt erased by a later reservation"
+    },
+    {
+      "authority": "CanonicalStore-issued parent capacity followed by full native work authority, proof-of-work and historical execution validation; delivery alone grants none",
+      "carrier": "CandidateProposalV3",
+      "historical_kind_preserved": 8,
+      "id": 12,
+      "max_complete_bytes": 270871,
+      "name": "A2BlockProposal",
+      "namespace": "transport-object-kind"
+    },
+    {
+      "authority": "Authenticated current canonical successor rule plus complete native carrier, wallet/node authority, witness and committed evidence-context validation before semantic pool admission",
+      "carrier": "Exactly one supported complete A2 admission or terminal-withdrawal operation",
+      "historical_kind_preserved": 9,
+      "id": 13,
+      "max_complete_bytes": 196608,
+      "name": "A2EvidenceOperation",
+      "namespace": "transport-object-kind"
+    },
+    {
+      "capacity": "Same eight general objects/4194304 bytes, two ordinary submissions/32768 bytes and ten request windows. A2 evidence consumes general capacity and is additionally restricted to one complete/incomplete reservation of at most196608 bytes.",
+      "creation": "Create-new only for initialization; reopen exact schema without migration of historical queues",
+      "historical_schema_preserved": 7,
+      "id": 8,
+      "name": "ExplicitA2PublicQueue",
+      "namespace": "local-transport-queue-schema"
+    },
+    {
+      "creation": "New explicit context-pinned journal; no widening or migration of historical journal schemas.",
+      "historical_schema_preserved": 2,
+      "id": 3,
+      "max_complete_record_bytes": 270871,
+      "name": "CandidateProposalJournalV3",
+      "namespace": "local-proposal-journal-schema"
+    },
+    {
+      "authority": "Version and prefix are structural only; supported canonical rule selected exclusively from authenticated store parent parameters.",
+      "id": 3,
+      "max_complete_bytes": 270871,
+      "name": "CandidateProposalV3",
+      "namespace": "proposal-record-cbor-version",
+      "representation": "[3, WorkHeaderBytes, BlockBodyBytes, WorkAuthorityBytes]"
+    }
+  ],
+  "recovery": "Complete certified envelope remains inline in atomic canonical evidence_v2.envelope storage, <=1942044 bytes under authenticated successor rules. No hash-only locator, StateTree record widening or recovery kind7 widening.",
+  "typed_relay": "Separate kind13 one-item relay; at most one advertisement per explicit current-peer service turn, existing request/pacing/deadline/retry/control budgets, ACK inspection in windows <=1080 bits, full native current preview before advertisement. Failed/incomplete foreign transport copies remain preserved. Ordinary kinds1/9 relay unchanged.",
+  "reserved_namespaces": [
+    {
+      "id": 25,
+      "name": "FundedRotation",
+      "namespace": "hybrid-transaction-tag",
+      "status": "UNCHANGED"
+    },
+    {
+      "id": 25,
+      "name": "A2TerminalWithdrawal",
+      "namespace": "canonical-operation-kind",
+      "status": "Distinct list and complete typed codec required; never alias transaction tag25"
+    },
+    {
+      "id": 23,
+      "name": "DividendClaim",
+      "namespace": "canonical-operation-kind",
+      "status": "UNCHANGED"
+    },
+    {
+      "id": 7,
+      "max_complete_bytes": 262144,
+      "name": "RecoveryEvidence",
+      "namespace": "transport-object-kind",
+      "status": "UNCHANGED"
+    },
+    {
+      "id": 9,
+      "max_complete_bytes": 16384,
+      "name": "SignedOperation",
+      "namespace": "transport-object-kind",
+      "status": "UNCHANGED"
+    }
+  ],
+  "review": "Independent review and complete end-to-end qualification still required before carrier freeze.",
+  "scheduling": "One oversized qualifying operation per finalized block; two oversized evidence operations require separate finalized blocks. An ordinary-size A2 operation consumes ordinary capacity.",
+  "schema": 1,
+  "status": "IMPLEMENTATION_CANDIDATE_UNFROZEN",
+  "transport_object_ceiling": 2097152,
+  "wire_have_version": 2
+}

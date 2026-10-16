@@ -1,0 +1,50 @@
+# Signing-call TRIPWIRE rules for non-test wallet-core and desktop code (wallet-core/src,
+# desktop/src), read by build/check-signing-calls.pl (called by build/check-shipping-config.sh).
+# Fixes of the independent wallet review, MAJOR-2; docs/BUILD-CONFIGURATIONS-V1.md section 14.
+#
+# A TRIPWIRE, not the property: the property is the type system (Order W4: a key is sealed in
+# wallet-core/src/capability.rs and reaches a signature only through `Signer::authorize`, the
+# `KindSigner` a handler is lent and the typed capabilities it hands out, with a single-use
+# `Approval` that is not `Clone` and is constructed only by the review gate; the compile-fail
+# doctests of capability.rs are the evidence). This file names what a signing call looks like and
+# the EXACT set of call sites that may make one.
+#
+# callee <name>  a name whose method call `.name(`, path segment `::name` or bare call `name(` is a
+#                signing call (the consensus and crypto-v2 signing routines and approvals)
+# prefix <text>  every name starting with <text> is a signing name too
+# allow <file> <function> <callee> <count>
+#                exactly <count> signing calls of <callee> in the function <function> of <file>
+#                (repository-relative): more fail, and fewer fail as a stale entry.
+callee sign
+callee approve
+prefix sign_
+
+# The raw signing calls of wallet-core: one in each typed capability of capability.rs (Order W4),
+# each over one consensus object built by its consensus-owned builder, under the domain
+# consensus uses or the one `domain_for` returns (no call site names a domain).
+allow wallet-core/src/capability.rs authorize_input sign_input 1
+allow wallet-core/src/capability.rs authorize_bond sign 1
+allow wallet-core/src/capability.rs authorize_claim sign 1
+allow wallet-core/src/capability.rs approve_slot sign 1
+# Canonical atomic objects: no reachable legacy standalone rotation signing capability.
+allow wallet-core/src/capability.rs authorize_rotation_funding sign 1
+allow wallet-core/src/capability.rs authorize_funded_bond sign 1
+allow wallet-core/src/capability.rs authorize_funded_rotation sign 3
+allow wallet-core/src/capability.rs authorize_freeze sign 1
+# `run_authorization` hands the plan to its kind's handler (`OperationHandler::sign`) only after the
+# gate, the approval, the head, the identity, the binding digest and the per-slot authority.
+allow wallet-core/src/authorize.rs run_authorization sign 1
+# The handler modules (wallet-core/src/ops) make NO signing call since W4: they ask the
+# `KindSigner` for a typed capability and call its `authorize_*` / `approve_slot` function.
+# The review gate's approval (`ReviewGate::approve`): no key, the approval itself. The plan state
+# machine and the desktop's controller (`ActivePlan::authorize`, through `PlanSession::approve`)
+# take it there and hand it straight to `Signer::authorize`.
+allow wallet-core/src/plan.rs approve approve 1
+allow desktop/src/wallet_controller_v2.rs authorize approve 1
+# Maker witnesses use the registered typed WalletOwner TradeOffer/TradeFill domains.
+allow wallet-core/src/capability.rs authorize_offer sign 1
+allow wallet-core/src/capability.rs authorize_fill sign 1
+
+# Existing kind-10 current License owner capability; Worker possession and exact descriptor
+# are checked before the sole raw-key signing call under MinerEnrollment. No provisioning.
+allow wallet-core/src/capability.rs authorize_assignment sign 1

@@ -1,0 +1,53 @@
+[package]
+name = "mutiny-clock-native-nts-v1"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Shared native authenticated-time acquisition. No CLI, system clock steering,
+# production startup factory, profile approval or persistence authority.
+[workspace]
+
+[dependencies]
+ntp-proto = { git = "https://github.com/pendulum-project/ntpd-rs", rev = "46ec9bb4d5b6cb24f814f5543d85b9138afb4cba", features = ["__internal-api"] }
+tokio = { version = "1.45", features = ["rt", "macros", "net", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Same attributable custody-source overrides as the approved Node root. Cargo
+# does not inherit a dependency manifest's patches into this isolated workspace.
+# The DEV Consensus/Crypto adapters must use those exact reviewed sources; the
+# generated whole graph (including ordinary NTS edges) requires separate review.
+[patch.crates-io]
+hkdf = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }
+
+[dev-dependencies]
+# Ephemeral in-memory TLS fixtures only. No disk key, OS trust-store install or
+# shipping graph edge. ntp-proto remains pinned with no test/fuzz feature.
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
+rustls-pki-types = "=1.15.1"
+# Private same-source Node service/held-storage TEST adapter. No Node crate,
+# private-custody feature, ordinary dependency or production factory edge.
+mutiny-consensus-v8 = { path = "../consensus", default-features = false }
+# Full real Node host_clock TEST modules use the ordinary OS CSPRNG directly.
+# DEV-only, default shipping crypto; no custody/qualification fixture feature.
+mutiny-crypto-v2 = { path = "../crypto-v2", default-features = false }
+hex = "0.4"
+getrandom = "=0.2.17"
+sha2 = "=0.10.9"
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+p384 = { version = "=0.13.1", default-features = false, features = ["ecdsa", "std"] }
+[target.'cfg(unix)'.dev-dependencies]
+libc = "=0.2.189"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Same real Node module closure, private Linux NTS TEST harness only.
+mutiny-transport-v2 = { path = "../transport-v2" }
+minicbor = { version = "=2.3.0", features = ["std"] }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }

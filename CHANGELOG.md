@@ -1,12 +1,12 @@
 # Changelog
 
-## Build 8 source synchronization review â€” 2026-10-16
+## Build 8 frozen test source integration - 2026-10-16
 
-Added a bounded [development status](BUILD8-STATUS.md) and public source-identity record for the frozen Linux and Desktop projections. The status keeps shipping, TEST, selected Linux and synthetic launcher results separate, preserves unresolved failures, and records the live attempt as closed without H100/H101 payment/restart acceptance.
+Add the approved frozen Desktop and accepted Linux source projections under `build8/desktop/` and `build8/linux/`, preserving all eight platform source differences and the existing V1 root/history. The exact source roster contains 4,769 files / 142,296,715 bytes. Original machine identifiers and security guards remain unchanged with Architect approval; 93 machine-path-bearing private operator/history records remain excluded, source notices retained, and two Chrony comments use a repository-relative provenance path.
 
-This documentation change does not add the Build 8 source payload, replace the published V1 source, change a security guard or licensing declaration, or publish a release/tag. All frozen Desktop payloads are now verified and all eight platform differences reviewed. A paired local candidate preserves each projection separately. Publication remains pending exact machine-identity classification and verified Vercel branch/PR scope. No source payload is committed by this documentation update.
+Retain the exact synthetic chain in both projections and supply four exact Desktop test inputs absent from frozen Linux. These are **TEST inputs only: synthetic, non-Genesis, no custody or physical-profile data; generator not located; fresh qualification required**. No restored-package pass, physical qualification, production release or deployment is claimed. The separate recorded shipping, TEST, selected Linux and launcher gates retain their open coverage/failures; live H100/H101 payment/restart acceptance remains unproven.
 
-The local projection's hash/notice/credential-shape checks are recorded separately from executable qualification. Static include review distinguishes the withheld chain from pre-existing Linux document/helper gaps and an unused support-copy path. An exact-input restoration overlay and fresh qualification plan are prepared; the projection is not yet build-ready.
+Publication and any automatic Vercel Preview deployment remain conditional on confirming production/custom-environment exclusion for the exact integration branch and draft PR. No main merge, release/tag, alias, promotion, protection or settings change is included.
 
 ## Historical baseline
 

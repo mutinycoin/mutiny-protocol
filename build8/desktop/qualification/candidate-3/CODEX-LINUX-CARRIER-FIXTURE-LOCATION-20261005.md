@@ -1,0 +1,7 @@
+# Linux carrier fixture location
+
+The native `7f25f79` key-rotation carrier baseline passed 1/1, with zero ignored tests, in 303.08 seconds. The separate mutation harness then correctly stopped because the Linux-only support helper generated three public synthetic vault files under its mutable source directory. The original checkout and immutable package were unchanged; no mutants ran and the no-TPM tripwire had zero hits. The entire attempt and generated files remain in `clock-review-workspace-v3` on the approved qualification volume.
+
+The Linux-only TEST helper now chooses `std::env::temp_dir()` instead of `CARGO_MANIFEST_DIR`. The runner already supplies its fresh protected temporary directory through supported controls, so evidence stays within that directory and the exact source inventory can remain unchanged. Existing custody path, owner/mode, signing, generation and carrier checks remain in place. An unsafe temporary hierarchy still refuses; this change does not repair an existing directory or weaken its validation. Windows code is unaffected by this Linux-only fixture branch.
+
+This source change requires a new identified package and actual native carrier rerun before the clock/admission mutation campaign. The earlier passed test is evidence for its earlier source and is not silently transferred. No production signing, custody provisioning or physical-hardware claim follows from this public software fixture.

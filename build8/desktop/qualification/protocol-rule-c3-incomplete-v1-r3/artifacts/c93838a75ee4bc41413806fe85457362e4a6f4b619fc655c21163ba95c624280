@@ -1,0 +1,137 @@
+//! Candidate parent-bound supervised hybrid admission. No state installation.
+//! Reuse the complete admission's three hybrid authorizations and native TPM
+//! evidence by binding its supervised challenge to this exact join context.
+use crate::{
+    Error, Hash, NETWORK_ID, Result,
+    admission_v2::Expected,
+    anchors::FinalizedAnchor,
+    domain_hash,
+    execution::State,
+    node_admission_v2::{Binding, VerifiedBinding},
+};
+use minicbor::{Decoder, Encoder};
+pub const MAX_JOIN_BYTES: usize = 16 * 1024;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Join {
+    pub parent: FinalizedAnchor,
+    /// Fresh public supervised ceremony nonce, never private key material.
+    pub nonce: Hash,
+    pub binding: Binding,
+}
+impl Join {
+    pub fn admission_nonce(&self) -> Result<Hash> {
+        self.parent.validate_context(
+            self.binding.admission.genesis,
+            self.binding.admission.fingerprint,
+        )?;
+        if self.nonce == [0; 32] || self.parent.height.checked_add(1).is_none() {
+            return Err(Error::InvalidCounter);
+        }
+        let mut e = Encoder::new(Vec::new());
+        e.array(6)
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .u8(15)
+            .unwrap()
+            .u32(NETWORK_ID)
+            .unwrap()
+            .bytes(&self.parent.encode())
+            .unwrap()
+            .bytes(&self.nonce)
+            .unwrap()
+            .bytes(&self.binding.admission.node)
+            .unwrap();
+        Ok(domain_hash(
+            b"MUTINY-BUILD8-JOIN-ADMISSION-CONTEXT-V2",
+            &e.into_writer(),
+        ))
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        self.admission_nonce()?;
+        let mut e = Encoder::new(Vec::new());
+        e.array(5)
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .u8(15)
+            .unwrap()
+            .bytes(&self.parent.encode())
+            .unwrap()
+            .bytes(&self.nonce)
+            .unwrap()
+            .bytes(&self.binding.encode()?)
+            .unwrap();
+        let raw = e.into_writer();
+        if raw.len() > MAX_JOIN_BYTES {
+            return Err(Error::Oversize);
+        }
+        Ok(raw)
+    }
+    pub fn decode(raw: &[u8]) -> Result<Self> {
+        crate::blocks::canonical(raw, MAX_JOIN_BYTES)?;
+        let mut d = Decoder::new(raw);
+        if d.array().map_err(|_| Error::Codec)? != Some(5)
+            || d.u8().map_err(|_| Error::Codec)? != 2
+            || d.u8().map_err(|_| Error::Codec)? != 15
+        {
+            return Err(Error::Codec);
+        }
+        let join = Self {
+            parent: FinalizedAnchor::decode(d.bytes().map_err(|_| Error::Codec)?)?,
+            nonce: d
+                .bytes()
+                .map_err(|_| Error::Codec)?
+                .try_into()
+                .map_err(|_| Error::Codec)?,
+            binding: Binding::decode(d.bytes().map_err(|_| Error::Codec)?)?,
+        };
+        if d.position() != raw.len() || join.encode()? != raw {
+            return Err(Error::NonCanonical);
+        }
+        Ok(join)
+    }
+    /// `parent` and `root` must be independently authenticated canonical history.
+    /// The caller cannot replace policy with an operation-supplied trust root.
+    pub fn verify(
+        &self,
+        state: &State,
+        parent: &FinalizedAnchor,
+        root: Hash,
+    ) -> Result<VerifiedBinding> {
+        self.verify_in_parent(crate::parent_context_v2::ParentContext::canonical(
+            state, parent, root,
+        )?)
+    }
+    pub(crate) fn verify_in_parent(
+        &self,
+        context: crate::parent_context_v2::ParentContext<'_>,
+    ) -> Result<VerifiedBinding> {
+        let state = context.state();
+        let parent = context.parent();
+        self.encode()?;
+        if &self.parent != parent {
+            return Err(Error::WrongAnchor);
+        }
+        let policy = state.current_admission_policy_v2(parent.genesis, parent.fingerprint)?;
+        let (_, node_generation) =
+            mutiny_crypto_v2::PublicKey::decode_descriptor(&self.binding.node_descriptor)
+                .map_err(|_| Error::Codec)?;
+        if node_generation != 1 {
+            return Err(Error::WrongGeneration);
+        }
+        let expected = Expected {
+            node: self.binding.admission.node,
+            hardware_generation: 1,
+            key_generation: 1,
+            supervised_nonce: self.admission_nonce()?,
+        };
+        // Class from the same authenticated parent state as the policy.
+        let class = state.admission_class()?;
+        let verified = self.binding.verify(&policy, &expected, &state.wallets, class)?;
+        // Order A8: after sealing the ceremony-scoped authority admits no hardware (Production
+        // class); checked after the complete verification, so malformed material fails first.
+        crate::admission_scope::require_post_sealing_admission(class)?;
+        Ok(verified)
+    }
+}

@@ -1,0 +1,6 @@
+{
+  "original_sha256": "91acef17ce3d585bd8430afda79213ef82b007f3e16a4e82c9f76a971d546be8",
+  "format": "512x512 RGBA8 row-major unmultiplied, full original canvas, decoded System.Drawing.GetPixel; no crop/recolor",
+  "bytes": 1048576,
+  "rgba_sha256": "bfb6001c7803cf0028b89221c9131e2432a58a07a1b89237e5c7b49e2cb414c7"
+}

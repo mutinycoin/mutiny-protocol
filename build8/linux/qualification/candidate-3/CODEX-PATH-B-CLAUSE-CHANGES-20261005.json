@@ -1,0 +1,17 @@
+{
+  "class": "DIRECT_USER_PATH_B_DESIGN_AMENDMENT",
+  "decision_sha256": "4846bde25b93f7d16b2709030b7bea701e416601519aa471d71dec8807e462b1",
+  "normative_file": "spec/DECISION-TECHNICAL-ANNEX-V1.md",
+  "before_sha256": "5a8d3b3167913131dcaa5754faca09795c64d4369da0534e337b683bb7765319",
+  "after_sha256": "8a4146f0767f72b0434c439d382927ba92e294eb3b24228db4019344f86206d1",
+  "changed_clauses": [
+    "Section3 initial admission trust/flow: qualifying physical TPM, fresh activation, exact typed hybrid tuple, one physical lineage and public identifying evidence limits",
+    "Section3 Approved trust limits: remove physical-host execution association hard stop, accept forwarding/remote/VM execution, retain authenticity/uniqueness/profile/activation requirements",
+    "Section2 reputation eligibility: qualifying physical TPM lineage; remote/VM/cloud execution alone not exclusion; software/vTPM alone remains zero/NO",
+    "2026-10-04 K2 amendment: explicitly superseded by Path B, residual requirements restated",
+    "2026-10-05 amendment reference and fingerprint regeneration requirement"
+  ],
+  "historical_source_commit": "93baac5031c414925655e52b81b6615805a79501",
+  "production_authorization": false,
+  "physical_qualification": false
+}

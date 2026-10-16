@@ -15,7 +15,7 @@
     "accepted_receipt_sha256": "99146c511f6db0bea3787978a75d29184eb687c739bdd32117dd61a88013c136",
     "accepted_utc": "2026-10-15T22:46:32.153986Z",
     "earlier_archive_sha256": "9beecbb727fdc526c35c87b86282f76666168d290a41b4811bfbdc8e4b3d75ef",
-    "source_payload_in_this_commit": false
+    "source_payload_in_this_commit": true
   },
   "desktop": {
     "catalog_files": 2589,
@@ -23,7 +23,7 @@
     "same_record_in_four_frozen_compile_jobs": true,
     "available_exact_payloads": 2589,
     "pending_exact_payloads": 0,
-    "source_payload_in_this_commit": false,
+    "source_payload_in_this_commit": true,
     "bytes": 76247045,
     "roster_sha256": "c771a35ecf983a8d6c4299a4fac25d64d087d532926dd0cdedf158f4938db007",
     "roster_encoding": "sorted SHA256 + TAB + relative path + LF",
@@ -89,9 +89,12 @@
     "platform_projections_merged": false
   },
   "publication_review": {
-    "status": "PENDING",
+    "status": "EXACT_SCOPE_APPROVED_PUBLICATION_CONDITIONAL_ON_VERCEL",
     "generated_chain_state_excluded": "qualification/integration-state-v2-1/chain.jsonl",
-    "machine_bound_modules_pending_classification": [
+    "existing_license_declaration_changed": false,
+    "vercel_branch_and_pr_behavior": "UNVERIFIED",
+    "internal_owner_publication_is_public_release_authority": false,
+    "machine_bound_modules_retained_unchanged": [
       "node/src/host_clock/native_nts_installation.rs",
       "node/src/host_clock/state_dir/windows_storage.rs",
       "desktop/src/rootproducer_native/pipe.rs",
@@ -100,14 +103,21 @@
       "desktop/src/rootproducer_native/continuous_own_native_late_dll_controls.rs",
       "desktop/src/testvalue/continuous_own_native_late_dll_controls.rs"
     ],
-    "existing_license_declaration_changed": false,
-    "vercel_branch_and_pr_behavior": "UNVERIFIED",
-    "internal_owner_publication_is_public_release_authority": false
+    "architect_approval_utc": "2026-10-16T13:44:00Z",
+    "synthetic_inputs": "TEST only; synthetic; non-Genesis; no custody or physical-profile data; generator not located; fresh qualification required"
   },
   "verification": {
     "snapshot_file_hashes_checked": true,
     "source_manifest_hashes_checked": true,
     "fresh_builds_or_test_campaigns_run": false,
     "production_qualification_claimed": false
+  },
+  "committed_projection": {
+    "files": 4769,
+    "bytes": 142296715,
+    "roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
+    "inventory": "source-roster.json",
+    "platforms_merged": false,
+    "restored_package_pass_claimed": false
   }
 }

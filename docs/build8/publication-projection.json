@@ -1,17 +1,17 @@
 {
   "schema": "MUTINY-BUILD8-PAIRED-PUBLICATION-PROJECTION-V1",
-  "status": "LOCAL_ONLY_PUBLICATION_HELD",
+  "status": "EXACT_APPROVED_RESTORATION_APPLIED_LOCALLY_PUBLICATION_CONDITIONAL",
   "source_files": {
-    "linux": 2225,
-    "desktop": 2538
+    "linux": 2230,
+    "desktop": 2539
   },
-  "bytes": 141023286,
-  "roster_sha256": "4c4fb4e16a539600c9ad81286a591534600fd0db8f91297300fbbc6ca3515dfa",
+  "bytes": 142296715,
+  "roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
   "roster_encoding": "sorted SHA256 + TAB + candidate-relative-path + LF",
   "exact_frozen_inputs_unchanged": true,
   "platforms_merged": false,
   "source_guards_changed": false,
-  "source_payload_committed": false,
+  "source_payload_committed": true,
   "exclusions": [
     {
       "path": "build8/linux/qualification/candidate-3/A-ADMISSION-DEPS-REVIEW.md",
@@ -173,13 +173,6 @@
       "reason": "machine-path-bearing historical/provenance/operator record withheld",
       "source_bytes": 18488,
       "source_sha256": "d4a34cb6f8ae795f3c051fa125f6e9ab84b7aa634285a1e6cd19dec86d229428"
-    },
-    {
-      "path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
-      "action": "excluded",
-      "reason": "generated chain state",
-      "source_bytes": 583549,
-      "source_sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa"
     },
     {
       "path": "build8/linux/qualification/nonce-20261002/CANDIDATE-2-ARCHITECT-BRIEFING-20261004.md",
@@ -509,13 +502,6 @@
       "reason": "machine-path-bearing historical/provenance/operator record withheld",
       "source_bytes": 18488,
       "source_sha256": "d4a34cb6f8ae795f3c051fa125f6e9ab84b7aa634285a1e6cd19dec86d229428"
-    },
-    {
-      "path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
-      "action": "excluded",
-      "reason": "generated chain state",
-      "source_bytes": 583549,
-      "source_sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa"
     },
     {
       "path": "build8/desktop/qualification/nonce-20261002/CANDIDATE-2-ARCHITECT-BRIEFING-20261004.md",
@@ -1161,21 +1147,23 @@
   ],
   "checks": {
     "all_candidate_paths_lengths_hashes_verified": true,
-    "diff_whitespace_check": true,
     "binary_or_archive_headers": 0,
     "credential_shape_findings": 0,
-    "native_build_or_test_run": false
+    "native_build_or_test_run": false,
+    "edited_documentation_whitespace_check_passed": true,
+    "approved_worktree_index_and_git_blob_bytes_verified": true,
+    "approved_source_files": 4769,
+    "source_whitespace_findings_with_cr_at_eol": 201,
+    "source_whitespace_retained_for_exact_identity": true
   },
   "open_gates": [
-    "Exact machine-bound source literal public classification; guards preserved",
-    "Vercel production/root/branch/PR rules for proposed branch",
-    "Apply classified exact test inputs under a new projection identity; compile/test default and trading-service targets independently after campaign-safe scheduling",
-    "Shipping ignored test, TEST peer/ABI failures, Windows history performance failure, live H100/H101 payment/restart acceptance"
+    "Vercel production/custom tracking exclusion for exact branch/PR before conditionally authorized Preview publication",
+    "Fresh compilation and qualification under campaign-safe scheduling; existing gates are not a pass for restored package"
   ],
   "reproducibility_review": "reproducibility-review.md",
   "original_literal_include_report_is_raw_not_reachability": "Raw findings include Linux documents absent in frozen input and an unused nested support copy; consult reviewed classification.",
   "proposed_restoration_overlay": {
-    "status": "PROPOSED_EXACT_TEST_INPUT_RESTORATION_NOT_PUBLIC_AUTHORITY",
+    "status": "EXACT_INPUT_SCOPE_APPROVED_APPLIED_LOCALLY_FRESH_QUALIFICATION_REQUIRED",
     "base_candidate_roster": "4c4fb4e16a539600c9ad81286a591534600fd0db8f91297300fbbc6ca3515dfa",
     "proposed_roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
     "roster_encoding": "sorted SHA256 + TAB + candidate-relative-path + LF",
@@ -1253,5 +1241,7 @@
     "executed_source_payloads": false,
     "built": false,
     "pushed": false
-  }
+  },
+  "original_projection_preserved_as_review_evidence": true,
+  "approved_roster": "source-roster.json"
 }

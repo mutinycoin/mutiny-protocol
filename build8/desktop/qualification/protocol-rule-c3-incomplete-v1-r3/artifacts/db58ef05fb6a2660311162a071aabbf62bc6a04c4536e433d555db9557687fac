@@ -1,0 +1,402 @@
+//! Canonical content codecs. State execution/admission remain separate mandatory checks.
+use crate::{Error, Hash, NETWORK_ID, Result, domain_hash};
+use minicbor::{Decoder, Encoder, data::Type};
+
+pub fn canonical(raw: &[u8], limit: usize) -> Result<()> {
+    if raw.len() > limit {
+        return Err(Error::Oversize);
+    }
+    fn item(d: &mut Decoder<'_>, e: &mut Encoder<Vec<u8>>, depth: usize) -> Result<()> {
+        if depth > 16 {
+            return Err(Error::Oversize);
+        }
+        match d.datatype().map_err(|_| Error::Codec)? {
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 => {
+                e.u64(d.u64().map_err(|_| Error::Codec)?).unwrap();
+            }
+            Type::Bytes => {
+                e.bytes(d.bytes().map_err(|_| Error::Codec)?).unwrap();
+            }
+            Type::Array => {
+                let n = d
+                    .array()
+                    .map_err(|_| Error::Codec)?
+                    .ok_or(Error::NonCanonical)?;
+                if n > 65536 {
+                    return Err(Error::Oversize);
+                }
+                e.array(n).unwrap();
+                for _ in 0..n {
+                    item(d, e, depth + 1)?;
+                }
+            }
+            Type::Null => {
+                d.null().map_err(|_| Error::Codec)?;
+                e.null().unwrap();
+            }
+            Type::Bool => {
+                e.bool(d.bool().map_err(|_| Error::Codec)?).unwrap();
+            }
+            _ => return Err(Error::NonCanonical),
+        };
+        Ok(())
+    }
+    let mut d = Decoder::new(raw);
+    let mut e = Encoder::new(Vec::new());
+    item(&mut d, &mut e, 0)?;
+    if d.position() != raw.len() || e.into_writer() != raw {
+        return Err(Error::NonCanonical);
+    }
+    Ok(())
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockBody {
+    pub height: u64,
+    pub reward_owner: Hash,
+    pub fees: u64,
+    pub transactions: Vec<Vec<u8>>,
+    pub operations: Vec<Vec<u8>>,
+}
+impl BlockBody {
+    /// Builder normalization only. The wire decoder still rejects alternate
+    /// orderings and duplicate encodings of the same logical acknowledgement.
+    pub fn normalize_participation(&mut self) -> Result<()> {
+        let mut ordinary = Vec::new();
+        let mut acks = Vec::new();
+        for raw in &self.operations {
+            if !crate::trading_host_v1::operation(raw)? && operation_kind(raw)? == 11 {
+                acks.push(crate::participation::ParticipationAck::decode(raw)?);
+            } else {
+                ordinary.push(raw.clone());
+            }
+        }
+        ordinary.extend(
+            crate::participation::normalize(&acks)?
+                .iter()
+                .map(|a| a.encode()),
+        );
+        self.operations = ordinary;
+        Ok(())
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        if self.height == 0 {
+            return Err(Error::InvalidCounter);
+        }
+        if self.transactions.len() + self.operations.len() > 4096 {
+            return Err(Error::Capacity);
+        }
+        let mut prior_ack = None;
+        let mut ack_count = 0;
+        for raw in &self.operations {
+            if !crate::trading_host_v1::operation(raw)? && operation_kind(raw)? == 11 {
+                let ack = crate::participation::ParticipationAck::decode(raw)?;
+                if ack.height != self.height {
+                    return Err(Error::WrongAnchor);
+                }
+                if prior_ack.is_some_and(|p| p >= ack.node) {
+                    return Err(Error::NonCanonical);
+                }
+                prior_ack = Some(ack.node);
+                ack_count += 1;
+                if ack_count > crate::participation::MAX_ACKS {
+                    return Err(Error::Capacity);
+                }
+            } else if prior_ack.is_some() {
+                return Err(Error::NonCanonical);
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut e = Encoder::new(Vec::new());
+        e.array(5)
+            .unwrap()
+            .u8(1)
+            .unwrap()
+            .u64(self.height)
+            .unwrap()
+            .array(3)
+            .unwrap()
+            .bytes(&self.reward_owner)
+            .unwrap()
+            .u64(100_000_000)
+            .unwrap()
+            .u64(self.fees)
+            .unwrap();
+        for list in [&self.transactions, &self.operations] {
+            e.array(list.len() as u64).unwrap();
+            for raw in list {
+                canonical(raw, 16 * 1024)?;
+                if !seen.insert(raw) {
+                    return Err(Error::Duplicate);
+                }
+                e.bytes(raw).unwrap();
+            }
+        }
+        let b = e.into_writer();
+        if b.len() > 65536 {
+            return Err(Error::Oversize);
+        }
+        Ok(b)
+    }
+    pub fn root(&self) -> Result<Hash> {
+        Ok(domain_hash(b"MUTINY-BUILD8-BODY-V1", &self.encode()?))
+    }
+    pub fn decode(raw: &[u8]) -> Result<Self> {
+        canonical(raw, 65536)?;
+        let mut d = Decoder::new(raw);
+        let b = (|| -> std::result::Result<Self, minicbor::decode::Error> {
+            if d.array()? != Some(5) || d.u8()? != 1 {
+                return Err(minicbor::decode::Error::message("body"));
+            }
+            let height = d.u64()?;
+            if d.array()? != Some(3) {
+                return Err(minicbor::decode::Error::message("coinbase"));
+            }
+            let reward_owner = d
+                .bytes()?
+                .try_into()
+                .map_err(|_| minicbor::decode::Error::message("owner"))?;
+            if d.u64()? != 100_000_000 {
+                return Err(minicbor::decode::Error::message("subsidy"));
+            }
+            let fees = d.u64()?;
+            let mut lists = Vec::new();
+            for _ in 0..2 {
+                let n = d
+                    .array()?
+                    .ok_or(minicbor::decode::Error::message("array"))?;
+                if n > 4096 {
+                    return Err(minicbor::decode::Error::message("count"));
+                }
+                let mut list = Vec::new();
+                for _ in 0..n {
+                    list.push(d.bytes()?.to_vec());
+                }
+                lists.push(list);
+            }
+            Ok(Self {
+                height,
+                reward_owner,
+                fees,
+                transactions: lists.remove(0),
+                operations: lists.remove(0),
+            })
+        })()
+        .map_err(|_| Error::Codec)?;
+        if b.encode() != Ok(raw.to_vec()) {
+            return Err(Error::NonCanonical);
+        }
+        Ok(b)
+    }
+}
+
+/// Common lifecycle operation envelope discriminator. Unknown kinds remain
+/// rejected by execution, never implicitly treated as valid acknowledgements.
+pub fn operation_kind(raw: &[u8]) -> Result<u8> {
+    // Unit-test builds of this crate ONLY: the TEST-ONLY envelope carrier (op_envelope_v1::carrier).
+    #[cfg(test)]
+    if crate::op_envelope_v1::carrier::is_carrier(raw) {
+        return Ok(crate::op_envelope_v1::carrier::KIND);
+    }
+    let mut d = Decoder::new(raw);
+    let count = d.array().map_err(|_| Error::Codec)?;
+    let version = d.u8().map_err(|_| Error::Codec)?;
+    if version == 2 {
+        // Only migrated assignment, exit, evidence and bond envelopes are recognized. Their full
+        // codec and authority are checked by explicit V2 execution. No generic
+        // version fallback may turn a V2 object into a V1 acknowledgement. Kind 18 (the
+        // escrow-funded bond create) is retired: the funded BondCreate is kind 24
+        // (`bond_create_v3`), and an escrow address is never recognized.
+        let kind = d.u8().map_err(|_| Error::Codec)?;
+        return if (matches!(kind, 10 | 14 | 15 | 19 | 20 | 23 | 24) && count == Some(5))
+            || (kind == 17 && count == Some(4))
+            || (matches!(kind, 21 | 22) && count == Some(7))
+            || (kind == 16 && count == Some(9))
+        {
+            Ok(kind)
+        } else {
+            Err(Error::WrongOperation)
+        };
+    }
+    if version != 1 {
+        return Err(Error::Codec);
+    }
+    let kind = d.u8().map_err(|_| Error::Codec)?;
+    let expected = match kind {
+        10..=13 => 10,
+        14 => 12,
+        15 => 15,
+        16 => 18,
+        17 => 4,
+        18 => 14,
+        19 | 20 => 11,
+        _ => return Err(Error::WrongOperation),
+    };
+    if count != Some(expected) {
+        return Err(Error::Codec);
+    }
+    Ok(kind)
+}
+
+/// Sorted unique keys; values are canonical typed state records, validated by execution.
+pub fn state_bytes(records: &[(Hash, Vec<u8>)]) -> Result<Vec<u8>> {
+    if records.len() > 10_000_000 {
+        return Err(Error::Capacity);
+    }
+    let mut e = Encoder::new(Vec::new());
+    e.array(records.len() as u64).unwrap();
+    let mut prior = None;
+    for (key, val) in records {
+        if prior.is_some_and(|p| p >= key) {
+            return Err(Error::NonCanonical);
+        }
+        prior = Some(key);
+        canonical(val, 256 * 1024)?;
+        e.array(2).unwrap().bytes(key).unwrap().bytes(val).unwrap();
+    }
+    Ok(e.into_writer())
+}
+pub fn state_root(records: &[(Hash, Vec<u8>)]) -> Result<Hash> {
+    crate::state_tree::full_root(records)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenesisDescriptor {
+    pub timestamp: u64,
+    pub nonce: Hash,
+    pub fingerprint: Hash,
+    pub owner: Hash,
+    pub purchase: Hash,
+    pub parameters: Vec<u8>,
+    pub admission_records: Vec<Vec<u8>>,
+    pub recovery: Hash,
+}
+impl GenesisDescriptor {
+    pub fn decode(raw: &[u8]) -> Result<Self> {
+        canonical(raw, 1024 * 1024)?;
+        let mut d = Decoder::new(raw);
+        let decoded = (|| -> std::result::Result<Self, minicbor::decode::Error> {
+            if d.array()? != Some(10) || d.u8()? != 1 || d.u32()? != NETWORK_ID {
+                return Err(minicbor::decode::Error::message("genesis descriptor"));
+            }
+            fn h(d: &mut Decoder<'_>) -> std::result::Result<Hash, minicbor::decode::Error> {
+                d.bytes()?
+                    .try_into()
+                    .map_err(|_| minicbor::decode::Error::message("hash"))
+            }
+            let timestamp = d.u64()?;
+            let nonce = h(&mut d)?;
+            let fingerprint = h(&mut d)?;
+            let owner = h(&mut d)?;
+            let purchase = h(&mut d)?;
+            let parameters = d.bytes()?.to_vec();
+            let n = d
+                .array()?
+                .ok_or(minicbor::decode::Error::message("admissions"))?;
+            if n > 1024 {
+                return Err(minicbor::decode::Error::message("admission count"));
+            }
+            let mut admission_records = Vec::new();
+            for _ in 0..n {
+                admission_records.push(d.bytes()?.to_vec());
+            }
+            let recovery = h(&mut d)?;
+            Ok(Self {
+                timestamp,
+                nonce,
+                fingerprint,
+                owner,
+                purchase,
+                parameters,
+                admission_records,
+                recovery,
+            })
+        })()
+        .map_err(|_| Error::Codec)?;
+        if decoded.encode()? != raw {
+            return Err(Error::NonCanonical);
+        }
+        Ok(decoded)
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        canonical(&self.parameters, 65536)?;
+        if self.admission_records.len() > 1024 {
+            return Err(Error::Capacity);
+        }
+        let mut e = Encoder::new(Vec::new());
+        e.array(10)
+            .unwrap()
+            .u8(1)
+            .unwrap()
+            .u32(NETWORK_ID)
+            .unwrap()
+            .u64(self.timestamp)
+            .unwrap()
+            .bytes(&self.nonce)
+            .unwrap()
+            .bytes(&self.fingerprint)
+            .unwrap()
+            .bytes(&self.owner)
+            .unwrap()
+            .bytes(&self.purchase)
+            .unwrap()
+            .bytes(&self.parameters)
+            .unwrap()
+            .array(self.admission_records.len() as u64)
+            .unwrap();
+        let mut prev: Option<&Vec<u8>> = None;
+        for r in &self.admission_records {
+            canonical(r, 256 * 1024)?;
+            if prev.is_some_and(|p| p >= r) {
+                return Err(Error::NonCanonical);
+            }
+            prev = Some(r);
+            e.bytes(r).unwrap();
+        }
+        e.bytes(&self.recovery).unwrap();
+        let raw = e.into_writer();
+        if raw.len() > 1024 * 1024 {
+            return Err(Error::Oversize);
+        }
+        Ok(raw)
+    }
+    pub fn id(&self) -> Result<Hash> {
+        Ok(domain_hash(b"MUTINY-BUILD8-GENESIS-ID-V1", &self.encode()?))
+    }
+    pub fn block(&self, initial_state: Hash) -> Result<Vec<u8>> {
+        let mut e = Encoder::new(Vec::new());
+        e.array(7)
+            .unwrap()
+            .u8(1)
+            .unwrap()
+            .u32(NETWORK_ID)
+            .unwrap()
+            .bytes(&self.id()?)
+            .unwrap()
+            .bytes(&self.fingerprint)
+            .unwrap()
+            .u64(self.timestamp)
+            .unwrap()
+            .bytes(&domain_hash(
+                b"MUTINY-BUILD8-GENESIS-DESCRIPTOR-V1",
+                &self.encode()?,
+            ))
+            .unwrap()
+            .bytes(&initial_state)
+            .unwrap();
+        Ok(e.into_writer())
+    }
+    pub fn block_hash(&self, initial_state: Hash) -> Result<Hash> {
+        Ok(domain_hash(
+            b"MUTINY-BUILD8-GENESIS-BLOCK-V1",
+            &self.block(initial_state)?,
+        ))
+    }
+}
+pub fn genesis_license(genesis: Hash, index: u64) -> Result<Hash> {
+    if index >= 12 {
+        return Err(Error::InvalidCounter);
+    }
+    let mut b = genesis.to_vec();
+    b.extend(index.to_be_bytes());
+    Ok(domain_hash(b"MUTINY-BUILD8-GENESIS-LICENSE-V1", &b))
+}

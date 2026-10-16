@@ -1,0 +1,5 @@
+# Import provenance record, read by build/check-import-provenance.sh. One line per import manifest in this directory.
+# Columns, separated by a single TAB: the manifest file name; the sha256 of the manifest file itself; the FULL hash of the
+# import commit (the commit that introduced the manifest and every file it lists). A manifest never changes after its import.
+IMPORT-MANIFEST-WALLET-RELEASE-SIGNER-V1.sha256	f1d6398448a72065dc1c51fe37df14a7c38d56e6e9ef8783219ca1ea9212c385	121479b04356d5c61fb0597dd063821d7f2bc429
+IMPORT-MANIFEST-RELEASE-SIGNER-FIXTURE-V1.sha256	63ca7512ccd4ffd6df8eb7d9501b641cebfb939f8ccdb659e6842af326b9b73f	9aaae85e74073f70547ddebef89102e30624d3d6

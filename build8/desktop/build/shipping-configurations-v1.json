@@ -1,0 +1,308 @@
+{
+  "schema": "mutiny-build8-shipping-configurations-v1",
+  "status": "CANDIDATE. Implemented != Qualified. Offline != Physical. Parameters (trading denomination/fee constants, MAINNET_ACTIVATION=false) remain candidate pending the pre-Genesis lock packet; this record defines build configuration only.",
+  "source_branch": "sc/shipping-config",
+  "revision": "3, branch integ/p0b (wallet/p0b-manifest 947b4f9 merged into integration/self-contained-2 c57b45e): reconciled with phase 0C (the desktop V1 Ed25519/BIP32 wallet retired in e34bd2c: new desktop lockfile hash, the V1 pending removals are gone, the desktop edits are recorded in build/imports/EDITED-AFTER-IMPORT-V1.tsv) and with phase 1 (wallet-core exists: its real lockfile hash replaces the pending marker and every wallet-core check applies); wallet-core's own test-gate marker added to the forbidden wallet-executable strings. Nothing was removed from any check. Revision 2 (branch wallet/p0b-manifest) added wallet-core, described the wallet and the release signer from their identity-verified imports (121479b, 9aaae85) instead of the original checkout, put the release profile in every shipped root and added per-component exclusion lists and binary-string rules.",
+  "toolchain": {
+    "file": "rust-toolchain.toml",
+    "channel": "1.98.1",
+    "rustc_tested": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo_tested": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "host_tested": "x86_64-pc-windows-msvc",
+    "note": "The test host has rustup toolchain name 'stable' (= 1.98.1) but not a toolchain named '1.98.1'; on that host builds ran with RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc. A clean machine resolves the pin from rust-toolchain.toml."
+  },
+  "common_cargo_flags": ["--locked", "--offline"],
+  "forbidden_everywhere": ["--all-features"],
+  "release_profile": {
+    "opt-level": 3,
+    "overflow-checks": true,
+    "debug-assertions": false,
+    "codegen-units": 1,
+    "strip": "none",
+    "lto": false,
+    "panic": "unwind",
+    "present_in_manifests": ["consensus/Cargo.toml", "node/Cargo.toml", "crypto-v2/Cargo.toml", "transport-v2/Cargo.toml", "desktop/Cargo.toml", "release-signer/Cargo.toml", "wallet-core/Cargo.toml", "treasury-application/Cargo.toml"],
+    "panic_unwind_kept_because": {
+      "crypto-v2 (wallet and release signer)": "crypto-v2/src/lib.rs private_job runs every private-key operation on a worker thread and maps a worker panic to Error::Worker through JoinHandle::join(); abort would turn that fail-closed error into a process abort, and Zeroizing secret buffers are dropped (zeroized) only while unwinding",
+      "desktop": "desktop/src/wallet_host_service_v2.rs detects a panicked wallet service thread with join().is_err()",
+      "node library (validator and, as a dependency, the wallet)": "node/src/peer_supervisor.rs, actor_service.rs and hybrid_peer_worker_v2.rs detect a panicked worker through JoinHandle::join().is_err()"
+    }
+  },
+  "dev_profile": {
+    "table": "[profile.dev.package.\"*\"]",
+    "opt-level": 3,
+    "reason": "FN-DSA, KDF and C crypto dependencies are far too slow at opt-level 0 in debug tests; only dependencies are optimised, the crate under test keeps debug assertions and overflow checks. Test/dev only; release builds are unaffected.",
+    "present_in_manifests": ["consensus/Cargo.toml", "desktop/Cargo.toml", "release-signer/Cargo.toml", "wallet-core/Cargo.toml"]
+  },
+  "import_provenance": {
+    "check": "build/check-import-provenance.sh",
+    "records": ["build/imports/IMPORT-COMMITS-V1.tsv", "build/imports/EDITED-AFTER-IMPORT-V1.tsv"],
+    "imports": [
+      { "manifest": "build/imports/IMPORT-MANIFEST-WALLET-RELEASE-SIGNER-V1.sha256", "manifest_sha256": "f1d6398448a72065dc1c51fe37df14a7c38d56e6e9ef8783219ca1ea9212c385", "import_commit": "121479b04356d5c61fb0597dd063821d7f2bc429", "files": 35, "what": "desktop (24 files) and release-signer (11 files) exactly as found in the original checkout" },
+      { "manifest": "build/imports/IMPORT-MANIFEST-RELEASE-SIGNER-FIXTURE-V1.sha256", "manifest_sha256": "63ca7512ccd4ffd6df8eb7d9501b641cebfb939f8ccdb659e6842af326b9b73f", "import_commit": "9aaae85e74073f70547ddebef89102e30624d3d6", "files": 1, "what": "qualification/release-policy-public-fixture-v1.json, sha256 18d0672b9b23d6de68e803d2bbc769d05a15fed7cc6ef7f4381b4bfe69b26c1c, synthetic:true, production_authorized:false, public wire objects only" }
+    ],
+    "edited_after_import": "build/imports/EDITED-AFTER-IMPORT-V1.tsv is the only machine-checked record of differences from an import. It holds 13 lines: phase 0B's profile-table edits (desktop/Cargo.toml, release-signer/Cargo.toml; commits 24dfb05, e7bacc5) and phase 0C's desktop edits (commit e34bd2c: the desktop/Cargo.toml dependency lines, desktop/Cargo.lock, src/main.rs, src/payment.rs and src/wallet_v2.rs edited; src/dpapi_v2.rs added; src/wallet.rs, store.rs, verified_sync.rs, bindings.rs, admission.rs and firmware.rs removed). The check fails on any unrecorded difference, stale entry or unlisted new file under desktop/ or release-signer/.",
+    "edited_after_import_narrative": "build/imports/EDITED-AFTER-IMPORT-DESKTOP-V1.md: phase 0C's human narrative of the same desktop edits (not read by the check; its hashes agree with the .tsv).",
+    "deliberately_not_imported": ["qualification/NODE-A-*.json and every NODE-A-* file (private, machine-identifying admission evidence; git-ignored)", "build output (target/), wallets, *.sqlite*, TPM material, backups"]
+  },
+  "components": [
+    {
+      "id": "treasury-verifier-application",
+      "package": "mutiny-native-treasury-application",
+      "binary": "mutiny-native-treasury-application",
+      "role": "ordinary authenticated Treasury verifier continuity client/service; transport custody only, production disabled",
+      "manifest": "treasury-application/Cargo.toml",
+      "target": "x86_64-unknown-linux-gnu",
+      "target_status": "SOURCE ADOPTION UNRUN: required ordinary facade/build/fixture exclusion checks pending against final consolidated source; Windows fallback absent",
+      "lockfile": { "path": "treasury-application/Cargo.lock", "sha256": "aeec22bf18caceb3b71cc3a5ad71c1a1adb1066c5a6b8aa270af3bd61bfb0f2a" },
+      "profile": "release",
+      "build_command": "cd treasury-application && cargo build --release --locked --offline --bin mutiny-native-treasury-application",
+      "default_features": false,
+      "features": [],
+      "dependency_features": {
+        "mutiny-consensus-v8": { "default_features": false, "features": [] },
+        "mutiny-crypto-v2": { "default_features": false, "features": ["wallet-custody"] },
+        "rusqlite": { "features": ["bundled"], "provider": "treasury-sqlite-provider", "single_links_sqlite3": true }
+      },
+      "must_not_have": ["crypto-v2:release-custody", "crypto-v2:receipt-qualification", "crypto-v2:qualification", "consensus:dividend-test-fixtures", "consensus:legacy-v0-test-fixtures", "consensus:actor-timer-test-fixtures", "consensus:a2-local-fixture-generator", "BTC custody libraries"],
+      "required_capabilities": {
+        "entry": "shared NORMAL binary/service facade including finite serve-ready and ordinary public Client open/issue/admit/reconcile; independently installed selection required before custody and native effects; readiness and one exchange share the existing selected I/O budget",
+        "production": "immutable enrollment None; missing selection refusal78; no TEST fallback",
+        "continuity": "external reserve/consume durable before local commit, exact operation/content binding, ambiguity freeze, authenticated exact reconstruction, native held storage/bounded readers",
+        "custody": "only matching sealed Role::Transport authentication keys; no Treasury spending key or changed monetary authority"
+      },
+      "shipping_gate": "build/check-treasury-application-shipping.sh plus actual NORMAL binary marker exclusion in final campaign",
+      "qualification": "Retained APP46 belongs to prior exact source; no runtime transfer onto adopted facade or consolidated dependency changes"
+    },
+    {
+      "id": "node-validator",
+      "package": "mutinyd-v8",
+      "binary": "mutinyd-v8",
+      "role": "validator daemon, Linux native testing",
+      "manifest": "node/Cargo.toml",
+      "target": "x86_64-unknown-linux-gnu",
+      "target_status": "UNVERIFIED: the production paths require Linux (node/src/main.rs cfg!(target_os=\"linux\") at the host-physical-qualification and runtime-key-custody sites; tpm_backend.rs; continuity_generation_store_v2.rs). The triple is inferred, never built on Linux. Cross-check only from the Windows host: cargo tree --target x86_64-unknown-linux-gnu.",
+      "lockfile": { "path": "node/Cargo.lock", "sha256": "e8dd18be3710f9c96a9f2a2702b0e82aaf11c9e1a5a0b1f2c736581f46037cb5" },
+      "profile": "release",
+      "build_command": "cd node && cargo build --release --locked --offline --target x86_64-unknown-linux-gnu --no-default-features",
+      "default_features": false,
+      "features": [],
+      "dependency_features": {
+        "mutiny-consensus-v8": { "default_features": true, "features": [] },
+        "mutiny-crypto-v2": { "default_features": true, "features": [] },
+        "mutiny-transport-v2": { "default_features": true, "features": [] }
+      },
+      "must_not_have": ["crypto-v2:wallet-custody", "crypto-v2:release-custody", "crypto-v2:receipt-qualification", "crypto-v2:qualification", "consensus:dividend-test-fixtures", "consensus:legacy-v0-test-fixtures", "node:trading-service (this variant)"],
+      "consensus_rules": "Complete day-one rule set, always compiled: DvP/conditional-MUT trading, License transfer, dividend claims. Identical to every other configuration.",
+      "required_capabilities": {
+        "validation": ["trading operations (LOCK/CLAIM/REFUND, DvP, License DvP, Treasury rotation) accepted or rejected by consensus rules", "License operations", "dividend claims", "StateRoot over trading/License/dividend records and checkpoint restore"],
+        "wallet": "none: the validator never holds wallet, owner, recovery or release custody",
+        "trading_service": "absent in this variant; the preview API is not required for validation"
+      }
+    },
+    {
+      "id": "node-validator-trading-service",
+      "package": "mutinyd-v8",
+      "binary": "mutinyd-v8",
+      "role": "validator daemon with the node-local trading service and HybridRuntime::preview_trading",
+      "manifest": "node/Cargo.toml",
+      "target": "x86_64-unknown-linux-gnu",
+      "target_status": "UNVERIFIED (see node-validator)",
+      "lockfile": { "path": "node/Cargo.lock", "sha256": "e8dd18be3710f9c96a9f2a2702b0e82aaf11c9e1a5a0b1f2c736581f46037cb5" },
+      "profile": "release",
+      "build_command": "cd node && cargo build --release --locked --offline --target x86_64-unknown-linux-gnu --no-default-features --features trading-service",
+      "default_features": false,
+      "features": ["trading-service"],
+      "dependency_features": {
+        "mutiny-consensus-v8": { "default_features": true, "features": [] },
+        "mutiny-crypto-v2": { "default_features": true, "features": [] },
+        "mutiny-transport-v2": { "default_features": true, "features": [] }
+      },
+      "must_not_have": ["crypto-v2:wallet-custody", "crypto-v2:release-custody", "crypto-v2:receipt-qualification", "crypto-v2:qualification", "consensus:dividend-test-fixtures", "consensus:legacy-v0-test-fixtures"],
+      "consensus_rules": "Byte-for-byte the same rules as node-validator. trading-service is SERVICE-ONLY: it forwards nothing to consensus and gates only node/src/trading_service_v1.rs and HybridRuntime::preview_trading.",
+      "required_capabilities": {
+        "validation": "same as node-validator",
+        "wallet": "none",
+        "trading_service": "node-local candidate admission preview; the node trading service source also contains staged-only overlays (two undeclared cfgs) that are dead code and not part of this configuration"
+      }
+    },
+    {
+      "id": "wallet-core",
+      "package": "mutiny-wallet-core-v8",
+      "role": "UI-free wallet library: build, review, authorize and sign the wallet operations; consumed by the Windows wallet and testable on Linux and Windows with TEST-VALUE keys. Not shipped alone.",
+      "kind": "library",
+      "manifest": "wallet-core/Cargo.toml",
+      "status": "PRESENT since phase 1 (merged at a0ecb7b; placeholder handlers for the later operation kinds at c57b45e). Every wallet-core check of the exclusion script applies and passes on the real crate: manifest, features, cfgs, environment reads, the four compile-time guards (lib.rs), both profile tables, the resolved graph for both targets, the Bitcoin boundary and the lockfile hash below. OPEN: the test-value marker contract of docs/BUILD-CONFIGURATIONS-V1.md section 12 is not met (see non_shipping_features). Implemented != Qualified.",
+      "targets": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+      "target_status": "Both targets resolved by cargo tree (graph checks pass for both); NOT built on Linux (UNVERIFIED there). Revision 3 observation (integ/p0b at 9520c2f, the Windows 11 test host, rustc 1.98.1 through RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc, CARGO_BUILD_JOBS=3 on a shared machine; Windows evidence only, not Linux evidence): cargo test --locked --offline passes 134 tests in 13 test binaries in debug and in release; the runner's NON-SHIPPING step with --features test-value-signing runs the same 134 (the crate's own tests always carry the feature through the dev-dependency on itself); cargo build --release --locked --offline --lib succeeds; the -D unexpected_cfgs checks pass with and without the feature. Signing works only on x86_64 (crypto-v2 platform.c requires the qualified x86_64 rounding environment), so an aarch64 runner would fail every signing test.",
+      "lockfile": { "path": "wallet-core/Cargo.lock", "sha256": "a84f038d150b4e28092fc4bb78833d0b34d7195407b3d1216e00e1c3370a90cb" },
+      "profile": "release (explicit [profile.release] and [profile.dev.package.\"*\"] required in wallet-core/Cargo.toml)",
+      "build_command": "cd wallet-core && cargo build --release --locked --offline",
+      "default_features": true,
+      "default_feature_set": [],
+      "features": [],
+      "declared_features": ["default", "test-value-signing"],
+      "non_shipping_features": { "test-value-signing": "NEVER part of a shipping graph. default = [] exactly; test-value-signing = [] exactly; no other feature forwards it; no consumer (desktop) enables it. The crate's own tests enable it only through a dev-dependency on itself (mutiny-wallet-core-v8 = { path = \".\", features = [\"test-value-signing\"] }); resolver 2 does not unify dev-dependency features into a normal or release build, and the graph check (cargo tree -e normal,build) sees [default] only. Checked in the manifest, in the resolved graph of every shipping component, in the source cfgs (all eleven gated sites use cfg(any(test, feature = \"test-value-signing\"))) and, in linked executables, by marker strings (an rlib is not scanned, see production_exclusions). OPEN (change request): the marker contract (every gated item carries TestValueGate or MUTINY-BUILD8-TEST-VALUE-SIGNING) is not met; neither string occurs in wallet-core. The crate defines its own marker MUTINY-WALLET-CORE-TEST-VALUE-GATE-V1 (src/authorize.rs TEST_VALUE_GATE_MARKER), referenced only by SigningGate::test_value() (which KeySigner::for_test calls); ReviewGate::with_limits, present_at, approve_at, authorize_at, Approval::for_review_for_test and MemoryOutbox::corrupt_for_test carry no marker. Revision 3 forbids MUTINY-WALLET-CORE-TEST-VALUE-GATE-V1 in wallet executables (an addition; TestValueGate and MUTINY-BUILD8-TEST-VALUE-SIGNING stay forbidden)." },
+      "dependency_features": {
+        "mutiny-crypto-v2": { "default_features": true, "features": ["wallet-custody"] },
+        "mutiny-consensus-v8": { "default_features": true, "features": [], "note": "a dependency of the library (path ../consensus), default features only" },
+        "mutinyd-v8": { "default_features": true, "features": [], "note": "NOT a dependency of the library (absent from the graph); if ever added, default features only (never trading-service)" },
+        "mutiny-transport-v2": { "default_features": true, "features": [], "note": "NOT a dependency of the library (absent from the graph); if ever added, default features only" }
+      },
+      "other_dependencies": ["minicbor =2.3.0 (std)", "sha2 0.10 (patched to the qualified kdf-custody-v1 source)", "hex 0.4", "zeroize =1.9.0", "rusqlite =0.37.0 (bundled SQLite: the durable outbox)"],
+      "dev_dependencies": ["mutiny-wallet-core-v8 itself with test-value-signing (tests only, see non_shipping_features)", "serde_json 1", "p256 =0.13.2 (no default features; ecdsa, std)"],
+      "must_not_have": ["crypto-v2:release-custody", "crypto-v2:receipt-qualification", "crypto-v2:qualification", "consensus:dividend-test-fixtures", "consensus:legacy-v0-test-fixtures", "node:trading-service", "wallet-core:test-value-signing (any shipping graph)", "crates: eframe, egui*, winit, windows-sys, ed25519-dalek-bip32, glutin, glow, arboard", "a DIRECT bip39 dependency (crypto-v2 owns the phrase; bip39 may be reached only through mutiny-crypto-v2)", "crates named bitcoin*, secp256k1*, bdk*, miniscript, psbt, bitcoincore-rpc (the single exemption is bitcoin_hashes reached only through bip39 through crypto-v2: hash functions, no keys or transactions)", "network crates: tokio, reqwest, hyper, h2, mio, socket2, ureq, curl, rustls, openssl, native-tls, tungstenite, quinn, libp2p and the like"],
+      "production_exclusions": {
+        "crypto_v2_features": ["release-custody", "receipt-qualification", "qualification"],
+        "consensus_features": ["dividend-test-fixtures", "legacy-v0-test-fixtures"],
+        "node_features": ["trading-service"],
+        "own_features": ["test-value-signing"],
+        "binary_strings_forbidden": ["MUTINY-BUILD8-QUAL-RECEIPT-ADAPTER-V1", "DurableVoter", "fixture_suspend", "fixture_revoke", "fixture_advance_dividends", "BUILD8_SYNTHETIC_", "TRADING_COMPLETION_CRASH", "TRADING_STORAGE_CRASH", "RECOVERY_CRASH_PHASE", "BUILD8_EXPORT_SYNTHETIC", "qualification_wallet_entropy_provider", "CustodianSession", "TestValueGate", "MUTINY-BUILD8-TEST-VALUE-SIGNING", "MUTINY-WALLET-CORE-TEST-VALUE-GATE-V1"],
+        "binary_strings_required": [],
+        "binary_strings_note": "wallet-core is a library with no binary of its own. These strings apply to every executable that links it (the desktop exe, since phase 7; with the production gates closed the phase 7 release exe contains no wallet-core code at all, none of these markers and no wallet-core item name, verified by the binary scan of exe and pdb). rustc records cfg-stripped item names, and the feature name, in an rlib's crate metadata: a default-feature release rlib of a crate whose item TestValueGate is gated by test-value-signing still contains both strings (observed on a stub). An rlib is therefore NOT scanned. The markers are forbidden in LINKED EXECUTABLES (the desktop exe), where metadata is not linked in. MUTINY-WALLET-CORE-TEST-VALUE-GATE-V1 is the marker the real crate embeds when its test gate is compiled in (its own test build_independence shows it in a test-gate binary); added in revision 3."
+      },
+      "consensus_rules": "Links the same always-on consensus rules (when it depends on consensus); wallet-side verification of trading, License and dividend state is identical to the validator's.",
+      "required_capabilities": {
+        "operations_to_build_review_sign": ["(a) ordinary MUT payments", "(b) License purchases and transfers through the approved DvP path", "(c) dividend claims (partial claims and sequence handling)", "(d) trading: reservations, conditional MUT funding (LOCK), claims (CLAIM), refunds (REFUND) and cancellation where the protocol defines it", "(e) bond creation and withdrawal (locked timing)", "(f) native wallet-authority rotation, and Treasury rotation when operated by the authorized Treasury owner"],
+        "custody": "crypto-v2 wallet-custody (BOTH_REQUIRED Ed448 + FN-DSA-1024 signing); no Bitcoin key, script or transaction signing: BTC custody is external (the wallet signs MUT authority only)",
+        "status": "These capabilities are REQUIRED of the shipping wallet configuration. Implemented in wallet-core by phase 1 (Implemented != Qualified): (a) ordinary MUT payments (plan, review, approval, authorize, outbox), signed only with TEST-VALUE keys while the production gate is closed. (b)-(f) are registered placeholders that refuse as NOT_IMPLEMENTED; the phased wallet plan (phases 2-8) tracks them. Which operations are deliverable is limited by open protocol questions (single-block validity, cancellation, submission path)."
+      }
+    },
+    {
+      "id": "wallet-desktop",
+      "package": "mutiny-desktop-v8",
+      "binary": "mutiny-wallet-v8",
+      "binary_note": "Order W8 (candidate 3, branch cand3/desktop): the executable was renamed from mutiny-desktop-v8-ceremony; the package name mutiny-desktop-v8 is unchanged. The observations recorded in target_status (revision 4 and earlier) name the executable under its old name. build/check-shipping-config.sh scans a binary named mutiny-wallet-v8* with the wallet rules and FAILS one under a retired mutiny-desktop-v8* name.",
+      "role": "Windows wallet GUI (Desktop Wallet V8): eframe/glow shell, DPAPI-protected vault, windows-sys; since phase 7 a thin shell over wallet-core (planning, review, approval, authorization and the outbox contract are wallet-core's; the desktop adds the vault, the DPAPI-sealed operation outbox and preimage store, the review widget and the request forms)",
+      "manifest": "desktop/Cargo.toml",
+      "import": "build/imports/IMPORT-MANIFEST-WALLET-RELEASE-SIGNER-V1.sha256 (commit 121479b); edited after import only as recorded in build/imports/EDITED-AFTER-IMPORT-V1.tsv",
+      "target": "x86_64-pc-windows-msvc",
+      "linux": "NOT BUILDABLE, by design of the dependency set, and not a goal. eframe is declared default-features = false with only default_fonts and glow, so winit (its windowing layer) gets no platform feature: on any Linux target winit hits compile_error!(\"The platform you're compiling for is not supported by winit\") at winit-0.30.13/src/platform_impl/mod.rs:78 (src/platform_impl/linux/mod.rs:3-4 carries the hint \"Please select a feature to build for unix: x11, wayland\"). Reproduced: from desktop/, cargo check --offline --locked --target x86_64-unknown-linux-musl -p winit fails exactly there. Independently, the ACL leases (desktop/src/custody_acl_v2.rs) and the display-capture exclusion (desktop/src/main.rs) use windows-sys symbols that cannot link off Windows, the DPAPI layer (desktop/src/dpapi_v2.rs, moved out of the retired V1 wallet.rs by phase 0C) is Windows-only (its non-Windows stub refuses), and custody_acl_v2.rs returns Err outside Windows. Only the headless wallet-core is built and tested on Linux.",
+      "target_status": "Windows MSVC. Revision 4 observation (phase 7, wallet/p7-desktop at 5b78aaa, the desktop linking wallet-core; the Windows 11 test host, rustc 1.98.1 through RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc, CARGO_BUILD_JOBS=3 on a shared machine; Windows evidence only, not Linux evidence): cargo build --release --locked --offline SUCCEEDS (the desktop crate emits no warning); mutiny-desktop-v8-ceremony.exe is 147,968 bytes (sha256 8f0cb42a8d26b7da47f7348e3747aa6c2a1d9c14aa8b0c91f726b5534d3f1ca7) and neither it nor its pdb contains create_wallet_phrase, wallet_restore, WalletCustodyV2, CustodianSession, any test-value marker (MUTINY-WALLET-CORE-TEST-VALUE-GATE-V1 included) or any wallet-core item name (mutiny_wallet_core_v8, KeySigner): behind the closed gates the wallet-core code is dead-stripped as well. The executable refuses at startup (exit code 1, 'under qualification'; the ignored test non_test_binary_refuses_to_start run against it). The debug and release suites pass 62 tests each, 1 ignored; cargo clippy --all-targets -- -D warnings is clean; build/check-shipping-config.sh full run 169 passed, 0 failed with this exe. Revision 3 observation (integ/p0b at 9520c2f, the Windows 11 test host, rustc 1.98.1 through RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc, CARGO_BUILD_JOBS=3 on a shared machine; Windows evidence only, not Linux evidence): cargo build --release --locked --offline SUCCEEDS (4m53s from an empty target directory; the desktop crate itself emits no warning); mutiny-desktop-v8-ceremony.exe is 147,968 bytes (sha256 b88d6aa2dca707d765b8d4afb6b6b0024f44a7a8992b743645adedb83c752d7a) and neither it nor its pdb contains create_wallet_phrase, wallet_restore, MUTINY-BUILD8-DESKTOP-WALLET-CUSTODY-V2, WalletCustodyV2, CustodianSession or any of the three test-value markers (SetWindowDisplayAffinity is absent too: the GUI path is dead-stripped behind the closed App::new gate). The executable refuses at startup (exit code 1, 'under qualification'), shown by running the ignored test non_test_binary_refuses_to_start against it. cargo test --no-run SUCCEEDS (phase 0C removed admission.rs and its NODE-A include); the debug and release suites pass 33 tests each, 1 ignored (that release-refusal test, run separately). Revision 2 observation (2026-10-03, BEFORE phase 0C, after the profile commit 24dfb05): cargo build --release --locked --offline SUCCEEDS (4m02s, 6 dead-code warnings, mutiny-desktop-v8-ceremony.exe 153,600 bytes: the production gates App::new and wallet_v2::ready() are closed, so the custody code is unreachable and is not linked; none of create_wallet_phrase, wallet_restore, MUTINY-BUILD8-DESKTOP-WALLET-CUSTODY-V2 is in the exe or the pdb). cargo test --no-run FAILS with exactly one error: desktop/src/admission.rs:275 include_str!s qualification/NODE-A-NATIVE-TPM-PUBLIC-FIXTURE.json, private machine evidence that is deliberately not imported (phase 0C retires or reworks it).",
+      "lockfile": { "path": "desktop/Cargo.lock", "sha256": "5157c7abd53af603bc71fbf3054a2fdb8c74916baaed18b8e2486c6b335f827e", "note": "phase 7 (branch wallet/p7-desktop) added the wallet-core path dependency offline: one package entry (mutiny-wallet-core-v8) and one dependency edge of the desktop package, no version changed; before that phase 0C regenerated it after removing the V1 dependencies (e34bd2c); the import manifest records the original lock, prefix 218628964f27" },
+      "profile": "release (explicit [profile.release] and [profile.dev.package.\"*\"] in desktop/Cargo.toml)",
+      "build_command": "cd desktop && cargo build --release --locked --offline",
+      "default_features": true,
+      "features": [],
+      "dependency_features": {
+        "mutiny-crypto-v2": { "default_features": true, "features": ["wallet-custody"] },
+        "mutiny-consensus-v8": { "default_features": true, "features": [] },
+        "mutinyd-v8": { "default_features": true, "features": [], "note": "node default = [] : trading-service OFF; never enabled by the wallet" },
+        "mutiny-transport-v2": { "default_features": true, "features": [] },
+        "mutiny-wallet-core-v8": { "default_features": true, "features": [], "note": "phase 7: the normal dependency at default features; the NON-SHIPPING test-value-signing feature is enabled for tests only, through a dev-dependency (never in cargo build --release nor in cargo tree -e normal,build); checked in the manifest, the resolved graph, a compile-time guard in desktop/src/main.rs and the release-binary marker scan" },
+        "eframe": { "default_features": false, "features": ["default_fonts", "glow"], "note": "no winit platform feature, which is why the crate cannot build on Linux" }
+      },
+      "windows_only_dependencies": ["windows-sys 0.61 (DPAPI CryptProtectData, ACL SDDL, token SID, GetFileInformationByHandle, SetWindowDisplayAffinity)", "eframe glow (OpenGL through glutin)", "raw-window-handle Win32 variant", "crypto-v2 C code linking tbs and bcrypt (crypto-v2/build.rs)"],
+      "known_pending_removals": [],
+      "known_pending_note": "EMPTY since phase 0C (e34bd2c) retired the V1 (Ed25519/BIP32) code and removed its dependencies from the desktop, among them ed25519-dalek-bip32 and the direct bip39 dependency (formerly listed here as ed25519-dalek-bip32 and bip39-direct). The exclusion script FAILS if a V1 crate is present but not listed here, or listed here but already gone.",
+      "must_not_have": ["crypto-v2:release-custody", "crypto-v2:receipt-qualification", "crypto-v2:qualification", "consensus:dividend-test-fixtures", "consensus:legacy-v0-test-fixtures", "node:trading-service", "wallet-core:test-value-signing", "crates named bitcoin*, secp256k1*, bdk*, miniscript, psbt, bitcoincore-rpc (the single exemption is bitcoin_hashes reached only through bip39)"],
+      "production_exclusions": {
+        "crypto_v2_features": ["release-custody", "receipt-qualification", "qualification"],
+        "consensus_features": ["dividend-test-fixtures", "legacy-v0-test-fixtures"],
+        "node_features": ["trading-service"],
+        "wallet_core_features": ["test-value-signing"],
+        "static_guard": "desktop/src/main.rs: const assert !mutiny_wallet_core_v8::TEST_VALUE_SIGNING_ENABLED in every non-test build with the shipping profile (debug-assertions = false); not evaluated in a dev-profile build because cargo clippy --all-targets checks the non-test binary in the same invocation as the tests, which unifies the dev-dependency feature into that never-shipped binary",
+        "binary_strings_forbidden": ["MUTINY-BUILD8-QUAL-RECEIPT-ADAPTER-V1", "DurableVoter", "fixture_suspend", "fixture_revoke", "fixture_advance_dividends", "BUILD8_SYNTHETIC_", "TRADING_COMPLETION_CRASH", "TRADING_STORAGE_CRASH", "RECOVERY_CRASH_PHASE", "BUILD8_EXPORT_SYNTHETIC", "qualification_wallet_entropy_provider", "CustodianSession", "TestValueGate", "MUTINY-BUILD8-TEST-VALUE-SIGNING", "MUTINY-WALLET-CORE-TEST-VALUE-GATE-V1"],
+        "binary_strings_required": [],
+        "binary_strings_required_note": "None can be required today: the closed production gates dead-strip the custody code from the shipping exe (verified), so create_wallet_phrase and wallet_restore are absent from a correct current build. A required marker is to be added by the qualification action that opens the gates; phase 7 kept them closed (its release exe still contains no custody or wallet-core code). On Windows the exe holds no Rust symbol names: the check scans the sibling .pdb as well."
+      },
+      "consensus_rules": "Links the same always-on consensus rules; wallet-side verification of trading/License/dividend state is identical to the validator's.",
+      "required_capabilities": {
+        "wallet_custody": "crypto-v2 wallet-custody (private key creation/restore/open) is required for owner / BOTH_REQUIRED signing",
+        "operations_to_present_review_authorize": ["(a) ordinary MUT payments", "(b) License purchases and transfers through the approved DvP path", "(c) dividend claims", "(d) trading reservations, conditional MUT funding, claims, refunds and cancellation where defined", "(e) bond creation and withdrawal", "(f) native wallet-authority rotation and Treasury rotation by the authorized Treasury owner"],
+        "status": "REQUIRED of the shipping configuration, built in wallet-core and presented by this shell (phases 1-8). Since phase 7 the desktop links wallet-core and presents, through wallet-core's plan, review, approval and authorization, every kind that has a wallet-core handler on its branch: (a) payments, (c) dividend claims, (d) hash lock, claim and refund (the protocol's one cancellation), (e) bond creation, unbond and withdrawal, (f) native wallet-authority rotation with the vault replacement; (b) License purchase and transfer by DvP and (d) the fiat lock and release (phase 5B, merged into the phase 7 branch; multi-party parts exchanged as public PartialApproval files and completed with the maker's fill by offers::combine); (f) the Treasury rotation (R2) and offer freezes (phase 6, merged into the phase 7 branch): the desktop takes the Treasury profile only from the machine's runtime declaration checked by wallet-core's profile::declare at every unlock and every new head, and no form offers a Treasury kind. Everything stays behind the closed production gates (the shell opens only in test builds; signing only with TEST-VALUE keys in tests). Implemented is not Qualified. No Bitcoin custody: BTC keys never enter this process."
+      }
+    },
+    {
+      "id": "release-signer",
+      "package": "mutiny-offline-release-signer",
+      "binary": "mutiny-offline-release-signer (library mutiny_offline_release_signer)",
+      "role": "offline release signing: 2-of-3 custodian ceremony, SYNTHETIC qualification only (quorum() refuses production)",
+      "manifest": "release-signer/Cargo.toml",
+      "import": "build/imports/IMPORT-MANIFEST-WALLET-RELEASE-SIGNER-V1.sha256 (commit 121479b) and the public fixture import (commit 9aaae85); edited after import only as recorded in build/imports/EDITED-AFTER-IMPORT-V1.tsv",
+      "targets": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+      "target_status": "Windows MSVC. Revision 3 observation (integ/p0b at 9520c2f, the Windows 11 test host, rustc 1.98.1 through RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc, CARGO_BUILD_JOBS=3 on a shared machine; Windows evidence only, not Linux evidence): cargo test --locked --offline passes 13 tests in debug and in release; cargo build --release succeeds (mutiny-offline-release-signer.exe 755,200 bytes, sha256 ccb56d39331edfd9a9c63102b8a2af27c55ad5a39e19e1304ef25743f52edf5a; its pdb holds the required CustodianSession, 5 matches, and none of the forbidden signer strings). Revision 2 observation, 2026-10-03 on this host: cargo test --locked --offline passes 13 tests (3 library tests, two of which need the imported fixture, and 10 binary tests) and cargo build --release succeeds (mutiny-offline-release-signer.exe 755,200 bytes). Linux: both cfg branches exist in the manifest and the storage modules (libc, cfg(target_os = \"linux\")) but nothing was built on Linux. It is a host/offline component and is deliberately not in the Linux native test runner.",
+      "lockfile": { "path": "release-signer/Cargo.lock", "sha256": "09e12b671ed1ff9915dbe6c9ac057a0aad8fb2c126844faad29c63577a2e8fd5" },
+      "profile": "release (explicit [profile.release] and [profile.dev.package.\"*\"] in release-signer/Cargo.toml)",
+      "build_command": "cd release-signer && cargo build --release --locked --offline",
+      "default_features": true,
+      "features": [],
+      "dependency_features": {
+        "mutiny-crypto-v2": { "default_features": true, "features": ["release-custody"] }
+      },
+      "windows_only_dependencies": ["windows-sys =0.61.2 (file ACL and identity checks, console)"],
+      "linux_only_dependencies": ["libc =0.2.189"],
+      "must_not_have": ["crypto-v2:wallet-custody", "crypto-v2:receipt-qualification", "crypto-v2:qualification", "mutiny-consensus-v8", "mutinyd-v8", "mutiny-transport-v2", "eframe, egui*, winit, glutin, glow", "rusqlite", "crates named bitcoin*, secp256k1*, bdk*, miniscript, psbt, bitcoincore-rpc (the single exemption is bitcoin_hashes reached only through bip39)"],
+      "production_exclusions": {
+        "crypto_v2_features": ["wallet-custody", "receipt-qualification", "qualification"],
+        "consensus_features": [],
+        "crates": ["mutiny-consensus-v8", "mutinyd-v8", "mutiny-transport-v2", "eframe", "rusqlite"],
+        "binary_strings_forbidden": ["MUTINY-BUILD8-QUAL-RECEIPT-ADAPTER-V1", "DurableVoter", "fixture_suspend", "fixture_revoke", "fixture_advance_dividends", "BUILD8_SYNTHETIC_", "TRADING_COMPLETION_CRASH", "TRADING_STORAGE_CRASH", "RECOVERY_CRASH_PHASE", "BUILD8_EXPORT_SYNTHETIC", "create_wallet_phrase", "qualification_wallet_entropy_provider", "wallet_restore", "MUTINY-BUILD8-DESKTOP-WALLET-CUSTODY-V2", "mutiny_consensus", "WalletCustodyV2"],
+        "binary_strings_required": ["CustodianSession"],
+        "binary_strings_required_note": "CustodianSession is a symbol name: it is in the .pdb (5 matches on the Windows build) and in an ELF binary's symbol table, not in the Windows exe. The check therefore scans the binary together with its sibling .pdb and requires the string in the union."
+      },
+      "consensus_rules": "none (does not link consensus)",
+      "required_capabilities": { "release_signing": "crypto-v2 release-custody only; the signer holds no wallet custody and no consensus rule" }
+    },
+    {
+      "id": "library-consensus",
+      "package": "mutiny-consensus-v8",
+      "role": "library; consumed by node and wallet; not shipped alone",
+      "manifest": "consensus/Cargo.toml",
+      "target": "follows consumer",
+      "lockfile": { "path": "consensus/Cargo.lock", "sha256": "a5a4c42bf0903e51d23566283ab738618154cb12c78aa4a1953fb37c140d9ca9" },
+      "default_features": true,
+      "features": [],
+      "declared_features": ["default", "dividend-test-fixtures", "legacy-v0-test-fixtures", "actor-timer-test-fixtures", "a2-local-fixture-generator"],
+      "note": "All four non-default features are TEST FIXTURES ONLY and never part of a shipped graph. a2-local-fixture-generator forwards nothing and has one private cfg(test)+(Windows|Linux)+explicit-feature hook; its protected local custody output is never package or public evidence input. Consensus has no feature that selects a rule."
+    },
+    {
+      "id": "library-crypto-v2",
+      "package": "mutiny-crypto-v2",
+      "role": "library; features are custody capabilities of the CONSUMING executable",
+      "manifest": "crypto-v2/Cargo.toml",
+      "target": "follows consumer",
+      "lockfile": { "path": "crypto-v2/Cargo.lock", "sha256": "136ac79f91838326aa9da6e3f8f68818b33807d02b0d1ec807d537ba9d74d1a6" },
+      "declared_features": ["wallet-custody", "release-custody", "receipt-qualification", "qualification"],
+      "per_consumer": { "node-validator": [], "wallet-core": ["wallet-custody"], "wallet-desktop": ["wallet-custody"], "release-signer": ["release-custody"] },
+      "transitive_note": "crypto-v2 depends on bip39 =3.0.0 (the 24-word wallet phrase), which depends on bitcoin_hashes 0.14.101 (hash functions only: no keys, scripts or transactions) and hex-conservative. They are therefore in EVERY graph that links crypto-v2, including the node validator. This is the single exemption from the Bitcoin-crate ban, and the exclusion script verifies that bitcoin_hashes is reached only through bip39 and bip39 only through mutiny-crypto-v2."
+    },
+    {
+      "id": "library-transport-v2",
+      "package": "mutiny-transport-v2",
+      "role": "library; not shipped alone",
+      "manifest": "transport-v2/Cargo.toml",
+      "target": "follows consumer",
+      "lockfile": { "path": "transport-v2/Cargo.lock", "sha256": "9f59531f90e16d7190da16399a5f3b78a80f5e7f3d797988ab1e837dda87c60a" },
+      "declared_features": []
+    },
+    {
+      "id": "ci-test-only",
+      "role": "NOT SHIPPED. Test configurations run in addition to, never instead of, the production configurations.",
+      "runs": [
+        "consensus: cargo test --locked --offline (default)",
+        "consensus: cargo test --locked --offline --features dividend-test-fixtures --test dividends_v1 --test trading_license_dividends_v1",
+        "consensus: cargo test --locked --offline --features legacy-v0-test-fixtures --test voter",
+        "node: cargo test --locked --offline [--features trading-service]",
+        "crypto-v2: cargo test --locked --offline --features qualification",
+        "wallet-core (Linux runner and Windows runner): cargo test --locked --offline [--release] with default features (its own tests turn test-value-signing on through the dev-dependency on itself)",
+        "wallet-core NON-SHIPPING rehearsal: cargo test --locked --offline --features test-value-signing (only the tests that need it; never a shipping graph, never built by the exclusion script as one)",
+        "release-signer (Windows runner): cargo test --locked --offline [--release]",
+        "desktop (Windows runner): cargo test --locked --offline [--release] (compiles since phase 0C removed admission.rs and its NODE-A include_str!; 33 pass, 1 ignored: non_test_binary_refuses_to_start needs MUTINY_DESKTOP_RELEASE_EXE set to the built shipping exe and runs with -- --ignored refuses)"
+      ],
+      "runners": { "linux": "package/linux-native-test/run-linux-native-tests.sh (consensus, node, crypto-v2, transport-v2, wallet-core)", "windows": "package/windows-wallet-test/run-windows-wallet-tests.sh (release-signer, desktop, wallet-core)" },
+      "env": { "NATIVE_TRADING_EVIDENCE_DIR": "fresh empty directory; vector-export tests panic without it" }
+    }
+  ],
+  "nonshipping_mounted_testvalue": {
+    "feature": "desktop/testvalue-window",
+    "default": false,
+    "bins": ["mutiny-wallet-v8-testvalue", "mutiny-treasury-v8-testvalue"],
+    "classification": "PUBLIC deterministic TEST-VALUE rehearsal only. No production custody, signing, shipping artifact, publication or physical evidence.",
+    "shipping_guard": "mutiny-wallet-v8 refuses testvalue-window in every profile; normal/build graph excludes the feature; linked executable and pdb scans forbid its marker and test executable names; package manifest rejects extra artifacts.",
+    "source_tripwire": "build/check-testvalue-window.pl"
+  },
+  "excluded_by_design": ["miner (C / ESP-IDF firmware, not Cargo)"],
+  "exclusion_checks": "build/check-shipping-config.sh",
+  "negative_controls": "build/negative-controls.sh"
+}

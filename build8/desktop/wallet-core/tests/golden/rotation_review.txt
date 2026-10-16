@@ -1,0 +1,79 @@
+== Summary ==
+* Action: Rotate wallet key
+  Summary: Authority 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c; proposed descriptor bfde8e4f7f2c47bf26b02030ddc0dc8d05983588a71c09c406e1671c0a7b8b04; sponsor none; exact fee 8256 STRIKES.
+! Chain class: TEST-VALUE chain: nothing here has real value
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: 014e7ca8a80394a100eba0fa4d87c579a0520cc912d481aa9442b2e727cee77c
+  Chain class: TEST-VALUE (nothing on this chain has real value)
+
+== Signing wallet ==
+  Signing address: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  The rotation authorization (current key): this wallet signs; wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  The rotation possession proof (new key): this wallet signs; wallet tmut1s690kmccfv7ta5yhgzsms0za5e9j8xcuc75qzgp0gysmpc6a4z4sergwlw (legacy hex 868afb6f184b3cbed09740a1b83c5da64b239b1cc7a801202f4121b0e35da8ab)
+  Input 0: this wallet signs; wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Owner: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Fee payer: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Money ==
+* Returns to this wallet: 0.04991744 MUT (4991744 STRIKES) to tmut1s690kmccfv7ta5yhgzsms0za5e9j8xcuc75qzgp0gysmpc6a4z4sergwlw (this wallet's new key, not yet known to the chain; legacy hex 868afb6f184b3cbed09740a1b83c5da64b239b1cc7a801202f4121b0e35da8ab)
+* Type to confirm destination: 4sergwlw
+* Network fee: 0.00008256 MUT (8256 STRIKES); at least one atom per byte of the signed encoding; paid by this wallet, signed size 8256 bytes
+* Total leaving this wallet: 0.00008256 MUT
+  Inputs: 1 coin(s) worth 0.05000000 MUT
+  Input 0: 0101010101010101010101010101010101010101010101010101010101010101:0 worth 0.05000000 MUT (this wallet)
+
+== Conditions ==
+  Wallet authority: 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c is the generation-one AddressID that names this wallet authority across every rotation; it does not change.
+  Key generation: from generation 1 (current key) to generation 2 (new key)
+  Current key fingerprint: 5afd1dd4efab0cc31a50e63a08ed0b80292960fc9754701d336d350084842fb0 (generation 1); it loses all authority when the rotation is included
+  New key fingerprint: bfde8e4f7f2c47bf26b02030ddc0dc8d05983588a71c09c406e1671c0a7b8b04 (generation 2)
+  New key address: 868afb6f184b3cbed09740a1b83c5da64b239b1cc7a801202f4121b0e35da8ab is the generation 2 address of the NEW key (tmut1s690kmccfv7ta5yhgzsms0za5e9j8xcuc75qzgp0gysmpc6a4z4sergwlw). It becomes the current address of authority 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c at inclusion.
+  New key restore check: Verified by this wallet's host before planning: a clean restore of the new phrase produced exactly the new descriptor (fingerprint bfde8e4f7f2c47bf26b02030ddc0dc8d05983588a71c09c406e1671c0a7b8b04). The statement is bound into this review's digest; consensus verifies possession, not this rehearsal.
+  Canonical reference: Signed reference height 100 block 0303030303030303030303030303030303030303030303030303030303030303; no retry extends or rebases this reference or the finite inclusion heights.
+  Validity window: Valid only for blocks 101 to 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval).
+  One pending rotation: Only one rotation of a wallet authority can be pending: another one is refused until this one is included or expires.
+  Funding: All 1 funding coin(s) must still be unspent at inclusion. The OLD key (the current key before inclusion) signs authority funding; the NEW key proves possession; a sponsor signs its own funding. The tag-25 carrier applies rotation and funding atomically.
+  Bound funding: Every authority, possession and funding signature commits to the exact sponsor, inputs, outputs, fee, context and finite heights. This funding is not a standalone transfer.
+  Fee rule: The fee must be at least the encoded size of the complete signed tag-25 carrier: 8256 bytes, so 8256 atoms.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: the old key loses all spending authority at inclusion; funds are controlled only by the new key; if the new key cannot be restored from its backup the funds are unrecoverable
+# Irreversible: Generation 2 becomes the current key of wallet authority 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c. Every address of this authority is then spent only with the new key. Only a later rotation signed by the new key changes it again.
+  Effect: Old addresses keep their coins: coins at earlier addresses of this authority stay where they are and are spent with the new key from inclusion.
+# Irreversible: Spends 1 funding coin(s) worth 0.05000000 MUT. A spent coin cannot be recovered once the rotation is included.
+  Effect: Returns 0.04991744 MUT to the fee payer at 868afb6f184b3cbed09740a1b83c5da64b239b1cc7a801202f4121b0e35da8ab (this wallet's new key, not yet known to the chain).
+# Irreversible: Pays a network fee of 0.00008256 MUT to the block producer.
+# Irreversible: Once signed, the rotation cannot be revoked: it stays valid until it is included or until block 245.
+
+== Warnings ==
+! Notice: The tag-25 rotation and its funding are one signed atomic object; neither can be included independently.
+! Notice: This is a TEST-VALUE chain: nothing here has real value.
+! Danger: This hands the entire wallet authority to the new key. Without a backup that restores exactly this key, the funds are lost for good.
+
+== You must acknowledge ==
+* Required: I checked every destination address
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Required: I understand the old key loses all authority and the funds are controlled only by the new key and its backup
+* Type to confirm: CONFIRM 4C68CF5E
+
+== Binding ==
+  Review digest: 4c68cf5ef259481dd17c1fc5cd58d6c25b5acdf047b3a557ebbea543d78c9034

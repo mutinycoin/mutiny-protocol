@@ -1,0 +1,73 @@
+[package]
+name = "mutiny-consensus-v8"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mutiny-crypto-v2 = { path = "../crypto-v2" }
+minicbor = { version = "=2.3.0", features = ["std"] }
+primitive-types = "=0.14.0"
+ed25519-dalek = "=2.2.0"
+sha2 = "0.10"
+hex = "0.4"
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+
+# Deterministic public-certificate verification: unconditional, pinned, no custody signer.
+x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
+p384 = { version = "=0.13.1", default-features = false, features = ["ecdsa", "std"] }
+rsa = { version = "=0.9.10", default-features = false, features = ["std", "sha2"] }
+
+[dev-dependencies]
+mutiny-transport-v2 = { path = "../transport-v2" }
+zeroize = "=1.9.0"
+mutiny-crypto-v2 = { path = "../crypto-v2", features = ["wallet-custody"] }
+serde_json = "1"
+getrandom = "=0.2.17"
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "=0.2.189"
+
+[patch.crates-io]
+hkdf = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }
+
+# Nonce, 2 Oct 2026. Test/dev profile only; release builds are unaffected.
+# The Worker handshake enforces a real 60 s wall-clock deadline, and the hybrid signature,
+# KDF and C crypto dependencies are far too slow at opt-level 0, so debug tests expired.
+# Only dependencies are optimized: this crate keeps debug assertions and overflow checks.
+[profile.dev.package."*"]
+opt-level = 3
+
+[features]
+default=[]
+dividend-test-fixtures = []
+# Historical v0 DurableVoter fixture only. Never default; production dependency graph must not enable it.
+legacy-v0-test-fixtures = []
+# Controlled elapsed-time fixtures only; never a production dependency feature.
+actor-timer-test-fixtures = []
+
+# Shipping release profile (Build 8 configuration record: docs/BUILD-CONFIGURATIONS-V1.md).
+# Profile tables are honoured only in the ROOT manifest being built, so every shipped root
+# carries the same table. Cargo's release default would be overflow-checks = false while
+# all tests run with it on; consensus arithmetic must behave identically in both.
+[profile.release]
+opt-level = 3
+# Checked integer arithmetic in the shipped binary (tests already run with checks on).
+overflow-checks = true
+debug-assertions = false
+# One codegen unit: deterministic, reproducible code generation.
+codegen-units = 1
+# Symbols are kept: the exclusion checks (build/check-shipping-config.sh) inspect them.
+strip = "none"
+# LTO off: it is not needed for correctness, and the C sources compiled by build.rs make
+# cross-language LTO an unverified variable. Revisit only with a reproducibility test.
+lto = false
+# UNWIND, deliberately. node/src/peer_supervisor.rs, actor_service.rs and
+# hybrid_peer_worker_v2.rs detect a panicked worker through JoinHandle::join().is_err()
+# and fail closed; panic = "abort" would remove that supervision. Abort is not provably safe.
+panic = "unwind"

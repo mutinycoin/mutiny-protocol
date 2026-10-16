@@ -1,0 +1,707 @@
+ARCHITECT DECISION —
+BUILD8 PRE-GENESIS BLOCKERS 1 / 2 / 3
+
+The prior Build8 Packet V1 approval remains effective.
+
+Resolve the three exposed blockers as follows.
+
+Proceed automatically after incorporating these decisions.
+
+Do not return for another vote unless implementation reveals a genuinely new
+consensus/security ambiguity not resolved below.
+
+======================================================================
+DECISION 1 — LOST HARDWARE / QUORUM LOSS
+======================================================================
+
+DO NOT accept permanent loss of the sole bootstrap TPM as an unrecoverable
+Build8 bootstrap condition.
+
+REQUIRE an explicit:
+
+BOOTSTRAP RECOVERY AUTHORITY
+
+but ONLY while the network is formally:
+
+BOOTSTRAP_CENTRALIZED.
+
+This is an explicit temporary centralized recovery authority.
+
+It is NOT ordinary Continuity quorum.
+
+It MUST NOT be described as decentralized consensus.
+
+It MUST NOT survive decentralized Continuity activation.
+
+----------------------------------------------------------------------
+1A. NORMAL QUORUM RULE REMAINS
+----------------------------------------------------------------------
+
+Normal Build8 Continuity finality remains:
+
+strictly greater than 2/3
+of committed eligible Continuity Reputation
+
+with persisted:
+
+propose
+prevote
+precommit
+locking.
+
+Offline committed eligible voters remain in the denominator.
+
+No inactivity timeout.
+
+No automatic voter removal.
+
+No owner signature may normally override Continuity finality.
+
+----------------------------------------------------------------------
+1B. BOOTSTRAP-ONLY RECOVERY AUTHORITY
+----------------------------------------------------------------------
+
+During BOOTSTRAP_CENTRALIZED only, Genesis MUST contain an explicit public
+BootstrapRecoveryAuthority.
+
+Use a separate, domain-separated recovery signing key.
+
+It MUST NOT be interchangeable with:
+
+ordinary wallet spending signatures
+Continuity TPM voting signatures
+node authentication signatures
+miner signatures.
+
+It may be deterministically derived from the Build8 recovery mnemonic through
+a separate hardened/domain-separated derivation if the established wallet
+cryptography permits this safely.
+
+Do not invent custom cryptography.
+
+Its purpose is limited to recovering the physical Continuity voter registry
+when normal >2/3 Continuity quorum is impossible during centralized bootstrap
+because qualifying bootstrap hardware was permanently lost.
+
+----------------------------------------------------------------------
+1C. REQUIRED BOOTSTRAP RECOVERY OBJECT
+----------------------------------------------------------------------
+
+Define a canonical object equivalent to:
+
+BootstrapRecoveryCertificateV1
+
+It MUST bind at minimum:
+
+NetworkID
+GenesisID
+ProtocolFingerprint
+
+current canonical height
+current canonical tip
+current StateRoot
+
+current Continuity registry root
+
+monotonic BootstrapRecoverySequence
+
+old Node lineage identity
+
+lost hardware generation
+
+new physical Node identity
+
+new TPM identity / attestation commitment
+
+new TPM-bound Continuity voting public key
+
+operation being authorized
+
+recovery reason/domain
+
+BootstrapRecoveryAuthority signature.
+
+Canonical encoding and test vectors are mandatory.
+
+Replay across:
+
+network
+Genesis
+canonical anchor
+registry generation
+recovery sequence
+
+must fail.
+
+----------------------------------------------------------------------
+1D. WHAT BOOTSTRAP RECOVERY MAY DO
+----------------------------------------------------------------------
+
+Bootstrap recovery may authorize ONLY the minimum registry transition required
+to replace permanently lost bootstrap Continuity hardware.
+
+The recovered node lineage MAY preserve, according to the already approved
+HardwareRotateV1 policy:
+
+Node admission age
+qualified participation history
+active Bond amount
+Bond age
+penalty history
+lineage.
+
+It MUST reset:
+
+HardwareContinuity H = 0
+
+hardware generation
+
+TPM voting key
+
+physical attestation state.
+
+The replacement machine MUST pass the full approved physical TPM admission
+process.
+
+A software VM/vTPM/cloud host can never be installed through this path as a
+weighted Continuity voter.
+
+----------------------------------------------------------------------
+1E. WHAT BOOTSTRAP RECOVERY MAY NOT DO
+----------------------------------------------------------------------
+
+It MUST NOT:
+
+rewrite canonical transaction history
+
+spend UTXOs
+
+mint coins
+
+change transaction validity
+
+change PoW
+
+change reward
+
+change Bonds arbitrarily
+
+erase penalties
+
+change NetworkID
+
+change GenesisID
+
+alter historical blocks
+
+override an existing valid >2/3 Continuity decision
+
+install Vultr/cloud/vTPM as a weighted voter.
+
+It exists only to restore the lost physical voter lineage required to resume
+bootstrap Continuity operation.
+
+----------------------------------------------------------------------
+1F. WHEN BOOTSTRAP RECOVERY IS ALLOWED
+----------------------------------------------------------------------
+
+The technical annex must define deterministic admissibility.
+
+At minimum require:
+
+network still marked BOOTSTRAP_CENTRALIZED;
+
+normal >2/3 committed Continuity quorum cannot currently authorize the required
+hardware recovery;
+
+fresh supervised physical TPM qualification of the replacement machine;
+
+correct BootstrapRecoveryAuthority signature;
+
+exact current canonical anchor;
+
+strictly increasing recovery sequence;
+
+no conflicting previously accepted recovery certificate.
+
+Do not rely on wall-clock inactivity as proof that hardware is lost.
+
+The recovery action is an explicit supervised ceremony.
+
+----------------------------------------------------------------------
+1G. IRREVERSIBLE DISABLE
+----------------------------------------------------------------------
+
+BootstrapRecoveryAuthority MUST become permanently unusable once Build8 reaches
+decentralized Continuity activation.
+
+Define:
+
+CONTINUITY_DECENTRALIZED_ACTIVE
+
+only after:
+
+at least4 qualified independent physical Continuity voters exist;
+
+AND
+
+measured committed weight distribution retains strict >2/3 after removal of
+each individual voter;
+
+AND
+
+the activation transition itself is certified through ordinary Continuity
+consensus.
+
+That transition MUST set an irreversible consensus flag equivalent to:
+
+bootstrap_recovery_enabled = false
+
+Once false:
+
+BootstrapRecoveryCertificateV1 MUST always be invalid.
+
+It can never be re-enabled by:
+
+owner key
+wallet seed
+operator
+software update
+ordinary governance.
+
+After decentralized activation, the normal >2/3 trust model is absolute.
+
+----------------------------------------------------------------------
+1H. POST-BOOTSTRAP QUORUM LOSS
+----------------------------------------------------------------------
+
+After CONTINUITY_DECENTRALIZED_ACTIVE:
+
+if permanent hardware loss leaves insufficient committed weight to produce
+strict >2/3 quorum:
+
+THE CHAIN HALTS.
+
+No emergency owner override.
+
+No inactivity deletion.
+
+No denominator renormalization.
+
+No cloud substitution.
+
+Recovery requires restoration of sufficient legitimate old-set authority
+through already-valid ordinary mechanisms.
+
+If that authority is permanently impossible, the chain remains halted.
+
+This is the explicit post-bootstrap safety model.
+
+======================================================================
+DECISION 2 — ZERO INITIAL REPUTATION
+======================================================================
+
+APPROVE the proposed minimal bootstrap exception.
+
+A physically qualified voter that is part of the GENESIS Continuity registry
+receives:
+
+GenesisBootstrapVotingWeight = 1
+
+This is a provisional voting weight.
+
+It is NOT:
+
+past participation
+Node age
+hardware age
+Bond age
+a reputation bonus carried forever.
+
+For the current planned Genesis:
+
+Node A:
+GenesisBootstrapVotingWeight = 1
+
+Vultr:
+0
+
+VM/vTPM/cloud:
+0.
+
+This permits the physically attested Genesis Node A to certify the first
+ContinuityPeriod.
+
+----------------------------------------------------------------------
+2A. FIRST CONTINUITY PERIOD TRANSITION
+----------------------------------------------------------------------
+
+At the first successfully certified ContinuityPeriod boundary:
+
+remove the provisional GenesisBootstrapVotingWeight.
+
+Calculate normal voting reputation exclusively from the approved formula.
+
+For example, if after the first qualified period:
+
+P = 1
+A = 1
+S = 1
+H = 1
+Q = 0
+Penalties = 0
+
+then:
+
+GrossReputation =
+1000*1 + 1 + 4*1 + 2*1
+= 1007
+
+and the provisional weight1 no longer participates.
+
+It is replacement, not addition:
+
+NOT:
+1007 + 1
+
+but:
+1007.
+
+----------------------------------------------------------------------
+2B. WHO CAN RECEIVE PROVISIONAL WEIGHT
+----------------------------------------------------------------------
+
+Only physically TPM-qualified voters explicitly committed into the Genesis
+Continuity registry may receive provisional Genesis voting weight.
+
+A voter joining after Genesis receives no fictitious bootstrap history.
+
+Its ordinary reputation develops according to the normal qualification rules.
+
+Cloud/vTPM nodes never receive this exception.
+
+======================================================================
+DECISION 3 — REPUTATION MAY DECREASE
+======================================================================
+
+APPROVE the recommendation:
+
+THE FORMULA CONTROLS.
+
+REMOVE the global claim that total VotingReputation is always monotonic absent
+objective penalties or hardware replacement.
+
+The approved formula remains:
+
+P = total qualified ContinuityPeriods
+
+A = admission age in ContinuityPeriods
+
+S = current consecutive qualified ContinuityPeriod streak
+
+H = total qualified ContinuityPeriods on current attested hardware generation
+
+Q = sum for active qualifying Bond lots:
+
+    locked_atoms * (1 + bond_age_in_ContinuityPeriods)
+
+GrossReputation =
+
+    1000*P
+    + A
+    + 4*S
+    + 2*H
+    + floor(Q / 10^10)
+
+VotingReputation =
+
+    max(0, GrossReputation - ObjectivePenalties)
+
+----------------------------------------------------------------------
+3A. HISTORICAL COMPONENTS
+----------------------------------------------------------------------
+
+P:
+never decreases.
+
+A:
+continues with admitted lineage according to the approved lifecycle rules.
+
+Historical lineage remains cumulative.
+
+----------------------------------------------------------------------
+3B. DYNAMIC COMPONENTS
+----------------------------------------------------------------------
+
+Total reputation MAY decrease because:
+
+S resets after a missed qualification period;
+
+an active qualifying Bond is withdrawn and leaves Q;
+
+HardwareContinuity H resets through an authorized hardware migration;
+
+ObjectivePenalties increase;
+
+other explicitly approved dynamic components cease qualifying.
+
+This is intended.
+
+A streak bonus represents CURRENT continuity.
+
+An active Bond contribution represents CURRENT locked economic commitment.
+
+They are not permanent reputation once their underlying condition is gone.
+
+----------------------------------------------------------------------
+3C. MISSED PERIOD
+----------------------------------------------------------------------
+
+No downtime slashing remains the rule.
+
+Missing a ContinuityPeriod:
+
+does NOT burn Bond;
+
+does NOT subtract an additional penalty;
+
+does NOT erase P;
+
+does NOT erase admission lineage.
+
+But:
+
+S resets according to the canonical streak rule.
+
+Therefore total VotingReputation may decrease.
+
+That is not "slashing."
+
+It is loss of the current continuity-streak component.
+
+----------------------------------------------------------------------
+3D. BOND WITHDRAWAL
+----------------------------------------------------------------------
+
+During the approved unbond notice while the Bond remains canonically locked and
+qualifying:
+
+it remains in Q according to the technical annex.
+
+When withdrawal becomes effective and the Bond ceases to be qualifying:
+
+its Q contribution disappears.
+
+Bond withdrawal may therefore reduce VotingReputation.
+
+No high-water clamp.
+
+No ghost Bond reputation after funds unlock.
+
+======================================================================
+4. CONCENTRATION CONSEQUENCE — ACCEPTED
+======================================================================
+
+Do NOT add:
+
+reputation caps
+Bond caps
+weight caps
+normalization
+high-water clamps
+
+merely because simulations demonstrate concentration.
+
+The reported realizable concentration scenario is accepted as a consequence of
+the uncapped model.
+
+However the implementation MUST surface concentration explicitly.
+
+At every committed Continuity state calculate/report public-safe metrics such
+as:
+
+largest eligible voter share
+
+top-N voter shares
+
+whether each individual voter can be removed while remaining >2/3
+
+current Survival fault-tolerance status.
+
+----------------------------------------------------------------------
+4A. SURVIVAL STATUS IS DYNAMIC
+----------------------------------------------------------------------
+
+With a strict >2/3 quorum:
+
+single-voter-loss tolerance requires that removing ANY one voter still leaves
+strictly >2/3 of committed eligible weight.
+
+Therefore a necessary condition is:
+
+largest individual voter share < 1/3.
+
+Exactly 1/3 is NOT sufficient because survivors would have exactly2/3 rather
+than strictly greater than2/3.
+
+If concentration later violates this condition:
+
+consensus operation itself is not automatically invalid;
+
+BUT
+
+the network MUST NOT advertise:
+
+single-node-loss tolerant
+Survival-qualified
+fault-tolerant Continuity.
+
+It should expose a state equivalent to:
+
+CONTINUITY_LIVE
+SURVIVAL_REDUNDANCY_NOT_MET
+
+If the dominant voter subsequently goes offline and remaining weight cannot
+reach >2/3:
+
+canonical progress halts.
+
+Do not renormalize.
+
+======================================================================
+5. CENTRALIZED BOOTSTRAP LABEL
+======================================================================
+
+During the initial one-voter period expose explicitly:
+
+Continuity Mode:
+BOOTSTRAP_CENTRALIZED
+
+Eligible weighted physical voters:
+1
+
+Survival redundancy:
+NO
+
+Bootstrap recovery authority:
+ENABLED
+
+Once decentralized activation passes:
+
+Continuity Mode:
+DECENTRALIZED
+
+Bootstrap recovery authority:
+PERMANENTLY DISABLED.
+
+Do not market or display the one-node bootstrap as decentralized operation.
+
+======================================================================
+6. REQUIRED PRE-GENESIS WORK
+======================================================================
+
+Now:
+
+1. incorporate Decisions1/2/3 into the technical annex;
+
+2. define canonical BootstrapRecoveryCertificateV1;
+
+3. define irreversible decentralized-activation transition;
+
+4. add GenesisBootstrapVotingWeight semantics;
+
+5. remove the false global monotonicity assertion;
+
+6. add dynamic concentration/Survival-status calculation;
+
+7. regenerate consensus/domain registries;
+
+8. regenerate canonical encoding/test vectors;
+
+9. extend reputation_model.py and deterministic tests;
+
+10. test:
+
+   sole Genesis TPM loss;
+
+   bootstrap physical hardware replacement;
+
+   bootstrap recovery replay;
+
+   wrong Genesis;
+
+   wrong NetworkID;
+
+   stale recovery sequence;
+
+   cloud/vTPM replacement attempt;
+
+   recovery certificate after decentralized activation;
+
+   first ContinuityPeriod weight1→formula transition;
+
+   missed-period streak reset;
+
+   Bond withdrawal;
+
+   hardware rotation;
+
+   >1/3 concentration;
+
+   >2/3 concentration;
+
+   exactly1/3 single-node loss;
+
+   survival-qualified four-voter distribution;
+
+   multi-node loss causing legitimate halt.
+
+11. finish Node A physical TPM qualification;
+
+12. finish the remaining approved pre-Genesis negative tests;
+
+13. lock the complete Build8 consensus specification;
+
+14. compute ProtocolFingerprint;
+
+15. perform Build8 Genesis Ceremony.
+
+======================================================================
+7. NO ANOTHER ROUTINE DECISION STOP
+======================================================================
+
+These three blockers are now resolved.
+
+Do not return merely to ask about:
+
+bootstrap recovery implementation details already constrained above;
+
+provisional unit arithmetic;
+
+reputation decreases caused by S/Q/H;
+
+observed concentration;
+
+single-voter centralized bootstrap labeling.
+
+Return only if the implementation demonstrates a genuinely NEW unresolved
+consensus/security contradiction.
+
+ARCHITECT DECISIONS:
+
+1. BOOTSTRAP-ONLY EMERGENCY RECOVERY AUTHORITY:
+   REQUIRED.
+
+   POST-DECENTRALIZATION QUORUM BYPASS:
+   FORBIDDEN.
+
+2. GENESIS PHYSICAL-VOTER PROVISIONAL WEIGHT:
+   APPROVED = 1.
+
+3. REPUTATION FORMULA:
+   AUTHORITATIVE.
+
+   GLOBAL MONOTONICITY CLAIM:
+   REMOVED.
+
+PROCEED.

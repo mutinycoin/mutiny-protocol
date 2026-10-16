@@ -1,0 +1,528 @@
+//! V2 Genesis artifact (Lane A1, Order A9/A10; PROPOSED / UNFROZEN): freeze a constructed V2 Genesis to
+//! `BUILD8-SEALED-GENESIS-V2` bytes and verify such bytes before any chain database opens. TEST-VALUE only
+//! in this candidate: nothing here seals a real Genesis, and `main.rs` / `production_gate.rs` are unchanged.
+//!
+//! The envelope is compact sorted-key JSON without whitespace or duplicate fields, at most 4 MiB, with
+//! exactly the keys `enrollment`, `genesis_block`, `genesis_block_hash`, `genesis_id`, `inputs`,
+//! `records`, `schema`, `state_root`; byte strings are hex. Verification pins the whole artifact SHA-256
+//! and the GenesisBlockHash independently, then `genesis_v2::verify` reconstructs the complete Genesis
+//! against the independently approved trust and compares every claimed value. A file hash or a file
+//! name never substitutes for reconstruction and never selects the class.
+use mutiny_consensus_v8::{
+    Hash,
+    genesis_v2::{self, Approved, Claimed, Constructed, Enrollment, GenesisClass, Inputs},
+};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{io::Read, path::Path};
+type Result<T> = std::result::Result<T, String>;
+fn err(e: impl std::fmt::Debug) -> String {
+    format!("Genesis V2 artifact: {e:?}")
+}
+pub const SCHEMA: &str = "BUILD8-SEALED-GENESIS-V2";
+pub const MAX_ARTIFACT: usize = 4 * 1024 * 1024;
+const FIELDS: [&str; 8] = [
+    "enrollment",
+    "genesis_block",
+    "genesis_block_hash",
+    "genesis_id",
+    "inputs",
+    "records",
+    "schema",
+    "state_root",
+];
+/// Independent pins plus the approved trust (manifest, class, target).
+pub struct TrustV2 {
+    pub artifact_sha256: Hash,
+    pub genesis_block_hash: Hash,
+    pub approved: Approved,
+}
+/// The binary-supported V2 trust: the selected source-only incomplete candidate and target of
+/// `genesis_artifact::supported_trust`, class Production. The incomplete manifest omits all four
+/// authentic V2 bindings, so it cannot supply valid V2 parameters. Independent approved bindings
+/// and qualified inputs remain required (Order A1, A14); Production host binding also stays closed.
+pub fn supported_trust_v2(artifact_sha256: Hash, genesis_block_hash: Hash) -> Result<TrustV2> {
+    let v1 = crate::genesis_artifact::supported_trust(artifact_sha256, genesis_block_hash)?;
+    Ok(TrustV2 {
+        artifact_sha256,
+        genesis_block_hash,
+        approved: Approved {
+            manifest: v1.rules,
+            class: GenesisClass::Production,
+            initial_target: v1.qualified_target,
+        },
+    })
+}
+fn hex_value(bytes: &[u8]) -> Value {
+    Value::String(hex::encode(bytes))
+}
+/// Freeze a Genesis to artifact bytes. The inputs must match `approved` and construct completely, so
+/// only a verifiable Genesis can be frozen. Returns the bytes and the construction.
+pub fn freeze(inputs: &Inputs, enrollment: &Enrollment, approved: &Approved) -> Result<(Vec<u8>, Constructed)> {
+    genesis_v2::check_approved(inputs, approved).map_err(err)?;
+    let constructed = genesis_v2::construct(inputs, enrollment).map_err(err)?;
+    let records = constructed
+        .records()
+        .map_err(err)?
+        .into_iter()
+        .map(|(key, value)| Value::Array(vec![hex_value(&key), hex_value(&value)]))
+        .collect();
+    let mut object = serde_json::Map::new();
+    object.insert("enrollment".into(), hex_value(&enrollment.encode().map_err(err)?));
+    object.insert("genesis_block".into(), hex_value(&constructed.block));
+    object.insert("genesis_block_hash".into(), hex_value(&constructed.block_hash));
+    object.insert("genesis_id".into(), hex_value(&constructed.identity));
+    object.insert("inputs".into(), hex_value(&inputs.encode().map_err(err)?));
+    object.insert("records".into(), Value::Array(records));
+    object.insert("schema".into(), Value::String(SCHEMA.into()));
+    object.insert("state_root".into(), hex_value(&constructed.root));
+    let bytes = serde_json::to_vec(&Value::Object(object)).map_err(err)?;
+    if bytes.len() > MAX_ARTIFACT {
+        return Err("V2 Genesis artifact exceeds 4 MiB".into());
+    }
+    Ok((bytes, constructed))
+}
+fn raw(v: &Value) -> Result<Vec<u8>> {
+    hex::decode(v.as_str().ok_or("Genesis V2 hex string required")?).map_err(err)
+}
+fn hash(v: &Value) -> Result<Hash> {
+    raw(v)?.try_into().map_err(|_| "Genesis V2 hash length".into())
+}
+pub struct VerifiedGenesisV2 {
+    pub inputs: Inputs,
+    pub genesis: Constructed,
+    pub artifact_sha256: Hash,
+}
+impl VerifiedGenesisV2 {
+    pub fn load(path: &Path, trust: &TrustV2) -> Result<Self> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(err)?
+            .take(MAX_ARTIFACT as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(err)?;
+        Self::verify(&bytes, trust)
+    }
+    pub fn verify(bytes: &[u8], trust: &TrustV2) -> Result<Self> {
+        let verified = Self::verify_reconstruction(bytes, trust)?;
+        mutiny_consensus_v8::admission_evidence_v1::require_supported_host_binding(
+            verified.genesis.class,
+        )
+        .map_err(|e| format!("hard stop E: {e:?}"))?;
+        Ok(verified)
+    }
+    /// Exact public witnesses are checked under authenticated Genesis context.
+    /// Even a valid public witness does not enable unsupported Production host eligibility.
+    pub fn verify_with_public_evidence(
+        bytes: &[u8],
+        trust: &TrustV2,
+        evidence: &[u8],
+    ) -> Result<Self> {
+        let verified = Self::verify_reconstruction(bytes, trust)?;
+        let v: Value = serde_json::from_slice(bytes).map_err(err)?;
+        let claimed = Claimed {
+            genesis_id: verified.genesis.identity,
+            records: verified.genesis.records().map_err(err)?,
+            state_root: verified.genesis.root,
+            block: verified.genesis.block.clone(),
+            block_hash: verified.genesis.block_hash,
+        };
+        mutiny_consensus_v8::admission_evidence_v1::verify_genesis_public_evidence(
+            &raw(&v["inputs"])?,
+            &raw(&v["enrollment"])?,
+            &trust.approved,
+            &claimed,
+            evidence,
+        )
+        .map_err(err)?;
+        mutiny_consensus_v8::admission_evidence_v1::require_supported_host_binding(
+            verified.genesis.class,
+        )
+        .map_err(|e| format!("hard stop E: {e:?}"))?;
+        Ok(verified)
+    }
+    fn verify_reconstruction(bytes: &[u8], trust: &TrustV2) -> Result<Self> {
+        if bytes.len() > MAX_ARTIFACT {
+            return Err("V2 Genesis artifact exceeds 4 MiB".into());
+        }
+        let artifact_sha256: Hash = Sha256::digest(bytes).into();
+        if artifact_sha256 != trust.artifact_sha256 {
+            return Err("Pinned V2 Genesis artifact hash mismatch".into());
+        }
+        let v: Value = serde_json::from_slice(bytes).map_err(err)?;
+        if serde_json::to_vec(&v).map_err(err)? != bytes {
+            return Err("V2 Genesis artifact requires compact sorted JSON without duplicate fields".into());
+        }
+        let object = v.as_object().ok_or("V2 Genesis object required")?;
+        if object.len() != FIELDS.len()
+            || !FIELDS.iter().all(|f| object.contains_key(*f))
+            || v["schema"] != SCHEMA
+        {
+            return Err("V2 Genesis artifact schema mismatch".into());
+        }
+        let block_hash = hash(&v["genesis_block_hash"])?;
+        if block_hash != trust.genesis_block_hash {
+            return Err("V2 GenesisBlockHash differs from the independent pin".into());
+        }
+        let mut records = Vec::new();
+        for record in v["records"].as_array().ok_or("V2 Genesis records array")? {
+            let pair = record.as_array().ok_or("V2 Genesis record pair")?;
+            if pair.len() != 2 {
+                return Err("V2 Genesis record pair".into());
+            }
+            records.push((hash(&pair[0])?, raw(&pair[1])?));
+        }
+        let claimed = Claimed {
+            genesis_id: hash(&v["genesis_id"])?,
+            records,
+            state_root: hash(&v["state_root"])?,
+            block: raw(&v["genesis_block"])?,
+            block_hash,
+        };
+        let inputs = raw(&v["inputs"])?;
+        let genesis = genesis_v2::verify(&inputs, &raw(&v["enrollment"])?, &trust.approved, &claimed)
+            .map_err(err)?;
+        Ok(Self {
+            inputs: Inputs::decode(&inputs).map_err(err)?,
+            genesis,
+            artifact_sha256,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mutiny_consensus_v8::{
+        genesis_v2::GenesisV2Error, protocol_manifest::RuleManifest, provenance::AdmissionClass,
+    };
+    fn fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../qualification/GENESIS-V2-TEST-VALUE-FIXTURE-V1.json"
+        ))
+        .unwrap()
+    }
+    /// The committed TEST-VALUE fixture (generated by `consensus/tests/genesis_v2.rs`): public inputs and
+    /// signed enrollment, plus the approved TEST-VALUE trust.
+    fn test_value() -> (Inputs, Enrollment, Approved) {
+        let f = fixture();
+        assert_eq!(f["TEST_VALUE"], true);
+        let inputs = Inputs::decode(&raw(&f["inputs"]).unwrap()).unwrap();
+        let enrollment = Enrollment::decode(&raw(&f["enrollment"]).unwrap()).unwrap();
+        let approved = Approved {
+            manifest: RuleManifest::decode(&raw(&f["approved_manifest"]).unwrap()).unwrap(),
+            class: GenesisClass::TestValue,
+            initial_target: hash(&f["initial_target"]).unwrap(),
+        };
+        (inputs, enrollment, approved)
+    }
+    fn trust(bytes: &[u8], c: &Constructed, approved: &Approved) -> TrustV2 {
+        TrustV2 {
+            artifact_sha256: Sha256::digest(bytes).into(),
+            genesis_block_hash: c.block_hash,
+            approved: approved.clone(),
+        }
+    }
+    /// Public software keys only: a structurally valid Production-class fixture
+    /// with authenticated public witnesses must still hit physical-host hard stop E.
+    #[test]
+    fn authenticated_public_witness_cannot_bypass_production_host_stop() {
+        let f: Value = serde_json::from_str(include_str!(
+            "../../qualification/candidate-3/PUBLIC-GENESIS-WITNESS-SOFTWARE-FIXTURE-V1.json"
+        ))
+        .unwrap();
+        assert_eq!(f["synthetic_only"], true);
+        assert_eq!(f["production_authorized"], false);
+        let inputs = Inputs::decode(&raw(&f["inputs"]).unwrap()).unwrap();
+        let enrollment = Enrollment::decode(&raw(&f["enrollment"]).unwrap()).unwrap();
+        let approved = Approved {
+            manifest: RuleManifest::decode(&raw(&f["manifest"]).unwrap()).unwrap(),
+            class: GenesisClass::Production,
+            initial_target: hash(&f["target"]).unwrap(),
+        };
+        let (bytes, constructed) = freeze(&inputs, &enrollment, &approved).unwrap();
+        let pins = trust(&bytes, &constructed, &approved);
+        let reconstructed = VerifiedGenesisV2::verify_reconstruction(&bytes, &pins).unwrap();
+        assert_eq!(reconstructed.genesis.class, GenesisClass::Production);
+        let evidence = raw(&f["evidence"]).unwrap();
+        let claimed = Claimed {
+            genesis_id: constructed.identity,
+            records: constructed.records().unwrap(),
+            state_root: constructed.root,
+            block: constructed.block.clone(),
+            block_hash: constructed.block_hash,
+        };
+        // Establish the public-evidence positive before checking eligibility refusal.
+        mutiny_consensus_v8::admission_evidence_v1::verify_genesis_public_evidence(
+            &raw(&f["inputs"]).unwrap(),
+            &raw(&f["enrollment"]).unwrap(),
+            &approved,
+            &claimed,
+            &evidence,
+        )
+        .unwrap();
+        let expected = "hard stop E: PhysicalHostAssociationUnestablished";
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &pins).err().unwrap(),
+            expected
+        );
+        assert_eq!(
+            VerifiedGenesisV2::verify_with_public_evidence(&bytes, &pins, &evidence)
+                .err()
+                .unwrap(),
+            expected
+        );
+        let mut wrong = evidence;
+        wrong.push(0);
+        assert_ne!(
+            VerifiedGenesisV2::verify_with_public_evidence(&bytes, &pins, &wrong)
+                .err()
+                .unwrap(),
+            expected
+        );
+    }
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        loop {
+            let mut salt = [0; 8];
+            getrandom::getrandom(&mut salt).unwrap();
+            let dir = std::env::temp_dir().join(format!("build8-genesis-v2-{tag}-{}", hex::encode(salt)));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+
+    /// POSITIVE: the TEST-VALUE V2 Genesis freezes to an artifact and verifies by full reconstruction;
+    /// freezing twice gives the same bytes; the committed fixture's identity, root and block hash are
+    /// reproduced; the class of the verified state comes from the inputs (TestValue -> Legacy/Test rule).
+    #[test]
+    fn test_value_v2_genesis_freezes_to_an_artifact_and_verifies() {
+        let (inputs, enrollment, approved) = test_value();
+        let (bytes, constructed) = freeze(&inputs, &enrollment, &approved).unwrap();
+        assert_eq!(freeze(&inputs, &enrollment, &approved).unwrap().0, bytes, "deterministic freeze");
+        let f = fixture();
+        assert_eq!(constructed.identity, hash(&f["genesis_id"]).unwrap());
+        assert_eq!(constructed.root, hash(&f["state_root"]).unwrap());
+        assert_eq!(constructed.block_hash, hash(&f["genesis_block_hash"]).unwrap());
+        let verified = VerifiedGenesisV2::verify(&bytes, &trust(&bytes, &constructed, &approved)).unwrap();
+        assert_eq!(verified.genesis.identity, constructed.identity);
+        assert_eq!(verified.genesis.class, GenesisClass::TestValue);
+        assert_eq!(verified.genesis.state.admission_class().unwrap(), AdmissionClass::LegacyTest);
+        assert_eq!(verified.inputs, inputs);
+    }
+
+    /// Same artifact bytes under different file names (one of them names "production") verify to the same
+    /// identity and class: a file name is never an input (Order A10).
+    #[test]
+    fn the_artifact_file_name_never_changes_identity_or_class() {
+        let (inputs, enrollment, approved) = test_value();
+        let (bytes, constructed) = freeze(&inputs, &enrollment, &approved).unwrap();
+        let trust = trust(&bytes, &constructed, &approved);
+        let dir = fresh_dir("artifact-names");
+        let names = ["genesis-production.json", "test-value.json", "PRODUCTION"];
+        let mut seen = Vec::new();
+        for name in names {
+            let path = dir.join(name);
+            std::fs::write(&path, &bytes).unwrap();
+            let v = VerifiedGenesisV2::load(&path, &trust).unwrap();
+            seen.push((v.genesis.identity, v.genesis.class, v.genesis.root));
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(seen.windows(2).all(|w| w[0] == w[1]));
+        assert_eq!(seen[0], (constructed.identity, GenesisClass::TestValue, constructed.root));
+    }
+
+    /// NEGATIVE: every tampering is refused, each with its precise reason, even when the operator
+    /// re-pins the artifact SHA-256 to the tampered bytes.
+    #[test]
+    fn tampered_v2_artifacts_are_refused_even_when_re_pinned() {
+        let (inputs, enrollment, approved) = test_value();
+        let (bytes, constructed) = freeze(&inputs, &enrollment, &approved).unwrap();
+        let good = trust(&bytes, &constructed, &approved);
+        let mut wrong_pin = trust(&bytes, &constructed, &approved);
+        wrong_pin.artifact_sha256[0] ^= 1;
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &wrong_pin).err().unwrap(),
+            "Pinned V2 Genesis artifact hash mismatch"
+        );
+        let mut wrong_block = trust(&bytes, &constructed, &approved);
+        wrong_block.genesis_block_hash[0] ^= 1;
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &wrong_block).err().unwrap(),
+            "V2 GenesisBlockHash differs from the independent pin"
+        );
+        let artifact: Value = serde_json::from_slice(&bytes).unwrap();
+        let flip = |v: &Value, at: usize| -> Value {
+            let mut b = raw(v).unwrap();
+            b[at] ^= 1;
+            Value::String(hex::encode(b))
+        };
+        let inputs_raw = raw(&artifact["inputs"]).unwrap();
+        let purchase_at = inputs_raw.len() - 1;
+        let cases: Vec<(&str, Value, String)> = vec![
+            ("schema", {
+                let mut a = artifact.clone();
+                a["schema"] = Value::String("BUILD8-SEALED-GENESIS-V1".into());
+                a
+            }, "V2 Genesis artifact schema mismatch".into()),
+            ("extra field", {
+                let mut a = artifact.clone();
+                a["zz"] = Value::Bool(true);
+                a
+            }, "V2 Genesis artifact schema mismatch".into()),
+            // One identity-input byte: a different GenesisID, so the enrollment signed over the frozen
+            // identity no longer verifies (the member admission names the old GenesisID).
+            ("purchase byte", {
+                let mut a = artifact.clone();
+                a["inputs"] = flip(&artifact["inputs"], purchase_at);
+                a
+            }, err(GenesisV2Error::Consensus(mutiny_consensus_v8::Error::WrongAnchor))),
+            ("state root", {
+                let mut a = artifact.clone();
+                a["state_root"] = flip(&artifact["state_root"], 0);
+                a
+            }, err(GenesisV2Error::StateRootMismatch)),
+            ("record value", {
+                let mut a = artifact.clone();
+                let last = a["records"].as_array().unwrap().len() - 1;
+                let value = a["records"][last][1].clone();
+                a["records"][last][1] = flip(&value, 3);
+                a
+            }, err(GenesisV2Error::RecordsMismatch)),
+            ("record dropped", {
+                let mut a = artifact.clone();
+                a["records"].as_array_mut().unwrap().pop();
+                a
+            }, err(GenesisV2Error::RecordsMismatch)),
+            ("genesis id", {
+                let mut a = artifact.clone();
+                a["genesis_id"] = flip(&artifact["genesis_id"], 0);
+                a
+            }, err(GenesisV2Error::IdentityMismatch)),
+            ("block bytes", {
+                let mut a = artifact.clone();
+                a["genesis_block"] = flip(&artifact["genesis_block"], 5);
+                a
+            }, err(GenesisV2Error::BlockMismatch)),
+        ];
+        for (name, tampered, expected) in cases {
+            let tampered = serde_json::to_vec(&tampered).unwrap();
+            let mut repinned = trust(&tampered, &constructed, &approved);
+            repinned.genesis_block_hash = good.genesis_block_hash;
+            assert_eq!(VerifiedGenesisV2::verify(&tampered, &repinned).err().unwrap(), expected, "{name}");
+        }
+        // A non-compact (pretty) encoding of the same artifact is refused.
+        let pretty = serde_json::to_vec_pretty(&artifact).unwrap();
+        assert_eq!(
+            VerifiedGenesisV2::verify(&pretty, &trust(&pretty, &constructed, &approved)).err().unwrap(),
+            "V2 Genesis artifact requires compact sorted JSON without duplicate fields"
+        );
+        VerifiedGenesisV2::verify(&bytes, &good).unwrap();
+    }
+
+    /// NEGATIVE: the verifier's trust decides acceptance only. The wrong expected manifest, the wrong
+    /// expected class (a Production verifier) and the wrong target refuse the same TEST-VALUE bytes; the
+    /// binary-supported V2 trust (V9 manifest, Production) verifies nothing; freezing under a foreign
+    /// trust is refused before construction.
+    #[test]
+    fn production_or_foreign_trust_refuses_the_test_value_artifact() {
+        let (inputs, enrollment, approved) = test_value();
+        let (bytes, constructed) = freeze(&inputs, &enrollment, &approved).unwrap();
+        let mut production = trust(&bytes, &constructed, &approved);
+        production.approved.class = GenesisClass::Production;
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &production).err().unwrap(),
+            err(GenesisV2Error::ClassMismatch)
+        );
+        let mut manifest = trust(&bytes, &constructed, &approved);
+        manifest.approved.manifest.commitments.push((b"zz-other-rule".to_vec(), [7; 32]));
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &manifest).err().unwrap(),
+            err(GenesisV2Error::ManifestMismatch)
+        );
+        let mut target = trust(&bytes, &constructed, &approved);
+        target.approved.initial_target[31] ^= 1;
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &target).err().unwrap(),
+            err(GenesisV2Error::TargetMismatch)
+        );
+        let supported = supported_trust_v2(Sha256::digest(&bytes).into(), constructed.block_hash).unwrap();
+        assert_eq!(supported.approved.class, GenesisClass::Production);
+        assert_eq!(
+            VerifiedGenesisV2::verify(&bytes, &supported).err().unwrap(),
+            err(GenesisV2Error::ClassMismatch)
+        );
+        assert_eq!(
+            freeze(&inputs, &enrollment, &supported.approved).err().unwrap(),
+            err(GenesisV2Error::ClassMismatch)
+        );
+    }
+
+    /// Order A9 at the node boundary: every V1 sealed artifact is refused by a Production trust with the
+    /// fixed message, before parsing (here: the committed V1 vector, which still verifies under the Test
+    /// trust for test/replay compatibility).
+    #[test]
+    fn v1_artifact_under_production_trust_is_refused_with_the_order_a9_message() {
+        use crate::genesis_artifact::{Trust, VerifiedGenesis};
+        use mutiny_consensus_v8::genesis_inputs::GenesisProfile;
+        let vector: Value = serde_json::from_str(include_str!(
+            "../../qualification/COMPLETE-GENESIS-VECTORS-V1.json"
+        ))
+        .unwrap();
+        let mut artifact = serde_json::Map::new();
+        for field in [
+            "descriptor",
+            "bindings",
+            "approved_profile",
+            "supervised_nonce",
+            "evidence",
+            "records",
+            "state_root",
+            "genesis_block",
+            "genesis_block_hash",
+        ] {
+            artifact.insert(field.into(), vector[field].clone());
+        }
+        artifact.insert("schema".into(), Value::String("BUILD8-SEALED-GENESIS-V1".into()));
+        let bytes = serde_json::to_vec(&Value::Object(artifact)).unwrap();
+        let mut trust = Trust {
+            artifact_sha256: Sha256::digest(&bytes).into(),
+            genesis_block_hash: hash(&vector["genesis_block_hash"]).unwrap(),
+            rules: RuleManifest::decode(&raw(&vector["locked_rules"]).unwrap()).unwrap(),
+            qualified_target: hash(&vector["qualified_target"]).unwrap(),
+            profile: GenesisProfile::Test,
+        };
+        VerifiedGenesis::verify(&bytes, &trust).unwrap();
+        trust.profile = GenesisProfile::Production;
+        assert_eq!(
+            VerifiedGenesis::verify(&bytes, &trust).err().unwrap(),
+            "V1 is not a Production Genesis implementation (Order A9)"
+        );
+        let supported = crate::genesis_artifact::supported_trust(
+            Sha256::digest(&bytes).into(),
+            hash(&vector["genesis_block_hash"]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            VerifiedGenesis::verify(&bytes, &supported).err().unwrap(),
+            "V1 is not a Production Genesis implementation (Order A9)"
+        );
+        // V1 bytes are never read as V2: the V2 verifier refuses the V1 envelope on schema.
+        assert_eq!(
+            VerifiedGenesisV2::verify(
+                &bytes,
+                &TrustV2 {
+                    artifact_sha256: Sha256::digest(&bytes).into(),
+                    genesis_block_hash: [0; 32],
+                    approved: test_value().2,
+                }
+            )
+            .err()
+            .unwrap(),
+            "V2 Genesis artifact schema mismatch"
+        );
+    }
+}

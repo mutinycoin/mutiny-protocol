@@ -1,0 +1,153 @@
+//! Structural index of already-authenticated recovery records. These fields
+//! are NOT a wire format or an authorization substitute. Callers must validate
+//! signed replacement material and retained control evidence before using it.
+use crate::{Error, Hash, Result};
+use std::collections::{BTreeMap, BTreeSet};
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edge {
+    pub sequence: u64,
+    pub lineage: Hash,
+    pub old_node: Hash,
+    pub new_node: Hash,
+    pub old_hardware: u64,
+    pub new_hardware: u64,
+    pub old_key: u64,
+    pub new_key: u64,
+    pub committed_height: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Index {
+    /// First Continuity generation for a newly assigned NodeID. Default 1 only
+    /// applies to identities with no authenticated recovery birth record.
+    pub births: BTreeMap<Hash, u64>,
+    /// Last actual Continuity generation of a retired NodeID, not a new voter.
+    pub retired: BTreeMap<Hash, u64>,
+    pub current: BTreeMap<Hash, Hash>,
+}
+pub fn index(edges: &[Edge], expected_sequence: u64, height: u64) -> Result<Index> {
+    if edges.len() > crate::execution::MAX_STATE_RECORDS {
+        return Err(Error::Capacity);
+    }
+    let mut out = Index {
+        births: BTreeMap::new(),
+        retired: BTreeMap::new(),
+        current: BTreeMap::new(),
+    };
+    let mut identities = BTreeMap::<Hash, Hash>::new();
+    let mut lineages = BTreeMap::<Hash, (u64, u64, u64)>::new();
+    let mut expected = 0u64;
+    let mut last_height = 0;
+    for edge in edges {
+        expected = expected.checked_add(1).ok_or(Error::Overflow)?;
+        if edge.sequence != expected
+            || edge.committed_height == 0
+            || edge.committed_height > height
+            || edge.committed_height < last_height
+        {
+            return Err(Error::StaleSequence);
+        }
+        if [edge.lineage, edge.old_node, edge.new_node].contains(&[0; 32])
+            || edge.old_node == edge.new_node
+            || edge.old_hardware == 0
+            || edge.old_key == 0
+            || edge.old_hardware.checked_add(1) != Some(edge.new_hardware)
+            || edge.old_key.checked_add(1) != Some(edge.new_key)
+        {
+            return Err(Error::WrongGeneration);
+        }
+        if let Some(current) = out.current.get(&edge.lineage) {
+            if *current != edge.old_node {
+                return Err(Error::InvalidLineage);
+            }
+            let (hardware, key, prior_height) = lineages[&edge.lineage];
+            // Ordinary hardware/key rotation may have advanced generations
+            // between recoveries; it can never decrease either generation.
+            if edge.old_hardware < hardware
+                || edge.old_key < key
+                || edge.committed_height <= prior_height
+            {
+                return Err(Error::WrongGeneration);
+            }
+        } else if identities.contains_key(&edge.old_node) {
+            return Err(Error::InvalidLineage);
+        }
+        if identities.contains_key(&edge.new_node) || out.retired.contains_key(&edge.old_node) {
+            return Err(Error::Duplicate);
+        }
+        identities.insert(edge.old_node, edge.lineage);
+        identities.insert(edge.new_node, edge.lineage);
+        out.births.insert(edge.new_node, edge.new_key);
+        out.retired.insert(edge.old_node, edge.old_key);
+        out.current.insert(edge.lineage, edge.new_node);
+        lineages.insert(
+            edge.lineage,
+            (edge.new_hardware, edge.new_key, edge.committed_height),
+        );
+        last_height = edge.committed_height;
+    }
+    if expected != expected_sequence {
+        return Err(Error::StaleSequence);
+    }
+    // No scans through attacker-selected generation ranges, nor graph walks.
+    if out.current.values().copied().collect::<BTreeSet<_>>().len() != out.current.len() {
+        return Err(Error::Duplicate);
+    }
+    Ok(out)
+}
+
+/// Validate retained per-Node Continuity generations against authenticated
+/// birth/retirement endpoints. Heights are ordered within each NodeID. A retired
+/// NodeID includes its terminal key; an active NodeID excludes its current key.
+pub fn validate_generations(
+    index: &Index,
+    current: &BTreeMap<Hash, u64>,
+    retired: &[(Hash, u64, u64)],
+    height: u64,
+) -> Result<()> {
+    let mut previous = BTreeMap::<Hash, (u64, u64)>::new();
+    for &(node, generation, retired_height) in retired {
+        let birth = index.births.get(&node).copied().unwrap_or(1);
+        let (prior, prior_height) = previous
+            .get(&node)
+            .copied()
+            .unwrap_or((birth.checked_sub(1).ok_or(Error::WrongGeneration)?, 0));
+        let endpoint = match (current.get(&node), index.retired.get(&node)) {
+            (Some(g), None) => g.checked_sub(1).ok_or(Error::WrongGeneration)?,
+            (None, Some(g)) => *g,
+            _ => return Err(Error::WrongGeneration),
+        };
+        if prior.checked_add(1) != Some(generation)
+            || generation > endpoint
+            || retired_height == 0
+            || retired_height <= prior_height
+            || retired_height > height
+        {
+            return Err(Error::WrongGeneration);
+        }
+        previous.insert(node, (generation, retired_height));
+    }
+    for (node, generation) in current {
+        if index.retired.contains_key(node) {
+            return Err(Error::WrongGeneration);
+        }
+        let birth = index.births.get(node).copied().unwrap_or(1);
+        let last = previous
+            .get(node)
+            .map(|x| x.0)
+            .unwrap_or(birth.checked_sub(1).ok_or(Error::WrongGeneration)?);
+        if last.checked_add(1) != Some(*generation) {
+            return Err(Error::WrongGeneration);
+        }
+    }
+    for (node, generation) in &index.retired {
+        if previous.get(node).map(|x| x.0) != Some(*generation) {
+            return Err(Error::WrongGeneration);
+        }
+    }
+    for node in index.births.keys() {
+        if !current.contains_key(node) && !index.retired.contains_key(node) {
+            return Err(Error::UnknownSigner);
+        }
+    }
+    Ok(())
+}

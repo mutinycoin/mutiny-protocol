@@ -1,0 +1,623 @@
+//! Deterministic bounded X.509 DER parsing and public RSA/ECDSA verification.
+//! Promoted from reviewed test support under the Build 8 takeover; exact-source mapping and
+//! dependency review: qualification/candidate-3/CODEX-A11-PROMOTION-20261004.md.
+//! No OS trust store, wall clock, network, private signing API or runtime rule feature.
+//! Parser capability does not establish TPM activation or physical-host association.
+use crate::{
+    ek_chain::{
+        BasicConstraints, CertificateSyntax, ChainFailure, ParsedCertificate, ParsedCrl,
+        SignatureAlgorithm, SubjectAltName, oid,
+    },
+    endorsement_identity::{
+        EkPublicKey, IdentityFailure, TPM_ECC_NIST_P256, TPM_ECC_NIST_P384, TPM_ECC_NIST_P521,
+    },
+};
+use std::collections::BTreeSet;
+use x509_cert::{
+    Certificate, Version,
+    crl::CertificateList,
+    der::{
+        Any, Decode, Encode, Reader, SliceReader, Tag, Tagged,
+        asn1::{ObjectIdentifier, UintRef},
+    },
+    ext::{
+        Extension,
+        pkix::{
+            AuthorityKeyIdentifier, BasicConstraints as DerBasicConstraints, ExtendedKeyUsage,
+            IssuingDistributionPoint, KeyUsage, SubjectAltName as DerSubjectAltName,
+            SubjectKeyIdentifier, name::GeneralName,
+        },
+    },
+    name::Name,
+    serial_number::SerialNumber,
+    spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned},
+    time::Time,
+};
+
+/// Object identifiers this syntax recognises.
+pub mod oids {
+    use x509_cert::der::asn1::ObjectIdentifier as Oid;
+    pub const ECDSA_WITH_SHA256: Oid = Oid::new_unwrap("1.2.840.10045.4.3.2");
+    pub const ECDSA_WITH_SHA384: Oid = Oid::new_unwrap("1.2.840.10045.4.3.3");
+    pub const SHA256_WITH_RSA: Oid = Oid::new_unwrap("1.2.840.113549.1.1.11");
+    pub const SHA384_WITH_RSA: Oid = Oid::new_unwrap("1.2.840.113549.1.1.12");
+    pub const RSA_ENCRYPTION: Oid = Oid::new_unwrap("1.2.840.113549.1.1.1");
+    pub const RSA_PSS: Oid = Oid::new_unwrap("1.2.840.113549.1.1.10");
+    pub const EC_PUBLIC_KEY: Oid = Oid::new_unwrap("1.2.840.10045.2.1");
+    pub const SECP256R1: Oid = Oid::new_unwrap("1.2.840.10045.3.1.7");
+    pub const SECP384R1: Oid = Oid::new_unwrap("1.3.132.0.34");
+    pub const SECP521R1: Oid = Oid::new_unwrap("1.3.132.0.35");
+    pub const SUBJECT_KEY_IDENTIFIER: Oid = Oid::new_unwrap("2.5.29.14");
+    pub const KEY_USAGE: Oid = Oid::new_unwrap("2.5.29.15");
+    pub const SUBJECT_ALT_NAME: Oid = Oid::new_unwrap("2.5.29.17");
+    pub const BASIC_CONSTRAINTS: Oid = Oid::new_unwrap("2.5.29.19");
+    pub const CRL_NUMBER: Oid = Oid::new_unwrap("2.5.29.20");
+    pub const DELTA_CRL_INDICATOR: Oid = Oid::new_unwrap("2.5.29.27");
+    pub const ISSUING_DISTRIBUTION_POINT: Oid = Oid::new_unwrap("2.5.29.28");
+    pub const AUTHORITY_KEY_IDENTIFIER: Oid = Oid::new_unwrap("2.5.29.35");
+    pub const EXT_KEY_USAGE: Oid = Oid::new_unwrap("2.5.29.37");
+}
+
+/// The deterministic reviewed certificate syntax. `production()` identifies parser capability,
+/// not hardware association or authorization to admit a Production node.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct X509Syntax;
+
+/// Existing provenance C2 digest: SHA-256 of the exact canonical leaf SPKI.
+/// This is identifying public material, not evidence of activation or locality.
+pub fn certified_public_key_sha256(raw: &[u8]) -> Result<crate::Hash, ChainFailure> {
+    use sha2::{Digest, Sha256};
+    X509Syntax.parse_certificate(raw)?;
+    let certificate: Certificate = strict(raw)?;
+    Ok(Sha256::digest(
+        certificate
+            .tbs_certificate
+            .subject_public_key_info
+            .to_der()
+            .map_err(malformed)?,
+    )
+    .into())
+}
+
+fn malformed<E>(_: E) -> ChainFailure {
+    ChainFailure::Malformed
+}
+/// Decode `raw` as `T` and require that it re-encodes to exactly `raw`.
+fn strict<'a, T: Decode<'a> + Encode>(raw: &'a [u8]) -> Result<T, ChainFailure> {
+    let value = T::from_der(raw).map_err(malformed)?;
+    if value.to_der().map_err(malformed)? != raw {
+        return Err(ChainFailure::Malformed);
+    }
+    Ok(value)
+}
+fn is_null(parameters: &Option<Any>) -> bool {
+    matches!(parameters, Some(p) if p.tag() == Tag::Null && p.value().is_empty())
+}
+fn signature_algorithm(a: &AlgorithmIdentifierOwned) -> Result<SignatureAlgorithm, ChainFailure> {
+    if a.oid == oids::RSA_PSS {
+        let raw = a
+            .parameters
+            .as_ref()
+            .ok_or(ChainFailure::Malformed)?
+            .to_der()
+            .map_err(malformed)?;
+        // Design P6: SHA-256/384, MGF1 with the SAME hash, salt exactly hash length,
+        // trailer BC and a unique canonical DER parameter encoding. No SHA-1 defaults.
+        let p = strict::<rsa::pkcs1::RsaPssParams<'_>>(&raw)?;
+        return if p == rsa::pkcs1::RsaPssParams::new::<sha2::Sha256>(32) {
+            Ok(SignatureAlgorithm::RsaPssSha256)
+        } else if p == rsa::pkcs1::RsaPssParams::new::<sha2::Sha384>(48) {
+            Ok(SignatureAlgorithm::RsaPssSha384)
+        } else {
+            Err(ChainFailure::UnsupportedAlgorithm)
+        };
+    }
+    let (algorithm, null_parameters) = if a.oid == oids::ECDSA_WITH_SHA256 {
+        (SignatureAlgorithm::EcdsaP256Sha256, false)
+    } else if a.oid == oids::ECDSA_WITH_SHA384 {
+        (SignatureAlgorithm::EcdsaP384Sha384, false)
+    } else if a.oid == oids::SHA256_WITH_RSA {
+        (SignatureAlgorithm::RsaPkcs1Sha256, true)
+    } else if a.oid == oids::SHA384_WITH_RSA {
+        (SignatureAlgorithm::RsaPkcs1Sha384, true)
+    } else {
+        return Err(ChainFailure::UnsupportedAlgorithm);
+    };
+    let parameters_ok = if null_parameters {
+        is_null(&a.parameters)
+    } else {
+        a.parameters.is_none()
+    };
+    if !parameters_ok {
+        return Err(ChainFailure::Malformed);
+    }
+    Ok(algorithm)
+}
+fn version(v: Version) -> u8 {
+    match v {
+        Version::V1 => 1,
+        Version::V2 => 2,
+        Version::V3 => 3,
+    }
+}
+/// Magnitude of a positive serial number (no leading zero octet).
+fn serial(s: &SerialNumber) -> Result<Vec<u8>, ChainFailure> {
+    match s.as_bytes() {
+        [] | [0] => Err(ChainFailure::Malformed),
+        [first, ..] if first & 0x80 != 0 => Err(ChainFailure::Malformed),
+        [0, rest @ ..] => Ok(rest.to_vec()),
+        all => Ok(all.to_vec()),
+    }
+}
+/// Unix seconds; RFC 5280 4.1.2.5: UTCTime through 2049, GeneralizedTime from 2050.
+fn seconds(t: &Time) -> Result<u64, ChainFailure> {
+    if let Time::GeneralTime(g) = t {
+        if g.to_date_time().year() < 2050 {
+            return Err(ChainFailure::Malformed);
+        }
+    }
+    Ok(t.to_unix_duration().as_secs())
+}
+/// Exact encoded Name bytes; an empty Name is reported as no bytes (the procedure's convention).
+fn name_bytes(n: &Name) -> Result<Vec<u8>, ChainFailure> {
+    if n.0.iter().any(|rdn| rdn.0.is_empty()) {
+        return Err(ChainFailure::Malformed);
+    }
+    if n.is_empty() {
+        Ok(Vec::new())
+    } else {
+        n.to_der().map_err(malformed)
+    }
+}
+/// `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }`, strictly, as magnitudes.
+fn rsa_public_key(der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ChainFailure> {
+    let mut reader = SliceReader::new(der).map_err(malformed)?;
+    let parts = reader
+        .sequence(|r| {
+            Ok((
+                UintRef::decode(r)?.as_bytes().to_vec(),
+                UintRef::decode(r)?.as_bytes().to_vec(),
+            ))
+        })
+        .map_err(malformed)?;
+    reader.finish(parts).map_err(malformed)
+}
+fn public_key(spki: &SubjectPublicKeyInfoOwned) -> Result<EkPublicKey, ChainFailure> {
+    use ChainFailure::UnsupportedKey;
+    let key = spki
+        .subject_public_key
+        .as_bytes()
+        .ok_or(ChainFailure::Malformed)?;
+    let algorithm = &spki.algorithm;
+    if algorithm.oid == oids::RSA_ENCRYPTION {
+        if !is_null(&algorithm.parameters) {
+            return Err(ChainFailure::Malformed);
+        }
+        let (modulus, exponent) = rsa_public_key(key)?;
+        if modulus == [0] || exponent == [0] {
+            return Err(ChainFailure::Malformed);
+        }
+        let bits = u16::try_from(modulus.len() * 8)
+            .map_err(|_| UnsupportedKey(IdentityFailure::RsaModulusSize))?;
+        if exponent.len() > 4 {
+            return Err(UnsupportedKey(IdentityFailure::RsaExponent));
+        }
+        let exponent = exponent
+            .iter()
+            .fold(0u32, |acc, b| (acc << 8) | u32::from(*b));
+        return Ok(EkPublicKey::Rsa {
+            bits,
+            exponent,
+            modulus,
+        });
+    }
+    if algorithm.oid == oids::EC_PUBLIC_KEY {
+        let curve_oid = match &algorithm.parameters {
+            Some(p) if p.tag() == Tag::ObjectIdentifier => {
+                ObjectIdentifier::from_bytes(p.value()).map_err(malformed)?
+            }
+            _ => return Err(ChainFailure::Malformed),
+        };
+        let (curve, size) = if curve_oid == oids::SECP256R1 {
+            (TPM_ECC_NIST_P256, 32)
+        } else if curve_oid == oids::SECP384R1 {
+            (TPM_ECC_NIST_P384, 48)
+        } else if curve_oid == oids::SECP521R1 {
+            (TPM_ECC_NIST_P521, 66)
+        } else {
+            return Err(UnsupportedKey(IdentityFailure::UnsupportedCurve));
+        };
+        if key.len() != 1 + 2 * size || key[0] != 0x04 {
+            return Err(UnsupportedKey(IdentityFailure::Length));
+        }
+        return Ok(EkPublicKey::Ecc {
+            curve,
+            x: key[1..1 + size].to_vec(),
+            y: key[1 + size..].to_vec(),
+        });
+    }
+    Err(UnsupportedKey(IdentityFailure::UnknownAlgorithm))
+}
+/// A present extension list is non-empty and names each extension once.
+fn distinct(list: &[Extension]) -> Result<(), ChainFailure> {
+    let mut seen = BTreeSet::new();
+    if list.is_empty()
+        || list
+            .iter()
+            .any(|e| !seen.insert(e.extn_id.as_bytes().to_vec()))
+    {
+        return Err(ChainFailure::Malformed);
+    }
+    Ok(())
+}
+fn subject_alt_name(
+    critical: bool,
+    san: &DerSubjectAltName,
+) -> Result<SubjectAltName, ChainFailure> {
+    if san.0.is_empty() {
+        return Err(ChainFailure::Malformed);
+    }
+    let tcg = [
+        oid::TCG_TPM_MANUFACTURER,
+        oid::TCG_TPM_MODEL,
+        oid::TCG_TPM_VERSION,
+    ];
+    let mut out = SubjectAltName {
+        critical,
+        directory_names: Vec::new(),
+        other_forms: 0,
+    };
+    for general in &san.0 {
+        let GeneralName::DirectoryName(n) = general else {
+            out.other_forms = out.other_forms.saturating_add(1);
+            continue;
+        };
+        name_bytes(n)?;
+        let mut attributes = Vec::new();
+        for atv in n.0.iter().flat_map(|rdn| rdn.0.iter()) {
+            if tcg.contains(&atv.oid.as_bytes()) && atv.value.tag() != Tag::Utf8String {
+                return Err(ChainFailure::NameForm);
+            }
+            attributes.push((atv.oid.as_bytes().to_vec(), atv.value.value().to_vec()));
+        }
+        out.directory_names.push(attributes);
+    }
+    Ok(out)
+}
+
+#[derive(Default)]
+struct CertificateExtensions {
+    basic_constraints: Option<BasicConstraints>,
+    key_usage: Option<u16>,
+    extended_key_usage: Option<Vec<Vec<u8>>>,
+    subject_key_id: Option<Vec<u8>>,
+    authority_key_id: Option<Vec<u8>>,
+    subject_alt_name: Option<SubjectAltName>,
+    unrecognised_critical: Vec<Vec<u8>>,
+}
+fn certificate_extensions(
+    list: Option<&[Extension]>,
+) -> Result<CertificateExtensions, ChainFailure> {
+    let mut out = CertificateExtensions::default();
+    let Some(list) = list else {
+        return Ok(out);
+    };
+    distinct(list)?;
+    for e in list {
+        let value = e.extn_value.as_bytes();
+        if e.extn_id == oids::BASIC_CONSTRAINTS {
+            let bc: DerBasicConstraints = strict(value)?;
+            if !bc.ca && bc.path_len_constraint.is_some() {
+                return Err(ChainFailure::Malformed);
+            }
+            out.basic_constraints = Some(BasicConstraints {
+                critical: e.critical,
+                ca: bc.ca,
+                path_len: bc.path_len_constraint,
+            });
+        } else if e.extn_id == oids::KEY_USAGE {
+            let ku: KeyUsage = strict(value)?;
+            if ku.0.bits() == 0 {
+                return Err(ChainFailure::Malformed);
+            }
+            out.key_usage = Some(ku.0.bits());
+        } else if e.extn_id == oids::EXT_KEY_USAGE {
+            let eku: ExtendedKeyUsage = strict(value)?;
+            if eku.0.is_empty() {
+                return Err(ChainFailure::Malformed);
+            }
+            out.extended_key_usage = Some(eku.0.iter().map(|o| o.as_bytes().to_vec()).collect());
+        } else if e.extn_id == oids::SUBJECT_KEY_IDENTIFIER {
+            let ski: SubjectKeyIdentifier = strict(value)?;
+            if e.critical || ski.0.as_bytes().is_empty() {
+                return Err(ChainFailure::Malformed);
+            }
+            out.subject_key_id = Some(ski.0.as_bytes().to_vec());
+        } else if e.extn_id == oids::AUTHORITY_KEY_IDENTIFIER {
+            let aki: AuthorityKeyIdentifier = strict(value)?;
+            if e.critical
+                || aki.authority_cert_issuer.is_some() != aki.authority_cert_serial_number.is_some()
+                || aki
+                    .key_identifier
+                    .as_ref()
+                    .is_some_and(|k| k.as_bytes().is_empty())
+            {
+                return Err(ChainFailure::Malformed);
+            }
+            out.authority_key_id = aki.key_identifier.map(|k| k.as_bytes().to_vec());
+        } else if e.extn_id == oids::SUBJECT_ALT_NAME {
+            let san: DerSubjectAltName = strict(value)?;
+            out.subject_alt_name = Some(subject_alt_name(e.critical, &san)?);
+        } else if e.critical {
+            out.unrecognised_critical
+                .push(e.extn_id.as_bytes().to_vec());
+        }
+    }
+    Ok(out)
+}
+
+/// `ECDSA-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }`, strictly DER, as two field-size big-endian scalars.
+fn ecdsa_scalars<const N: usize>(der: &[u8]) -> Option<([u8; N], [u8; N])> {
+    let mut reader = SliceReader::new(der).ok()?;
+    let (r, s) = reader
+        .sequence(|seq| {
+            Ok((
+                UintRef::decode(seq)?.as_bytes().to_vec(),
+                UintRef::decode(seq)?.as_bytes().to_vec(),
+            ))
+        })
+        .ok()?;
+    let (r, s) = reader.finish((r, s)).ok()?;
+    let fixed = |v: &[u8]| -> Option<[u8; N]> {
+        let mut out = [0u8; N];
+        out.get_mut(N.checked_sub(v.len())?..)?.copy_from_slice(v);
+        Some(out)
+    };
+    Some((fixed(&r)?, fixed(&s)?))
+}
+fn sec1(x: &[u8], y: &[u8]) -> Vec<u8> {
+    let mut point = Vec::with_capacity(1 + x.len() + y.len());
+    point.push(0x04);
+    point.extend_from_slice(x);
+    point.extend_from_slice(y);
+    point
+}
+fn verify_p256(x: &[u8], y: &[u8], tbs: &[u8], signature: &[u8]) -> bool {
+    use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+    let Some((r, s)) = ecdsa_scalars::<32>(signature) else {
+        return false;
+    };
+    let (Ok(sig), Ok(key)) = (
+        Signature::from_scalars(
+            p256::FieldBytes::clone_from_slice(&r),
+            p256::FieldBytes::clone_from_slice(&s),
+        ),
+        VerifyingKey::from_sec1_bytes(&sec1(x, y)),
+    ) else {
+        return false;
+    };
+    key.verify(tbs, &sig).is_ok()
+}
+fn verify_p384(x: &[u8], y: &[u8], tbs: &[u8], signature: &[u8]) -> bool {
+    use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+    let Some((r, s)) = ecdsa_scalars::<48>(signature) else {
+        return false;
+    };
+    let (Ok(sig), Ok(key)) = (
+        Signature::from_scalars(
+            p384::FieldBytes::clone_from_slice(&r),
+            p384::FieldBytes::clone_from_slice(&s),
+        ),
+        VerifyingKey::from_sec1_bytes(&sec1(x, y)),
+    ) else {
+        return false;
+    };
+    key.verify(tbs, &sig).is_ok()
+}
+
+impl CertificateSyntax for X509Syntax {
+    fn production(&self) -> bool {
+        true
+    }
+    fn parse_certificate(&self, raw: &[u8]) -> Result<ParsedCertificate, ChainFailure> {
+        if raw.len() > crate::ek_chain::MAX_CERTIFICATE_BYTES {
+            return Err(ChainFailure::Oversize);
+        }
+        let cert: Certificate = strict(raw)?;
+        let tbs = &cert.tbs_certificate;
+        if tbs.signature != cert.signature_algorithm {
+            return Err(ChainFailure::Malformed);
+        }
+        let signature_algorithm = signature_algorithm(&cert.signature_algorithm)?;
+        if tbs.issuer_unique_id.is_some()
+            || tbs.subject_unique_id.is_some()
+            || tbs.issuer.is_empty()
+        {
+            return Err(ChainFailure::Malformed);
+        }
+        let ext = certificate_extensions(tbs.extensions.as_deref())?;
+        Ok(ParsedCertificate {
+            version: version(tbs.version),
+            serial: serial(&tbs.serial_number)?,
+            signature_algorithm,
+            issuer: name_bytes(&tbs.issuer)?,
+            subject: name_bytes(&tbs.subject)?,
+            not_before: seconds(&tbs.validity.not_before)?,
+            not_after: seconds(&tbs.validity.not_after)?,
+            public_key: public_key(&tbs.subject_public_key_info)?,
+            basic_constraints: ext.basic_constraints,
+            key_usage: ext.key_usage,
+            extended_key_usage: ext.extended_key_usage,
+            subject_key_id: ext.subject_key_id,
+            authority_key_id: ext.authority_key_id,
+            subject_alt_name: ext.subject_alt_name,
+            unrecognised_critical: ext.unrecognised_critical,
+            tbs: tbs.to_der().map_err(malformed)?,
+            signature: cert
+                .signature
+                .as_bytes()
+                .ok_or(ChainFailure::Malformed)?
+                .to_vec(),
+        })
+    }
+    fn parse_crl(&self, raw: &[u8]) -> Result<ParsedCrl, ChainFailure> {
+        if raw.len() > crate::ek_chain::MAX_CRL_BYTES {
+            return Err(ChainFailure::Oversize);
+        }
+        let crl: CertificateList = strict(raw)?;
+        let tbs = &crl.tbs_cert_list;
+        if tbs.signature != crl.signature_algorithm {
+            return Err(ChainFailure::Malformed);
+        }
+        let signature_algorithm = signature_algorithm(&crl.signature_algorithm)?;
+        if tbs.issuer.is_empty() {
+            return Err(ChainFailure::Malformed);
+        }
+        let mut parsed = ParsedCrl {
+            version: version(tbs.version),
+            signature_algorithm,
+            issuer: name_bytes(&tbs.issuer)?,
+            this_update: seconds(&tbs.this_update)?,
+            next_update: tbs.next_update.as_ref().map(seconds).transpose()?,
+            revoked_serials: Vec::new(),
+            delta: false,
+            indirect: false,
+            partial: false,
+            unrecognised_critical: Vec::new(),
+            tbs: tbs.to_der().map_err(malformed)?,
+            signature: crl
+                .signature
+                .as_bytes()
+                .ok_or(ChainFailure::Malformed)?
+                .to_vec(),
+        };
+        if let Some(entries) = &tbs.revoked_certificates {
+            if entries.is_empty() {
+                return Err(ChainFailure::Malformed);
+            }
+            for entry in entries {
+                parsed.revoked_serials.push(serial(&entry.serial_number)?);
+                seconds(&entry.revocation_date)?;
+                if let Some(list) = &entry.crl_entry_extensions {
+                    distinct(list)?;
+                    // No CRL entry extension is processed: a critical one (certificateIssuer, ...) is unrecognised.
+                    parsed.unrecognised_critical.extend(
+                        list.iter()
+                            .filter(|e| e.critical)
+                            .map(|e| e.extn_id.as_bytes().to_vec()),
+                    );
+                }
+            }
+        }
+        if let Some(list) = &tbs.crl_extensions {
+            distinct(list)?;
+            for e in list {
+                if e.extn_id == oids::DELTA_CRL_INDICATOR {
+                    parsed.delta = true;
+                } else if e.extn_id == oids::ISSUING_DISTRIBUTION_POINT {
+                    let idp: IssuingDistributionPoint = strict(e.extn_value.as_bytes())?;
+                    parsed.indirect = idp.indirect_crl;
+                    parsed.partial = idp.only_some_reasons.is_some()
+                        || idp.only_contains_user_certs
+                        || idp.only_contains_ca_certs
+                        || idp.only_contains_attribute_certs;
+                } else if e.extn_id == oids::CRL_NUMBER
+                    || e.extn_id == oids::AUTHORITY_KEY_IDENTIFIER
+                {
+                    if e.critical {
+                        return Err(ChainFailure::Malformed);
+                    }
+                } else if e.critical {
+                    parsed
+                        .unrecognised_critical
+                        .push(e.extn_id.as_bytes().to_vec());
+                }
+            }
+        }
+        Ok(parsed)
+    }
+    fn verify_signature(
+        &self,
+        issuer_key: &EkPublicKey,
+        algorithm: SignatureAlgorithm,
+        tbs: &[u8],
+        signature: &[u8],
+    ) -> bool {
+        match (algorithm, issuer_key) {
+            (
+                SignatureAlgorithm::EcdsaP256Sha256,
+                EkPublicKey::Ecc {
+                    curve: TPM_ECC_NIST_P256,
+                    x,
+                    y,
+                },
+            ) => verify_p256(x, y, tbs, signature),
+            (
+                SignatureAlgorithm::EcdsaP384Sha384,
+                EkPublicKey::Ecc {
+                    curve: TPM_ECC_NIST_P384,
+                    x,
+                    y,
+                },
+            ) => verify_p384(x, y, tbs, signature),
+            (
+                algorithm,
+                EkPublicKey::Rsa {
+                    bits,
+                    exponent,
+                    modulus,
+                },
+            ) => {
+                use sha2::{Digest, Sha256, Sha384};
+                if issuer_key.validate().is_err() || signature.len() != (*bits as usize / 8) {
+                    return false;
+                }
+                // rsa 0.9.10's generic PSS verifier reduces its signature input
+                // modulo n. Enforce the canonical RSA representative ourselves:
+                // same-width s+n must not verify as another encoding of s.
+                if rsa::BigUint::from_bytes_be(signature) >= rsa::BigUint::from_bytes_be(modulus) {
+                    return false;
+                }
+                let Ok(key) = rsa::RsaPublicKey::new(
+                    rsa::BigUint::from_bytes_be(modulus),
+                    rsa::BigUint::from(*exponent),
+                ) else {
+                    return false;
+                };
+                match algorithm {
+                    SignatureAlgorithm::RsaPkcs1Sha256 => key
+                        .verify(
+                            rsa::Pkcs1v15Sign::new::<Sha256>(),
+                            &Sha256::digest(tbs),
+                            signature,
+                        )
+                        .is_ok(),
+                    SignatureAlgorithm::RsaPkcs1Sha384 => key
+                        .verify(
+                            rsa::Pkcs1v15Sign::new::<Sha384>(),
+                            &Sha384::digest(tbs),
+                            signature,
+                        )
+                        .is_ok(),
+                    SignatureAlgorithm::RsaPssSha256 => key
+                        .verify(
+                            rsa::Pss::new_with_salt::<Sha256>(32),
+                            &Sha256::digest(tbs),
+                            signature,
+                        )
+                        .is_ok(),
+                    SignatureAlgorithm::RsaPssSha384 => key
+                        .verify(
+                            rsa::Pss::new_with_salt::<Sha384>(48),
+                            &Sha384::digest(tbs),
+                            signature,
+                        )
+                        .is_ok(),
+                    _ => false,
+                }
+            }
+            // Every unpaired key/hash remains refused.
+            _ => false,
+        }
+    }
+}
