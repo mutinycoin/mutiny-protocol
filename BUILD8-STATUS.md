@@ -6,9 +6,9 @@ Recorded 2026-10-16. Build 8 remains an engineering candidate. This status is no
 
 The public baseline is `d9a4d3267065a499bb0137d879fe4eda327cbd72`, the September 11 Build 7.0 Candidate 2 merge. The historical published release remains Build 6.9. This documentation change does not promote Build 8 to production authority.
 
-The accepted Linux projection has been reconstructed separately and verified against its accepted manifest: **2,269 files, 67,603,300 bytes**, source roster `ec1948bfbc13edc7417231d42e0dedb6c1fae490780300644bc543f4055457eb`. The complete frozen Desktop catalog is verified at **2,589 files**, source-record SHA256 `689ff9834fcbb0eea7cb0a8e2072ae8dddb5088cec6975155db514bb68a39fac`; 341 exact file payloads remain pending from the source owner.
+The accepted Linux projection has been reconstructed separately and verified against its accepted manifest: **2,269 files, 67,603,300 bytes**, source roster `ec1948bfbc13edc7417231d42e0dedb6c1fae490780300644bc543f4055457eb`. The complete frozen Desktop catalog is verified at **2,589 files**, source-record SHA256 `689ff9834fcbb0eea7cb0a8e2072ae8dddb5088cec6975155db514bb68a39fac`; 336 exact file payloads remain pending from the source owner after five additional recoveries from approved snapshots.
 
-The catalogs share 2,231 byte-identical files, have eight differing common files, 350 Desktop-only files and 30 Linux-only files. They are distinct platform projections. No single coherent combined source or final candidate is asserted. Their identities and differences are recorded in [source provenance](docs/build8/source-provenance.json).
+The catalogs share 2,231 byte-identical files, have eight differing common files, 350 Desktop-only files and 30 Linux-only files. They are distinct platform projections. No single coherent combined source or final candidate is asserted. Their identities are recorded in [source provenance](docs/build8/source-provenance.json); [the difference review](docs/build8/platform-differences.md) traces six relationships and leaves two exact-payload comparisons open.
 
 The source payloads have not been added by this documentation change. Source synchronization remains incomplete until the missing Desktop bytes, platform differences and public-content review are resolved. Existing V1 source and history are preserved.
 
@@ -32,7 +32,7 @@ In the later live attempt, the owner reports that the wallet refused with `Windo
 
 ## Conditions before source publication
 
-- Obtain the 341 missing Desktop file payloads through the approved source-owner publication route and verify them against the frozen catalog.
+- Obtain the remaining 336 Desktop file payloads through the approved source-owner publication route and verify them against the frozen catalog. The original 341-file request includes five now-recovered files that can be cross-checked independently.
 - Preserve the eight platform source differences or obtain a reviewed coherent integration; do not silently select one version.
 - Exclude generated chain state, private logs, keys, vaults, credentials, machine-private records and generated build caches. Retain applicable source licenses, notices and public test vectors.
 - Resolve the public classification of the existing machine-bound Windows installation literals. Preserve security guards; do not redact or generalize the checks without review and a new source identity.

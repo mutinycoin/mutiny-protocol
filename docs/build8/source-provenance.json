@@ -21,8 +21,8 @@
     "catalog_files": 2589,
     "catalog_sha256": "689ff9834fcbb0eea7cb0a8e2072ae8dddb5088cec6975155db514bb68a39fac",
     "same_record_in_four_frozen_compile_jobs": true,
-    "available_exact_payloads": 2248,
-    "pending_exact_payloads": 341,
+    "available_exact_payloads": 2253,
+    "pending_exact_payloads": 336,
     "source_payload_in_this_commit": false
   },
   "comparison": {
@@ -71,7 +71,13 @@
         "linux_sha256": "c8aa4368068429691038fe8888911d581ea1a58580919553f4618e7ec7bf8a9b"
       }
     ],
-    "coherent_single_candidate_claimed": false
+    "coherent_single_candidate_claimed": false,
+    "replay_parent_cohort_production_patch_sha256": "603e1799477aff266267cff22c14e672f3fc09cd277992e6bfb08f2954480d4d",
+    "traced_variant_relationships": 6,
+    "unresolved_variant_paths": [
+      "consensus/src/mempool_v2.rs",
+      "crypto-v2/src/lib.rs"
+    ]
   },
   "publication_review": {
     "status": "PENDING",
