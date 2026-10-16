@@ -16,7 +16,7 @@ The production patch is `603e1799477aff266267cff22c14e672f3fc09cd277992e6bfb08f2
 
 The production-only review and later full test-bearing file identity are distinct evidence. In particular, the production review's canonical-store hash is not the later test-bearing file's hash. The exact frozen hashes are retained in [source provenance](source-provenance.json).
 
-Candidate integration treatment: preserve the five accepted Linux files as an atomic cohort, retain the Desktop before-images for reproduction, and require validation of any new combined Windows/Linux source. Copying only part of this cohort would leave its internal proof interfaces inconsistent.
+Candidate integration treatment: preserve the five accepted Linux files as an atomic cohort in the Linux projection, retain the Desktop before-images in the Desktop projection, and require validation of any new combined Windows/Linux source. Copying only part of this cohort would leave its internal proof interfaces inconsistent.
 
 ## Chrony adapter
 
@@ -24,15 +24,20 @@ Candidate integration treatment: preserve the five accepted Linux files as an at
 
 Candidate treatment: retain the exact Linux variant in the Linux projection and retain the Desktop original separately. This source comparison does not infer that the module is excluded from Windows compilation or prove a new combined build.
 
-## Two unresolved common-file comparisons
+## Mempool observation marker
 
-Exact frozen Desktop payloads are still required for:
+The Desktop `consensus/src/mempool_v2.rs` adds a read-only `change_marker()` method returning SQLite `PRAGMA data_version` and `total_changes`. The Linux frozen file lacks that method. The marker is a cheap observation signal; it is not an authenticity or state proof. Preserve each exact version in its platform projection.
 
-- `consensus/src/mempool_v2.rs`
-- `crypto-v2/src/lib.rs`
+## Public-key validation memo
 
-Their expected hashes are recorded, but their differences cannot yet be reviewed from hashes alone. Do not silently select either platform's version or claim these differences resolved.
+The Desktop `crypto-v2/src/lib.rs` adds a bounded memo of successfully validated public-key pairs. Its domain-separated SHA256 key covers the public Ed448 and FNDSA key bytes. The memo stores successful validation only, clears at 4,096 entries, and falls back to full validation if its lock is poisoned. Signature verification still runs after public-key validation. Added tests cover valid/invalid key combinations, signature corruption and memo bounds/refill.
 
-## Payload availability
+The Linux file always performs the native public-key validity/decode checks and has no memo. Keeping these exact variants separate does not approve migrating the memo into Linux or establish a cross-platform security/performance result. Line-ending changes were normalized for semantic comparison; original file hashes remain distinct and unchanged.
 
-The full Desktop catalog has 2,589 rows. Approved snapshots and publication records now supply 2,253 exact file payloads; 336 remain pending. The original 341-file request remains valid because five subsequently recovered files can serve as independent cross-checks when the publication arrives.
+## Complete payload availability and candidate layout
+
+All 2,589 frozen Desktop source files are now present and independently hash-verified against the same source record used by all four frozen compile jobs. The final internal 341-file publication is verified in full, including five overlapping independently recovered files. No source bytes remain missing.
+
+The proposed publication layout is `build8/linux/` and `build8/desktop/`, preserving the existing repository root and its history. This keeps all eight divergent common paths explicit. The exact private snapshots remain distinct from the publication projection: generated chain state and machine-path-bearing operator/history records are withheld, and one Chrony provenance comment uses a repository-relative path. Source security guards remain unchanged. The local candidate has not been built, staged or published; exact machine-identity classification and Vercel branch/PR behavior remain open.
+
+Static include review also exposes references to withheld test inputs: the chain fixture, two Treasury documents, and one relative fixture path requiring verification in the frozen source. These are reproducibility gaps in the publication projection; the earlier platform gate results must not be attributed to this projection.

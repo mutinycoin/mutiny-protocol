@@ -21,9 +21,16 @@
     "catalog_files": 2589,
     "catalog_sha256": "689ff9834fcbb0eea7cb0a8e2072ae8dddb5088cec6975155db514bb68a39fac",
     "same_record_in_four_frozen_compile_jobs": true,
-    "available_exact_payloads": 2253,
-    "pending_exact_payloads": 336,
-    "source_payload_in_this_commit": false
+    "available_exact_payloads": 2589,
+    "pending_exact_payloads": 0,
+    "source_payload_in_this_commit": false,
+    "bytes": 76247045,
+    "roster_sha256": "c771a35ecf983a8d6c4299a4fac25d64d087d532926dd0cdedf158f4938db007",
+    "roster_encoding": "sorted SHA256 + TAB + relative path + LF",
+    "final_internal_publication_manifest_sha256": "c925d676eae496884bc6a635d10e47d5c19c0c01fe1f5c568a6d024d0c6c190b",
+    "final_publication_files": 341,
+    "final_publication_bytes": 8829292,
+    "independent_duplicate_files_verified": 5
   },
   "comparison": {
     "identical_common_files": 2231,
@@ -73,21 +80,29 @@
     ],
     "coherent_single_candidate_claimed": false,
     "replay_parent_cohort_production_patch_sha256": "603e1799477aff266267cff22c14e672f3fc09cd277992e6bfb08f2954480d4d",
-    "traced_variant_relationships": 6,
-    "unresolved_variant_paths": [
-      "consensus/src/mempool_v2.rs",
-      "crypto-v2/src/lib.rs"
-    ]
+    "traced_variant_relationships": 8,
+    "unresolved_variant_paths": [],
+    "proposed_layout": [
+      "build8/linux/",
+      "build8/desktop/"
+    ],
+    "platform_projections_merged": false
   },
   "publication_review": {
     "status": "PENDING",
     "generated_chain_state_excluded": "qualification/integration-state-v2-1/chain.jsonl",
     "machine_bound_modules_pending_classification": [
       "node/src/host_clock/native_nts_installation.rs",
-      "node/src/host_clock/state_dir/windows_storage.rs"
+      "node/src/host_clock/state_dir/windows_storage.rs",
+      "desktop/src/rootproducer_native/pipe.rs",
+      "desktop/src/rootproducer_native/policy.rs",
+      "desktop/src/rootproducer_native/launch.rs",
+      "desktop/src/rootproducer_native/continuous_own_native_late_dll_controls.rs",
+      "desktop/src/testvalue/continuous_own_native_late_dll_controls.rs"
     ],
     "existing_license_declaration_changed": false,
-    "vercel_branch_and_pr_behavior": "UNVERIFIED"
+    "vercel_branch_and_pr_behavior": "UNVERIFIED",
+    "internal_owner_publication_is_public_release_authority": false
   },
   "verification": {
     "snapshot_file_hashes_checked": true,

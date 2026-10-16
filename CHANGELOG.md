@@ -1,10 +1,12 @@
 # Changelog
 
-## Build 8 source synchronization review — 2026-10-16
+## Build 8 source synchronization review â€” 2026-10-16
 
 Added a bounded [development status](BUILD8-STATUS.md) and public source-identity record for the frozen Linux and Desktop projections. The status keeps shipping, TEST, selected Linux and synthetic launcher results separate, preserves unresolved failures, and records the live attempt as closed without H100/H101 payment/restart acceptance.
 
-This documentation change does not add the Build 8 source payload, replace the published V1 source, change a security guard or licensing declaration, or publish a release/tag. Source integration remains pending exact Desktop payloads, review of platform differences and public content, and verified Vercel branch/PR scope.
+This documentation change does not add the Build 8 source payload, replace the published V1 source, change a security guard or licensing declaration, or publish a release/tag. All frozen Desktop payloads are now verified and all eight platform differences reviewed. A paired local candidate preserves each projection separately. Publication remains pending exact machine-identity classification and verified Vercel branch/PR scope. No source payload is committed by this documentation update.
+
+The local projection's hash/notice/credential-shape checks are recorded separately from executable qualification. Static include review identifies test-input gaps caused by withholding records, plus one frozen relative-path question; the projection is not yet build-ready.
 
 ## Historical baseline
 
