@@ -6,7 +6,7 @@ Added a bounded [development status](BUILD8-STATUS.md) and public source-identit
 
 This documentation change does not add the Build 8 source payload, replace the published V1 source, change a security guard or licensing declaration, or publish a release/tag. All frozen Desktop payloads are now verified and all eight platform differences reviewed. A paired local candidate preserves each projection separately. Publication remains pending exact machine-identity classification and verified Vercel branch/PR scope. No source payload is committed by this documentation update.
 
-The local projection's hash/notice/credential-shape checks are recorded separately from executable qualification. Static include review identifies test-input gaps caused by withholding records, plus one frozen relative-path question; the projection is not yet build-ready.
+The local projection's hash/notice/credential-shape checks are recorded separately from executable qualification. Static include review distinguishes the withheld chain from pre-existing Linux document/helper gaps and an unused support-copy path. An exact-input restoration overlay and fresh qualification plan are prepared; the projection is not yet build-ready.
 
 ## Historical baseline
 

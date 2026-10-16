@@ -1169,7 +1169,89 @@
   "open_gates": [
     "Exact machine-bound source literal public classification; guards preserved",
     "Vercel production/root/branch/PR rules for proposed branch",
-    "Compile and test each publication projection after omissions; reproduce platform gates separately",
+    "Apply classified exact test inputs under a new projection identity; compile/test default and trading-service targets independently after campaign-safe scheduling",
     "Shipping ignored test, TEST peer/ABI failures, Windows history performance failure, live H100/H101 payment/restart acceptance"
-  ]
+  ],
+  "reproducibility_review": "reproducibility-review.md",
+  "original_literal_include_report_is_raw_not_reachability": "Raw findings include Linux documents absent in frozen input and an unused nested support copy; consult reviewed classification.",
+  "proposed_restoration_overlay": {
+    "status": "PROPOSED_EXACT_TEST_INPUT_RESTORATION_NOT_PUBLIC_AUTHORITY",
+    "base_candidate_roster": "4c4fb4e16a539600c9ad81286a591534600fd0db8f91297300fbbc6ca3515dfa",
+    "proposed_roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
+    "roster_encoding": "sorted SHA256 + TAB + candidate-relative-path + LF",
+    "proposed_files": 4769,
+    "proposed_bytes": 142296715,
+    "proposed_platform_counts": {
+      "linux": 2230,
+      "desktop": 2539
+    },
+    "source_security_guards_changed": false,
+    "additions": [
+      {
+        "path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+        "bytes": 583549,
+        "sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "source_sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "reason": "restore exact existing synthetic embedded test fixture; public classification pending",
+        "source_platform": "linux"
+      },
+      {
+        "path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+        "bytes": 583549,
+        "sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "source_sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "reason": "restore exact existing synthetic embedded test fixture; public classification pending",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/docs/TREASURY-PROOF-OF-CONTROL-SCHEMA-V1.md",
+        "bytes": 70557,
+        "sha256": "4ca7401ebb0248dec3600b599cc2a9deeb64a4c35308bc1f3d12607400992b9f",
+        "source_sha256": "4ca7401ebb0248dec3600b599cc2a9deeb64a4c35308bc1f3d12607400992b9f",
+        "reason": "supplement missing Linux test input from exact Desktop file matching reproduction-inputs hash",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/docs/TREASURY-REHEARSAL-TOOLING-V1.md",
+        "bytes": 29108,
+        "sha256": "f271622f11779e9aa06ee4d9a2c196d0f9020d65af180759dbf42b2ede29ec7a",
+        "source_sha256": "f271622f11779e9aa06ee4d9a2c196d0f9020d65af180759dbf42b2ede29ec7a",
+        "reason": "supplement missing Linux test input from exact Desktop source, no code or document transformation",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/desktop/src/wallet_host_fixture_licenses.rs",
+        "bytes": 3980,
+        "sha256": "7362ae8efd652c164a01172a3c0e71ebd01263726638434892e51df227df2d67",
+        "source_sha256": "7362ae8efd652c164a01172a3c0e71ebd01263726638434892e51df227df2d67",
+        "reason": "restore exact synthetic license helper referenced only by trading-service TEST modules",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/desktop/src/wallet_host_fixture_tpm.rs",
+        "bytes": 2686,
+        "sha256": "b11dfffcbdaa502d63039786452d48d98089aa8fa8026d1e5dc9404b1df76c94",
+        "source_sha256": "b11dfffcbdaa502d63039786452d48d98089aa8fa8026d1e5dc9404b1df76c94",
+        "reason": "restore exact software TPM helper referenced only by trading-service TEST modules",
+        "source_platform": "desktop"
+      }
+    ],
+    "static_include_checks": 523,
+    "unresolved_literal_includes": [
+      {
+        "path": "build8/linux/node/tests/forge_live_fixture/support/dividend_rig.rs",
+        "line": 45,
+        "target": "build8/linux/node/qualification/hybrid-canonical-store-public-v1.json",
+        "exists": false
+      }
+    ],
+    "qualification_required": [
+      "Owner confirms exact chain fixture and added documents are intentionally public TEST inputs",
+      "Compile node lib/bin unit-test and consensus integration-test targets separately for both publication projections",
+      "Run chain-dependent tests, treasury_schema_conformance_v1, source-path/private-evidence guards after source overlay; no borrowed gate claims"
+    ],
+    "executed_source_payloads": false,
+    "built": false,
+    "pushed": false
+  }
 }
