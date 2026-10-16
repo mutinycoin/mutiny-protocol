@@ -4,6 +4,10 @@
 
 Mutiny Protocol is decentralized proof-of-work infrastructure designed around broad participation, deterministic consensus, and cross-platform operation.
 
+## Build 8 development
+
+[Build 8 development status](BUILD8-STATUS.md) records the current source synchronization and separate test gates. Build 8 source integration and qualification remain incomplete; no Build 8 production release or deployment is claimed.
+
 ## Current production authority
 
 The current formally locked production release is **Mutiny Protocol V1.0 — Build 6.9**.
