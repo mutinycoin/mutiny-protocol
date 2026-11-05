@@ -1,0 +1,77 @@
+== Summary ==
+* Action: Claim a hash lock
+  Summary: Claim 0.01000000 MUT from lock 6c6c6c6c..6c6c6c6c by publishing its preimage. Network fee 0.00003775 MUT.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: 3d3a6a829778e316d79995559717abbc187d2fec416879b7e745e06397d37eae
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Key generation: 1
+  Wallet authority: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  Approval slot 0: this wallet signs; wallet umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Parties ==
+  Claimant: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Lock sender: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (an external address; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Money ==
+  The protocol pays: 0.01000000 MUT (1000000 STRIKES) to umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Returns to this wallet: 0.00496225 MUT (496225 STRIKES) to umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+* Amount: 0.01000000 MUT (1000000 STRIKES)
+* Network fee: 0.00003775 MUT (3775 STRIKES); the greater of 240 STRIKES and one atom per byte of the signed encoding; paid by this wallet, signed size 3775 bytes
+* Total leaving this wallet: 0.00003775 MUT
+  Inputs: 1 coin(s) worth 0.00500000 MUT
+  Input 0: 0202020202020202020202020202020202020202020202020202020202020202:0 worth 0.00500000 MUT (this wallet)
+
+== Conditions ==
+  Lock: Spends hash lock 6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c created at block 90 by the sender umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f: 0.01000000 MUT (1000000 STRIKES) locked for the recipient umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0.
+  Hash condition: 425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c: the preimage carried by this claim hashes to it (checked).
+  Claim deadline: Valid only while the including block is below the refund height 150 (50 blocks after the verified block; about 50 min, approximate at the 60 s target interval); from that block on the sender may refund instead. This claim expires at block 149.
+  Preimage origin: preimage supplied externally; Bitcoin settlement not verified by this wallet.
+  Fee coins: The fee is paid from 1 separate coin(s) of the recipient address umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0; the locked amount is credited in full.
+  Finality: The claim is final only when a certified block that includes it is part of this wallet's verified chain and this host's own replay-derived index confirms its inclusion. A queued record is stored locally only; authenticated submission or peer acknowledgement is not confirmation. Inclusion in a proposed, uncertified block is not finality either.
+  Trade commitments: TradeID 2121212121212121212121212121212121212121212121212121212121212121 and ContractHash 2222222222222222222222222222222222222222222222222222222222222222 are opaque 32-byte commitments: shown, not interpreted or verified.
+  Trade generation: 1. A claim or refund of a lock carries the generation, TradeID and ContractHash of the lock.
+  Validity window: Valid only for blocks 101 to 149 (49 blocks after the verified block; about 49 min, approximate at the 60 s target interval).
+  Inputs: All 1 input coin(s) must still be unspent coins of the recipient address umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 when the operation is included; a conflicting spend of any of them cancels it.
+  Fee rule: The fee must be at least the greater of 240 STRIKES and the encoded size of the complete signed operation (every approval included): 3775 bytes, so 3775 atoms.
+  Approvals still required: the approval of the claimant (slot 0, this wallet).
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 149 (49 blocks after the verified block; about 49 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Publishes the preimage in the block: from inclusion it is public, and anyone can read it and use it wherever the same hash condition applies.
+# Irreversible: Credits the locked 0.01000000 MUT to the recipient umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet) and ends the lock: it can no longer be refunded.
+# Irreversible: Spends 1 coin(s) worth 0.00500000 MUT of the recipient address umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0. A spent coin cannot be recovered once the operation is included.
+  Effect: Returns 0.00496225 MUT of change to the recipient address umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet).
+# Irreversible: Pays a network fee of 0.00003775 MUT to the block producer.
+# Irreversible: Once signed, the operation cannot be revoked: it stays valid until it is included or until block 149.
+
+== Warnings ==
+! Caution: TradeID and ContractHash are opaque commitments: check them against the trade agreement you hold. This wallet shows them but cannot check what they commit to.
+! Danger: Claiming reveals the preimage publicly. Claim only when nothing on the other leg of the trade depends on keeping it secret.
+! Caution: Check the other leg of the trade yourself: preimage supplied externally; Bitcoin settlement not verified by this wallet.
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Required: I understand that payment or Bitcoin evidence outside this chain is not verified by this wallet
+* Required: I understand claiming reveals the preimage publicly
+* Type to confirm: CONFIRM 4E85A7E0
+
+== Binding ==
+  Review digest: 4e85a7e0ad213ee6de343f2fb85fec3a2ab641ff81a0a9dc10a052cf5211126d

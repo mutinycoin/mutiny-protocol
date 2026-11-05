@@ -1,0 +1,29 @@
+{
+  "schema": "BUILD8-OPENSSL-CURVE448-SOURCE-LOCK-V1",
+  "release": "openssl-3.5.9",
+  "commit": "45e844fa2a14ec92d146bd8f5778ac130b6625fb",
+  "license": "Apache-2.0",
+  "production_qualified": false,
+  "files": {
+    "LICENSE.txt": "ed72ce2b51ee58f117e5a021e2e04af158857f40269fbc03491f0b2a99dbcc96",
+    "crypto/ec/curve448/curve448.c": "a07fe122baceed7ce0a73ce52f63ea35fff38b91456ef70dae624e395bd2183c",
+    "crypto/ec/curve448/curve448utils.h": "54aa3f801c06294d0d95f13199b2e545d2c694cedd8eefd41b6bbb66ec0ac993",
+    "crypto/ec/curve448/curve448_local.h": "61ae53460864677ecf29fedb7f6157cdac5484b251ccf4e4de6d04f0aa8f4ff2",
+    "crypto/ec/curve448/curve448_tables.c": "d7376c459148f7ea2f629a6f6a607bb57a0c540059e19f31fdf6a5ecaa3bb95e",
+    "crypto/ec/curve448/ed448.h": "6e9eff2e26ed1b3aac5d5e8b6b1bdaaf8e585b4a0a747c0adfb71bc56ca6ae79",
+    "crypto/ec/curve448/eddsa.c": "711715ebe2b944772c59a3ed78a9748fab95ff88db219d32b727fb580dd94ee5",
+    "crypto/ec/curve448/field.h": "a8cf3040a6748aad72d5386f91bf79cf5d4e3b0c7a473409f48eba3e8de13ec7",
+    "crypto/ec/curve448/f_generic.c": "bd1366b9c6d8460f4fbf17f6bce8521b7b788b5fa60c1ef00c4812feb46290c7",
+    "crypto/ec/curve448/point_448.h": "92d51de9abcb8746b0fcd89364934b708e38f913afa2abcb2c820619c06b997e",
+    "crypto/ec/curve448/scalar.c": "0db3b69770edbab1f21499ae7bf44ac637b4dbb1c469f955e16669f0287f4078",
+    "crypto/ec/curve448/word.h": "8573ddbf1618cbb28450b51c3e2561c9f810fb6bf0d74737413bcd8414db920a",
+    "crypto/ec/curve448/arch_32/arch_intrinsics.h": "7f18a4b1092ac1bc779eeddfb5289765fecf70dd9851351384a00744158769e2",
+    "crypto/ec/curve448/arch_32/f_impl.h": "646544c249775054876bb8c83e850f586530b6081b847cdec7eaa175c32c5a20",
+    "crypto/ec/curve448/arch_32/f_impl32.c": "6466dc255f26b8a362180212e9479cc92c162363d1142bffab74e987b34c600e",
+    "crypto/ec/curve448/arch_64/arch_intrinsics.h": "e95d69f3155f528a86ac5e82c42049845c5cfc551588bbe90eae14c98cd669c6",
+    "crypto/ec/curve448/arch_64/f_impl.h": "e5e28f19fdd374728558d376c96ff494686964aee6402720304cf07a8c36af0c",
+    "crypto/ec/curve448/arch_64/f_impl64.c": "0e8c6ccb80d5a47f5e3b13ab9ab928a81c4891594d9fc9d98f35e745268f72a0",
+    "include/internal/constant_time.h": "cf5b05cf6bb071c1102a47a3a1071fe539ee77417114140378919e1dacfd84d3",
+    "include/internal/numbers.h": "04d1c85c845837c39eead072b85c37774390ede7ecf4542fad03ff49f64e3955"
+  }
+}

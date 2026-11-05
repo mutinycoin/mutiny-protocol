@@ -1,0 +1,241 @@
+//! Available public Genesis witness artifact. This validates public evidence;
+//! it does not establish credential activation or physical execution locality.
+//! Production eligibility remains subject to hard stop E.
+use crate::{
+    Error, Hash,
+    attestation_witness::{self, WitnessFailure},
+    genesis_v2::{self, Approved, Claimed, Constructed, Enrollment, Inputs},
+    pcr_profiles::PcrFailure,
+    x509_syntax::X509Syntax,
+};
+use minicbor::{Decoder, Encoder};
+pub const MAX_ENTRIES: usize = 12;
+pub const MAX_BUNDLE: usize = MAX_ENTRIES * attestation_witness::MAX_WITNESS_BYTES + 4096;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicWitnessBundle {
+    pub genesis: Hash,
+    pub fingerprint: Hash,
+    pub entries: Vec<(Hash, Vec<u8>)>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvidenceFailure {
+    Bundle(Error),
+    Genesis(genesis_v2::GenesisV2Error),
+    Network,
+    NodeSet,
+    MissingStatement,
+    Pcr(PcrFailure),
+    Witness(WitnessFailure),
+    PublicKeyDigestMismatch,
+    PhysicalQualificationUnestablished,
+}
+impl PublicWitnessBundle {
+    pub fn encode(&self) -> crate::Result<Vec<u8>> {
+        if self.genesis == [0; 32]
+            || self.fingerprint == [0; 32]
+            || self.entries.is_empty()
+            || self.entries.len() > MAX_ENTRIES
+        {
+            return Err(Error::Codec);
+        }
+        let mut last = None;
+        let mut e = Encoder::new(Vec::new());
+        e.array(4)
+            .unwrap()
+            .u8(1)
+            .unwrap()
+            .bytes(&self.genesis)
+            .unwrap()
+            .bytes(&self.fingerprint)
+            .unwrap()
+            .array(self.entries.len() as u64)
+            .unwrap();
+        for (node, witness) in &self.entries {
+            if *node == [0; 32] || last.is_some_and(|previous| previous >= *node) {
+                return Err(Error::NonCanonical);
+            }
+            if witness.is_empty() || witness.len() > attestation_witness::MAX_WITNESS_BYTES {
+                return Err(Error::Oversize);
+            }
+            e.array(2)
+                .unwrap()
+                .bytes(node)
+                .unwrap()
+                .bytes(witness)
+                .unwrap();
+            last = Some(*node);
+        }
+        let raw = e.into_writer();
+        if raw.len() > MAX_BUNDLE {
+            return Err(Error::Oversize);
+        }
+        Ok(raw)
+    }
+    pub fn decode(raw: &[u8]) -> crate::Result<Self> {
+        crate::blocks::canonical(raw, MAX_BUNDLE)?;
+        let mut d = Decoder::new(raw);
+        let bad = || Error::Codec;
+        if d.array().map_err(|_| bad())? != Some(4) || d.u8().map_err(|_| bad())? != 1 {
+            return Err(bad());
+        }
+        let genesis = d
+            .bytes()
+            .map_err(|_| bad())?
+            .try_into()
+            .map_err(|_| bad())?;
+        let fingerprint = d
+            .bytes()
+            .map_err(|_| bad())?
+            .try_into()
+            .map_err(|_| bad())?;
+        let n = d.array().map_err(|_| bad())?.ok_or_else(bad)?;
+        if n == 0 || n > MAX_ENTRIES as u64 {
+            return Err(Error::Capacity);
+        }
+        let mut entries = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            if d.array().map_err(|_| bad())? != Some(2) {
+                return Err(bad());
+            }
+            let node = d
+                .bytes()
+                .map_err(|_| bad())?
+                .try_into()
+                .map_err(|_| bad())?;
+            let witness = d.bytes().map_err(|_| bad())?;
+            if witness.is_empty() || witness.len() > attestation_witness::MAX_WITNESS_BYTES {
+                return Err(Error::Oversize);
+            }
+            entries.push((node, witness.to_vec()));
+        }
+        let bundle = Self {
+            genesis,
+            fingerprint,
+            entries,
+        };
+        if d.position() != raw.len() || bundle.encode()? != raw {
+            return Err(Error::NonCanonical);
+        }
+        Ok(bundle)
+    }
+}
+/// Public evidence validation against independently supplied approval and exact reconstruction.
+/// Successful return proves no physical association or credential activation claim.
+pub fn verify_genesis_public_evidence(
+    inputs_raw: &[u8],
+    enrollment_raw: &[u8],
+    approved: &Approved,
+    claimed: &Claimed,
+    bundle_raw: &[u8],
+) -> Result<Constructed, EvidenceFailure> {
+    use EvidenceFailure as F;
+    // Approval and claimed reconstruction precede trusting any bundle-provided index or bytes.
+    let inputs = Inputs::decode(inputs_raw).map_err(F::Genesis)?;
+    genesis_v2::check_approved(&inputs, approved).map_err(F::Genesis)?;
+    let a2 = crate::endorsement_revocation_v1::enabled(&inputs.parameters).map_err(F::Bundle)?;
+    let constructed = if a2 {
+        genesis_v2::verify_with_public_dependencies(inputs_raw, enrollment_raw, approved, claimed, bundle_raw)
+    } else {
+        genesis_v2::verify(inputs_raw, enrollment_raw, approved, claimed)
+    }.map_err(F::Genesis)?;
+    let enrollment = Enrollment::decode(enrollment_raw).map_err(F::Genesis)?;
+    let bundle = PublicWitnessBundle::decode(bundle_raw).map_err(F::Bundle)?;
+    if bundle.genesis != constructed.identity || bundle.fingerprint != constructed.fingerprint {
+        return Err(F::Network);
+    }
+    // V2 Genesis has one admitted member, with twelve Bootstrap Licenses.
+    let node = enrollment.member_binding.admission.node;
+    if bundle.entries.len() != 1 || bundle.entries[0].0 != node {
+        return Err(F::NodeSet);
+    }
+    let profile = inputs.member.tpm_profile().map_err(F::Genesis)?;
+    inputs
+        .parameters
+        .pcr_profiles
+        .check_accepted(profile.pcr_bitmap, profile.pcr_digest)
+        .map_err(F::Pcr)?;
+    let statement = profile.provenance.as_ref().ok_or(F::MissingStatement)?;
+    let policy = inputs.parameters.witness_policy().map_err(F::Bundle)?;
+    attestation_witness::verify_witness_with_policy(
+        statement,Some(&bundle.entries[0].1),&policy,inputs.timestamp,&X509Syntax,
+    )
+    .map_err(F::Witness)?;
+    let witness = attestation_witness::AttestationWitness::decode(&bundle.entries[0].1)
+        .map_err(|e| F::Witness(WitnessFailure::Encoding(e)))?;
+    let leaf = &witness.endorsements[0].certificates[0];
+    let digest = crate::x509_syntax::certified_public_key_sha256(leaf)
+        .map_err(|e| F::Witness(WitnessFailure::Chain(0, e)))?;
+    if digest != statement.ek_public_sha256 {
+        return Err(F::PublicKeyDigestMismatch);
+    }
+    Ok(constructed)
+}
+/// Path B accepts remote/VM execution and TPM request forwarding. This gate
+/// remains closed because authentic qualifying physical TPM evidence, lineage
+/// uniqueness, fresh activation and accepted platform qualification are not yet
+/// supplied through a supported production eligibility path. It does not test
+/// node execution location. Public success records alone cannot lift the gate.
+pub fn require_qualified_physical_evidence(
+    class: genesis_v2::GenesisClass,
+) -> Result<(), EvidenceFailure> {
+    if class == genesis_v2::GenesisClass::Production {
+        return Err(EvidenceFailure::PhysicalQualificationUnestablished);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_canonical_bundle_rejects_index_and_encoding_substitution() {
+        let bundle = PublicWitnessBundle {
+            genesis: [1; 32],
+            fingerprint: [2; 32],
+            entries: vec![([3; 32], vec![4; 17])],
+        };
+        let raw = bundle.encode().unwrap();
+        assert_eq!(PublicWitnessBundle::decode(&raw).unwrap(), bundle);
+        let mut trailing = raw.clone();
+        trailing.push(0);
+        assert!(PublicWitnessBundle::decode(&trailing).is_err());
+        let mut duplicate = bundle.clone();
+        duplicate.entries.push(duplicate.entries[0].clone());
+        assert_eq!(duplicate.encode(), Err(Error::NonCanonical));
+        let mut oversized = bundle.clone();
+        oversized.entries[0].1 = vec![0; attestation_witness::MAX_WITNESS_BYTES + 1];
+        assert_eq!(oversized.encode(), Err(Error::Oversize));
+        assert!(PublicWitnessBundle::decode(&vec![0; MAX_BUNDLE + 1]).is_err());
+        let mut indefinite = raw;
+        indefinite[0] = 0x9f;
+        indefinite.push(0xff);
+        assert!(PublicWitnessBundle::decode(&indefinite).is_err());
+    }
+    #[test]
+    fn public_parser_refuses_oversize_before_der_parsing() {
+        use crate::ek_chain::{
+            CertificateSyntax, ChainFailure, MAX_CERTIFICATE_BYTES, MAX_CRL_BYTES,
+        };
+        assert_eq!(
+            X509Syntax
+                .parse_certificate(&vec![0; MAX_CERTIFICATE_BYTES + 1])
+                .err(),
+            Some(ChainFailure::Oversize)
+        );
+        assert_eq!(
+            X509Syntax.parse_crl(&vec![0; MAX_CRL_BYTES + 1]).err(),
+            Some(ChainFailure::Oversize)
+        );
+    }
+    #[test]
+    fn production_eligibility_has_no_public_boolean_or_witness_override() {
+        assert_eq!(
+            require_qualified_physical_evidence(genesis_v2::GenesisClass::Production),
+            Err(EvidenceFailure::PhysicalQualificationUnestablished)
+        );
+        assert_eq!(
+            require_qualified_physical_evidence(genesis_v2::GenesisClass::TestValue),
+            Ok(())
+        );
+    }
+}

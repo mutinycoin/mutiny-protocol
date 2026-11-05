@@ -1,0 +1,284 @@
+//! Candidate node owner for canonical state plus hybrid signing custody.
+//! Production startup remains separately gated. The backend is consumed here,
+//! retained exclusively and never exposed through the validator/transport API.
+use crate::hybrid_runtime_v2::{HybridRuntime, Installation, RuntimeError};
+use mutiny_consensus_v8::{
+    Hash,
+    bft::Step,
+    block_envelope_v2::BlockEnvelope,
+    continuity_v2::Vote,
+    counter_voter_v2::{CounterSigningBackend, MigrationReceipt},
+    voter_actor_v2::{ActorError, VoterActor},
+};
+use std::path::Path;
+#[cfg(test)]
+#[path = "hybrid_voter_v2_tests.rs"]
+mod tests;
+#[derive(Debug)]
+pub enum VotingError {
+    Runtime(RuntimeError),
+    Actor(ActorError),
+    Initialization(String),
+    CandidateIngress(String),
+}
+impl From<RuntimeError> for VotingError {
+    fn from(e: RuntimeError) -> Self {
+        Self::Runtime(e)
+    }
+}
+impl From<ActorError> for VotingError {
+    fn from(e: ActorError) -> Self {
+        Self::Actor(e)
+    }
+}
+impl VotingError {
+    /// True when a vote was withheld only for local time reasons (defer or abstain, never invalid).
+    pub fn is_time_deferral(&self) -> bool {
+        matches!(self, Self::Actor(e) if e.is_time_deferral())
+    }
+}
+type Result<T> = std::result::Result<T, VotingError>;
+#[derive(Debug)]
+pub enum CustodyProgress {
+    Ready { next_height: u64 },
+    Stopped(ActorError),
+}
+#[derive(Debug)]
+pub struct VotingInstallation {
+    /// Canonical success remains visible even if subsequent custody work fails.
+    pub canonical: Installation,
+    pub custody: CustodyProgress,
+}
+pub struct VotingRuntime<B: CounterSigningBackend> {
+    runtime: HybridRuntime,
+    actor: VoterActor,
+    backend: B,
+    rotation_stopped: bool,
+}
+impl<B: CounterSigningBackend> VotingRuntime<B> {
+    /// Separate supervised host action. No network request can initialize or
+    /// repair custody through the ordinary validator/install interface.
+    pub fn initialize_after_recovery(
+        mut runtime: HybridRuntime,
+        path: &Path,
+        node: Hash,
+        parent: &mutiny_consensus_v8::anchors::FinalizedAnchor,
+        commitment: Hash,
+        pinned_counter: u64,
+        mut backend: B,
+    ) -> Result<Self> {
+        // Authenticate the public ceremony context before reserving any file.
+        runtime
+            .chain
+            .recovery_initialization_authority(parent, node, commitment)
+            .map_err(ActorError::from)?;
+        let actor = crate::custody_initialization::initialize(
+            path,
+            pinned_counter,
+            &mut backend,
+            |backend| {
+                VoterActor::initialize_recovery(
+                    path,
+                    node,
+                    parent,
+                    commitment,
+                    pinned_counter,
+                    &mut runtime.chain,
+                    backend,
+                )
+                .map_err(|e| format!("Recovery custody initialization: {e:?}"))
+            },
+        )
+        .map_err(VotingError::Initialization)?;
+        Ok(Self {
+            runtime,
+            actor,
+            backend,
+            rotation_stopped: false,
+        })
+    }
+    /// Install the qualified local clock consulted before every fresh block vote
+    /// (`block.timestamp <= qualified_local_UTC_now`). Fail-closed until one is installed.
+    pub fn set_vote_clock(
+        &mut self,
+        clock: std::sync::Arc<dyn mutiny_consensus_v8::vote_clock_v1::VoteClock>,
+    ) {
+        self.actor.set_vote_clock(clock);
+    }
+    /// Pure local time eligibility of voting for an executed proposal right now. The caller owns
+    /// scheduling: a deferred block must pass full current-context revalidation (this type's
+    /// `sign` reconciles with canonical state first) before any vote; a due timer authorizes none.
+    pub fn time_status(&self, block: Hash) -> mutiny_consensus_v8::vote_clock_v1::TimeStatus {
+        self.actor.time_status(block)
+    }
+    pub fn signer_node(&self) -> Hash {
+        self.actor.node()
+    }
+    pub fn sign_work_probe(
+        &mut self,
+        decision: &mutiny_consensus_v8::certificates::Decision,
+    ) -> Result<mutiny_consensus_v8::liveness_v2::Fragment> {
+        if self.rotation_stopped {
+            return Err(ActorError::Halted.into());
+        }
+        Ok(self
+            .actor
+            .sign_work_probe(&self.runtime.chain, decision, &mut self.backend)?)
+    }
+    pub fn open_after_rotation(
+        mut runtime: HybridRuntime,
+        path: &Path,
+        node: Hash,
+        height: u64,
+        mut backend: B,
+    ) -> Result<Self> {
+        let actor =
+            VoterActor::open_after_rotation(path, node, height, &mut runtime.chain, &mut backend)?;
+        Ok(Self {
+            runtime,
+            actor,
+            backend,
+            rotation_stopped: false,
+        })
+    }
+    /// Host-local generation handoff. Prepared custody stays outside transport
+    /// objects. Canonical success remains visible if migration/activation fails.
+    pub fn install_with_rotation(
+        &mut self,
+        raw: &[u8],
+        activate: impl FnOnce(&mut B, MigrationReceipt) -> std::result::Result<(), String>,
+    ) -> Result<VotingInstallation> {
+        let canonical = self.runtime.install(raw)?;
+        let result = (|| -> std::result::Result<(), ActorError> {
+            if self.rotation_stopped {
+                return Err(ActorError::Halted);
+            }
+            // A retry after completed custody advancement must verify current
+            // custody, but must not activate or increment the generation twice.
+            if !canonical.inserted && canonical.finalized.height < self.actor.height() {
+                return self.reconcile_actor();
+            }
+            // Remain stopped if a backend/callback unwinds. Only completion of
+            // migration, activation and reconciliation clears this latch.
+            self.rotation_stopped = true;
+            let receipt = self
+                .actor
+                .rotate_finalized_generation(&mut self.runtime.chain, &mut self.backend)?;
+            activate(&mut self.backend, receipt).map_err(|_| {
+                ActorError::Voter(mutiny_consensus_v8::counter_voter::CounterVoterError::Backend)
+            })?;
+            self.actor
+                .reconcile(&mut self.runtime.chain, &mut self.backend)
+        })();
+        let custody = match result {
+            Ok(()) => {
+                self.rotation_stopped = false;
+                CustodyProgress::Ready {
+                    next_height: self.actor.height(),
+                }
+            }
+            Err(e) => {
+                self.rotation_stopped = true;
+                CustodyProgress::Stopped(e)
+            }
+        };
+        Ok(VotingInstallation { canonical, custody })
+    }
+    pub fn open(
+        mut runtime: HybridRuntime,
+        path: &Path,
+        node: Hash,
+        initial: Option<u64>,
+        mut backend: B,
+    ) -> Result<Self> {
+        let actor = VoterActor::open(path, node, initial, &mut runtime.chain, &mut backend)?;
+        Ok(Self {
+            runtime,
+            actor,
+            backend,
+            rotation_stopped: false,
+        })
+    }
+    /// Authenticated transport may update public canonical state. Every private
+    /// operation below first reconciles against that state, including any block
+    /// installed through this public interface between signing requests.
+    pub fn validator(&mut self) -> &mut HybridRuntime {
+        &mut self.runtime
+    }
+    pub fn reconcile(&mut self) -> Result<()> {
+        self.reconcile_actor()?;
+        Ok(())
+    }
+    fn reconcile_actor(&mut self) -> std::result::Result<(), ActorError> {
+        // Activation callbacks may fail after changing their backend. Only an
+        // explicit reopen with verified durable recovery may resume signing.
+        if self.rotation_stopped {
+            return Err(ActorError::Halted);
+        }
+        self.actor
+            .reconcile(&mut self.runtime.chain, &mut self.backend)
+    }
+    pub fn install(&mut self, raw: &[u8]) -> Result<VotingInstallation> {
+        let canonical = self.runtime.install(raw)?;
+        let custody = match self.reconcile_actor() {
+            Ok(()) => CustodyProgress::Ready {
+                next_height: self.actor.height(),
+            },
+            Err(e) => CustodyProgress::Stopped(e),
+        };
+        Ok(VotingInstallation { canonical, custody })
+    }
+    pub fn validate_proposal(&mut self, block: &BlockEnvelope) -> Result<()> {
+        self.reconcile()?;
+        self.actor.validate_proposal(&self.runtime.chain, block)?;
+        Ok(())
+    }
+    /// Restore at most one durably retained current-height proposal. This
+    /// performs ordinary executed ingress and requests no vote or signature.
+    pub fn restore_candidate(
+        &mut self,
+        journal: &crate::candidate_journal_v2::Journal,
+        after: Option<Hash>,
+    ) -> Result<Option<Hash>> {
+        self.reconcile()?;
+        let Some(record) = journal
+            .next_current(&self.runtime, after)
+            .map_err(VotingError::CandidateIngress)?
+        else {
+            return Ok(None);
+        };
+        self.actor.validate_candidate(
+            &self.runtime.chain,
+            mutiny_consensus_v8::voter_actor_v2::Proposal {
+                header: &record.header,
+                authority: &record.authority,
+                body: &record.body,
+            },
+        )?;
+        Ok(Some(record.header.block_hash()))
+    }
+    pub fn sign(&mut self, step: Step, block: Option<Hash>, pol: Option<u64>) -> Result<Vote> {
+        self.reconcile()?;
+        Ok(self
+            .actor
+            .sign(&self.runtime.chain, step, block, pol, &mut self.backend)?)
+    }
+    pub fn replay(&mut self, step: Step) -> Result<Option<Vote>> {
+        self.reconcile()?;
+        Ok(self
+            .actor
+            .replay(&self.runtime.chain, step, &mut self.backend)?)
+    }
+    pub fn observe(&mut self, vote: &Vote) -> Result<()> {
+        self.reconcile()?;
+        self.actor
+            .observe(&self.runtime.chain, vote, &mut self.backend)?;
+        Ok(())
+    }
+    pub fn timeout_precommit(&mut self) -> Result<Option<u64>> {
+        self.reconcile()?;
+        Ok(self
+            .actor
+            .timeout_precommit(&self.runtime.chain, &mut self.backend)?)
+    }
+}

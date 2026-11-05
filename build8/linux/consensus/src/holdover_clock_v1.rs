@@ -1,0 +1,3987 @@
+//! Authenticated time with bounded uncertainty and offline holdover (Architect ruling, 2 Oct 2026,
+//! 19:22 ET, item 4). This is the production interval engine behind `VoteClock`; it contains no
+//! I/O: host adapters supply authenticated calibration samples and an elapsed-time source.
+//!
+//! # Time representation
+//!
+//! * Protocol scale: whole seconds of POSIX time (the unit of block timestamps), derived from a
+//!   UTC interval kept in integer milliseconds. All arithmetic is checked; any overflow or
+//!   underflow makes the clock `Unqualified`. Nothing is rounded in the aggressive direction.
+//! * `qualified_local_UTC_now = floor(conservative UTC lower bound)`. The proposer uses the same
+//!   conservative basis (`TimeBasis::lower_bound_ms`). The interval's uncertainty therefore
+//!   shrinks what this node will sign/propose; it never adds permission to timestamp ahead.
+//! * Leap seconds: POSIX-step semantics are assumed (no 23:59:60; an inserted second REPEATS a
+//!   POSIX second, a deleted one SKIPS one). Smearing sources are unsupported. The engine holds a
+//!   [`LeapView`] pushed by the host adapter and EXPIRES holdover before any transition it cannot
+//!   model (see "Leap handling" below). There is NO blanket extra second on samples taken while a
+//!   leap second is announced: only a sample whose possible interval reaches the derived ambiguous
+//!   zone is refused (Architect ruling 4, 3 Oct 2026).
+//!
+//! # Calibration (online)
+//!
+//! A `SourceSample` is an AUTHENTICATED UTC interval measured at a known elapsed-source instant.
+//! Ordinary OS wall time, or an authenticated packet alone, is not a sample: the adapter must
+//! account for measurement uncertainty and must only emit samples from sources it authenticated.
+//! Source disagreement uses the declared fault model "at most `f` of `N` samples are faulty":
+//! with all correct intervals containing the true time, the true time lies in a region covered by
+//! at least `N-f` intervals (Marzullo). No such region means more than `f` sources disagree and
+//! the calibration is REJECTED. No peer, proposal or block
+//! timestamp can ever be a sample.
+//!
+//! # Holdover (offline)
+//!
+//! Between calibrations the interval advances with the elapsed source, widened by the justified
+//! drift bound AND by the elapsed-time uncertainty ledger (Order C10, below). Qualification ends
+//! when the holdover limit, the interval-width limit, a suspend gap, a boot change or an
+//! elapsed-source fault is detected. Every reading recomputes all of this from the elapsed source
+//! (Order C3): no "qualified" flag is cached between two polls, and none is ever persisted.
+//!
+//! # Elapsed-time uncertainty ledger (Order C10, 4 Oct 2026)
+//!
+//! The elapsed time the engine uses is the difference of two `CLOCK_BOOTTIME` samples; the
+//! monotonic samples only reveal a suspend. `max_suspend_gap_ms` is a PROVISIONAL DEVELOPMENT
+//! DETECTION TOLERANCE (not a physical guarantee): a change of `boottime - monotonic` since the
+//! anchor's reading above it is a suspend (`SuspendDetected`). A change at or below it is NOT
+//! forgiven, and it is charged ONCE, not once per reading: each anchor keeps the highest and the
+//! lowest gap among its own reading and every reading folded into it since, and the RANGE of those
+//! gaps (rounded UP to whole milliseconds) widens BOTH bounds. A suspend only ever RAISES the gap,
+//! so many small real suspends raise the highest gap step by step and add up exactly (independent
+//! review of 4 Oct 2026, MAJOR-1: they cannot accumulate invisibly); the pairing error of the two
+//! clock reads moves the gap both ways, so it contributes its observed AMPLITUDE once, however
+//! often the clock is read (the earlier rule summed every swing, so the widening grew with the
+//! number of readings, that is with message load). The capture window of every sample is charged
+//! the same way inside the calibration interval. Once the widened half-width exceeds
+//! `max_interval_half_width_ms` the clock is `IntervalTooWide`. Bookkeeping is two integers per
+//! anchor (highest and lowest gap); the arithmetic is exact and checked. What this cannot see: a
+//! suspend the kernel did not add to `CLOCK_BOOTTIME` at all changes neither counter's difference,
+//! so no comparison of the two can detect it, and a real suspend smaller than the jitter amplitude
+//! can hide inside it (Physical qualification items, docs/CLOCK-PROFILE-V1.md section 7).
+//!
+//! # Leap handling (Architect rulings, 3 Oct 2026)
+//!
+//! * L0 `Unassessed` (the initial state of every engine, so after every restart: Order C4; or a
+//!   view the adapter withdrew): the engine abstains until the adapter pushes a view. An existing
+//!   anchor is kept. No sample is admitted (`ClockError::LeapUnassessed`, before any state
+//!   change): without a view no interval can be shown to avoid an ambiguous zone.
+//! * L1 before the event: while the rolled UPPER bound is below the boundary of the view, the
+//!   status is exactly what it would be without a view.
+//! * L2 expiry: the first read whose rolled upper bound reaches the boundary yields
+//!   `Unqualified::LeapTransition` and the anchor is dropped for good (the transition is not
+//!   modelled). The last qualified read had `upper < boundary`, so its lower bound was valid.
+//! * L3 reassessment: `set_leap_view` first evaluates the existing anchor under the OLD view (a
+//!   new view can never revive an anchor that already violated the old one), then installs the new
+//!   view and evaluates again, so new information also applies to existing holdover. Every
+//!   evaluation also applies the admission predicate of L5 to the anchor's ADOPTED interval: an
+//!   anchor the new view would have refused as a sample is dropped (`LeapTransition`), so the order
+//!   in which a sample is adopted and an event is learned cannot matter.
+//! * L5 sample admission: a sample whose rolled interval (centre +/- its FULL uncertainty, rolled
+//!   over the capture age and widened by every engine term, not just its midpoint) reaches the
+//!   guard start of the view (the start of the ambiguous zone for `Pending`, the horizon for
+//!   `Clear`) is rejected with `SourceLeapAmbiguity` BEFORE any state is touched. A sample that
+//!   lies wholly below the guard start is unambiguous and carries NO extra uncertainty. The
+//!   predicate is ONE function (`LeapView::admits`), judged again under the lock that adopts.
+//! * Requalification after the event needs fresh authenticated samples; an inserted second also
+//!   waits for the high-water rule (`Regression`) until time has caught up.
+//!
+//! # Derivation of the ambiguous transition zone (nothing here is a tunable)
+//!
+//! Let `T` be the event boundary (POSIX milliseconds of 00:00:00 UTC after the last day of the event
+//! month on the civil calendar without leap seconds) and `S = LEAP_STEP_MS` the size of a leap
+//! second (UTC leap seconds are exactly +1 s or -1 s). "Nominal" time is the scale the engine
+//! advances (anchor reading plus elapsed, as if no step occurred). With POSIX-step semantics the OS
+//! clock shows the label `k(t)` at nominal instant `t`:
+//!
+//! ```text
+//! Insert: k(t) = t         for t <  T      k(t) = t - S   for t >= T      (labels [T-S, T) shown TWICE)
+//! Delete: k(t) = t         for t <  T - S  k(t) = t + S   for t >= T - S  (labels [T-S, T) shown NEVER)
+//! ```
+//!
+//! The mapping from a label to elapsed time is a function exactly where a label is shown once. The
+//! labels shown twice (Insert) or never (Delete) are the zone `Z = [T - S, T)` for BOTH kinds; the
+//! first instant at which the clock steps is `T` (Insert) or `T - S` (Delete). A sample is the
+//! closed interval of labels the true time may have at adoption; it is demonstrably unambiguous
+//! only if it does not touch `Z`, so the guard start is the zone start `T - S`, and the width of
+//! the guard around the event follows from the interval's own uncertainty, not from a constant.
+//! Adding `S` to a sample's uncertainty inside the zone cannot be used: half-width plus `S` always
+//! exceeds `FRESH_VOTE_MAX_UNCERTAINTY_MS` (= `S`), so abstention is the only available treatment
+//! (tested). A holdover anchor born below the zone expires at its own step instant (rule L2).
+//!
+//! # Rollback and discontinuities
+//!
+//! The engine never reads OS wall time. An OS clock step therefore cannot move voting authority.
+//! A calibration whose lower bound is below the highest lower bound this engine (or its persisted
+//! predecessor) already reported is a REGRESSION: it is not adopted and the clock abstains until
+//! authenticated calibrations catch up. A calibration disjoint from the holdover interval is a
+//! DISCONTINUITY: the clock abstains until `confirm_calibrations` consecutive mutually consistent
+//! calibrations re-establish it. A TPM supports continuity evidence only; it is not a UTC source
+//! and is not used here.
+//!
+//! # Persistence (BUILD8-CLOCK-ANCHOR-V2; Order C4, 4 Oct 2026)
+//!
+//! `persisted` snapshots the calibration EVIDENCE (profile with every explicit parameter, the
+//! adopted interval, the elapsed readings at calibration and at persist time, boot identity, the
+//! validity horizon, the high-water mark, the leap claim and a lineage sequence number) in a
+//! canonical, fixed-length, integrity-hashed record (`PersistedAnchor`).
+//!
+//! The record's hash is UNKEYED and the file is writable by whoever runs the node, so it is NOT
+//! integrity or rollback protection, and a persisted record NEVER grants qualification after a
+//! restart (Order C4). There is no engine function that installs an anchor from a record:
+//! `assess_restart` re-derives every check (profile, derived fields, boot identity, continuity
+//! since persist, the budget recomputed over all elapsed time since the ORIGINAL calibration) and
+//! returns DIAGNOSTIC evidence (`RestartEvidence`) without touching the engine, which stays
+//! unqualified until a fresh authenticated calibration. A forged record (a future calibration
+//! included) is closed by that refusal, not by an argument about what it could do once adopted.
+//! The only things a host may take from stored bytes are the high-water ratchet
+//! (`ratchet_high_water`, which can only refuse calibrations, never qualify one) and the leap claim
+//! as an unauthenticated, shorten-only hint (the host's leap policy, Order C11). A future protected
+//! backend (authenticated records, rollback-resistant lineage, protection outside the anchor-file
+//! writer's authority) would need a new, reviewed engine entry point; none exists. A version-1 or
+//! unknown-version record is refused outright. Format, rules and threat model:
+//! docs/CLOCK-PROFILE-V1.md, "Persistent clock anchor".
+use crate::{Hash, domain_hash, vote_clock_v1::{ClockReading, VoteClock}};
+use std::sync::{Arc, Mutex};
+
+mod anchor_v2;
+pub use anchor_v2::{
+    ANCHOR_DOMAIN, ANCHOR_VERSION, AnchorError, AnchorFormat, LINEAGE_DOMAIN, LegacySummary,
+    LineageMark, PersistedAnchor, classify_anchor, inspect_legacy_v1, lineage_check,
+};
+
+/// Frozen deployment profile. EVERY numeric bound must come from conservative device
+/// specifications and target measurements; there is deliberately no `Default`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClockProfile {
+    /// A sample claiming more uncertainty than this is rejected.
+    pub max_source_uncertainty_ms: u64,
+    /// A calibrated interval wider than this half-width is rejected.
+    pub max_calibration_half_width_ms: u64,
+    /// Minimum number of independent authenticated samples per calibration.
+    pub min_sources: u32,
+    /// Declared fault model: at most this many samples may be faulty. Requires N >= 2f + 1.
+    pub max_faulty_sources: u32,
+    /// Justified bound on the elapsed-source error, parts per billion.
+    pub drift_bound_ppb: u64,
+    /// Longest permitted holdover from the anchoring calibration.
+    pub max_holdover_ms: u64,
+    /// Qualification is lost when the interval half-width exceeds this.
+    pub max_interval_half_width_ms: u64,
+    /// Largest tolerated change of (boottime - monotonic) between two readings, in either direction:
+    /// growth is a suspend; the same bound absorbs the jitter of reading the two clocks in separate
+    /// calls (docs/CLOCK-PROFILE-V1.md, 5.6).
+    pub max_suspend_gap_ms: u64,
+    /// Consecutive mutually consistent calibrations required to (re)establish the clock.
+    pub confirm_calibrations: u32,
+}
+/// Architect ruling: no fresh vote is ever cast with more than this half-width of uncertainty.
+pub const FRESH_VOTE_MAX_UNCERTAINTY_MS: u64 = 1000;
+/// Settled initial calibration limit, including every uncertainty contribution.
+pub const INITIAL_CALIBRATION_MAX_UNCERTAINTY_MS: u64 = 250;
+/// Adapter granularity term added to every sample (`wall` read truncation), in ms.
+pub const ADAPTER_GRANULARITY_MS: u64 = 1;
+/// Rounding of the engine's roll (odd width / ceiling of the half-width), in ms. Together with the
+/// drift ceiling of the capture age (>= 1 ms for any positive capture age and ppb) this is the
+/// engine overhead added to a sample's own uncertainty before the calibration cap is checked.
+pub const ROLL_ROUNDING_MS: u64 = 1;
+/// Size of one leap-second step in milliseconds: a UTC leap second is exactly +1 s or -1 s, so a
+/// POSIX-step clock repeats or skips exactly this many milliseconds of labels. It is the defined
+/// size of the step in the timestamp mapping (see the module documentation), NOT a tunable guard
+/// width; no other duration is used to size the ambiguous zone.
+pub const LEAP_STEP_MS: u64 = 1000;
+
+/// Largest drift ppb (floored, never rounded up) such that `holdover_ms` of holdover widens a
+/// calibration of `calibration_ms` half-width to no more than `width_ms`:
+/// `ceil(holdover * ppb / 1e9) <= width - calibration`.
+pub fn drift_budget_ppb(holdover_ms: u64, calibration_ms: u64, width_ms: u64) -> Option<u64> {
+    let budget = width_ms.checked_sub(calibration_ms)?;
+    let n = u128::from(budget).checked_mul(1_000_000_000)?;
+    u64::try_from(n / u128::from(holdover_ms.max(1))).ok()
+}
+
+impl ClockProfile {
+    /// QUALIFICATION validation (budget rules). `validate` stays purely structural so generic
+    /// engine tests can use small profiles; a node profile must pass this as well. No hardware
+    /// drift ceiling is accepted or invented here: `drift_bound_ppb` is only checked for
+    /// consistency with the budget it must close.
+    ///
+    /// Overhead derivation (see docs/CLOCK-PROFILE-V1.md): a sample's uncertainty is
+    /// `U = ceil(E) + W + ADAPTER_GRANULARITY_MS`; after the capture-age roll the calibration
+    /// half-width is exactly `U + ROLL_ROUNDING_MS + g_cal` with `g_cal >= 1`; the calibration
+    /// cap `max_calibration_half_width_ms` therefore bounds the TOTAL initial uncertainty, and the
+    /// sample ceiling must leave `ROLL_ROUNDING_MS + 1` ms of room below it.
+    pub fn validate_qualification(&self) -> Result<(), ClockError> {
+        self.validate()?;
+        let bad = Err(ClockError::ProfileBudget);
+        // The host adapter supplies exactly one sample per calibration (chrony's own source
+        // selection is the fault model).
+        if self.min_sources != 1 || self.max_faulty_sources != 0 || self.drift_bound_ppb == 0
+            || self.max_calibration_half_width_ms > INITIAL_CALIBRATION_MAX_UNCERTAINTY_MS {
+            return bad;
+        }
+        let Some(g_min) = drift_ms(1, self.drift_bound_ppb) else { return bad };
+        let Some(room) = ROLL_ROUNDING_MS.checked_add(g_min) else { return bad };
+        match self.max_source_uncertainty_ms.checked_add(room) {
+            Some(v) if v <= self.max_calibration_half_width_ms => {}
+            _ => return bad,
+        }
+        let Some(drift) = drift_ms(self.max_holdover_ms, self.drift_bound_ppb) else { return bad };
+        match self.max_calibration_half_width_ms.checked_add(drift) {
+            Some(v) if v <= self.max_interval_half_width_ms => {}
+            _ => return bad,
+        }
+        if self.max_interval_half_width_ms > FRESH_VOTE_MAX_UNCERTAINTY_MS {
+            return bad;
+        }
+        Ok(())
+    }
+    /// Largest chrony maximum error `E` (ms) a sample may carry for a measurement window of
+    /// `window_ms` and still be accepted: `ceil(E) + W + 1 <= max_source_uncertainty_ms`.
+    pub fn max_chrony_error_ms(&self, window_ms: u64) -> Option<u64> {
+        self.max_source_uncertainty_ms
+            .checked_sub(ADAPTER_GRANULARITY_MS)?
+            .checked_sub(window_ms)
+    }
+    pub fn validate(&self) -> Result<(), ClockError> {
+        let ok = self.min_sources >= 1
+            && self.min_sources >= self.max_faulty_sources.saturating_mul(2).saturating_add(1)
+            && self.confirm_calibrations >= 1
+            && self.max_source_uncertainty_ms >= 1
+            && self.max_calibration_half_width_ms >= 1
+            && self.max_interval_half_width_ms >= self.max_calibration_half_width_ms
+            && self.max_holdover_ms >= 1
+            && self.drift_bound_ppb < 1_000_000_000;
+        if ok { Ok(()) } else { Err(ClockError::Profile) }
+    }
+    /// The nine identity-covered values in identity-preimage order. `id()` hashes exactly these
+    /// and the persisted anchor carries exactly these, so the two cannot diverge.
+    pub fn fields(&self) -> [u64; 9] {
+        [
+            self.max_source_uncertainty_ms,
+            self.max_calibration_half_width_ms,
+            u64::from(self.min_sources),
+            u64::from(self.max_faulty_sources),
+            self.drift_bound_ppb,
+            self.max_holdover_ms,
+            self.max_interval_half_width_ms,
+            self.max_suspend_gap_ms,
+            u64::from(self.confirm_calibrations),
+        ]
+    }
+    /// Inverse of `fields`; `None` when a 32-bit field does not fit.
+    pub fn from_fields(f: &[u64; 9]) -> Option<Self> {
+        Some(Self {
+            max_source_uncertainty_ms: f[0],
+            max_calibration_half_width_ms: f[1],
+            min_sources: u32::try_from(f[2]).ok()?,
+            max_faulty_sources: u32::try_from(f[3]).ok()?,
+            drift_bound_ppb: f[4],
+            max_holdover_ms: f[5],
+            max_interval_half_width_ms: f[6],
+            max_suspend_gap_ms: f[7],
+            confirm_calibrations: u32::try_from(f[8]).ok()?,
+        })
+    }
+    /// Identity bound into persisted anchors; any profile change invalidates them.
+    pub fn id(&self) -> Hash {
+        let mut b = Vec::new();
+        for v in self.fields() {
+            b.extend_from_slice(&v.to_be_bytes());
+        }
+        domain_hash(b"MUTINY-CLOCK-PROFILE-V1", &b)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockError {
+    Profile,
+    TooFewSources,
+    DuplicateSource,
+    Unauthenticated,
+    SourceUncertainty,
+    SourceDisagreement,
+    TooUncertain,
+    Regression,
+    Discontinuity,
+    ElapsedSource,
+    Arithmetic,
+    /// The profile violates a qualification budget rule (`validate_qualification`).
+    ProfileBudget,
+    /// The sample's interval reaches a leap boundary the engine cannot model.
+    SourceLeapAmbiguity,
+    /// No leap view is installed (start-up, or the adapter withdrew it): no interval can be shown
+    /// to avoid an ambiguous zone, so no sample is admitted (refused before any state change).
+    LeapUnassessed,
+}
+
+/// Kind of a pending leap second. POSIX step semantics: an insertion repeats a POSIX second, a
+/// deletion skips one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeapKind {
+    Insert,
+    Delete,
+}
+impl LeapKind {
+    /// First nominal instant at which the OS clock steps for an event at `boundary_ms` (the event
+    /// boundary `T`): `T` for an insertion (the label `T` is replaced by `T - S`), `T - S` for a
+    /// deletion (the label `T - S` is replaced by `T`). Holdover must expire before this instant.
+    pub fn step_begins_ms(self, boundary_ms: u64) -> u64 {
+        match self {
+            LeapKind::Insert => boundary_ms,
+            LeapKind::Delete => boundary_ms.saturating_sub(LEAP_STEP_MS),
+        }
+    }
+}
+/// The ambiguous label zone `[start, end)` of an event at `boundary_ms`, derived from the POSIX
+/// step mapping (module documentation): exactly the labels the OS clock shows twice (insertion) or
+/// never (deletion), `[T - S, T)` for both kinds. The mapping from such a label to elapsed time is
+/// not a function, so no sample interval that touches it can be interpreted.
+pub fn leap_ambiguity_zone_ms(boundary_ms: u64) -> (u64, u64) {
+    (boundary_ms.saturating_sub(LEAP_STEP_MS), boundary_ms)
+}
+/// What the host adapter currently stands behind. All instants are POSIX milliseconds on the
+/// NOMINAL scale (anchor interval plus elapsed, as if no step occurred).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeapView {
+    /// Initial state (every start-up, Order C4), or a view the adapter withdrew: the engine
+    /// abstains until a view is pushed.
+    Unassessed,
+    /// The adapter asserts that no transition begins before this nominal instant.
+    Clear { valid_until_ms: u64 },
+    /// A transition of `kind` is announced for the event boundary `boundary_ms`. Holdover expires
+    /// before the step instant (`LeapKind::step_begins_ms`) and a sample that touches the ambiguous
+    /// zone (`leap_ambiguity_zone_ms`) or lies beyond it is refused until the adapter resolves the
+    /// event.
+    Pending { kind: LeapKind, boundary_ms: u64 },
+}
+impl LeapView {
+    /// First nominal instant the view does not vouch for (`Unassessed` vouches for none): the step
+    /// instant of an announced event, the horizon of a clear. Public so that a host adapter can
+    /// compare views by the engine's own rule.
+    pub fn horizon_ms(&self) -> u64 {
+        match *self {
+            LeapView::Unassessed => 0,
+            LeapView::Clear { valid_until_ms } => valid_until_ms,
+            LeapView::Pending { kind, boundary_ms } => kind.step_begins_ms(boundary_ms),
+        }
+    }
+    /// Samples whose rolled interval reaches this instant are refused: the start of the ambiguous
+    /// zone for `Pending`, the horizon for `Clear` (an anchor born there would expire at once).
+    fn guard_start_ms(&self) -> Option<u64> {
+        match *self {
+            LeapView::Unassessed => None,
+            LeapView::Clear { valid_until_ms } => Some(valid_until_ms),
+            LeapView::Pending { boundary_ms, .. } => Some(leap_ambiguity_zone_ms(boundary_ms).0),
+        }
+    }
+    /// THE zone predicate (rule L5), the single function behind sample admission (`combine`, and
+    /// again under the adoption lock in `calibrate`) and behind the reassessment of an ADOPTED
+    /// interval (`evaluate`, hence `set_leap_view` and every status read): the closed interval of
+    /// labels whose highest label is `upper_ms` is demonstrably unambiguous under this view only if
+    /// it lies wholly below the guard start. `Unassessed` admits nothing.
+    fn admits(&self, upper_ms: u64) -> Result<(), ClockError> {
+        match self.guard_start_ms() {
+            None => Err(ClockError::LeapUnassessed),
+            Some(guard) if upper_ms >= guard => Err(ClockError::SourceLeapAmbiguity),
+            Some(_) => Ok(()),
+        }
+    }
+}
+/// The leap information a previous process stood behind when it persisted its anchor: a CLAIM
+/// ABOUT THE PAST, never authority. The engine does not trust it: `assess_restart` only hands it
+/// back (`RestartEvidence::leap`), and the host adapter may take at most a shorten-only hint from
+/// it (Order C4, C7, C9, C11); no clear and no anchor is ever re-established from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeapClaim {
+    /// Version of the host adapter's leap policy that produced `view`. A host that does not
+    /// recognise the version must discard the claim (calendar-only view), never extend it.
+    pub policy: u32,
+    pub view: LeapView,
+}
+/// What a persisted record shows about the previous process of this boot (Order C4): EVIDENCE for
+/// diagnostics and lineage, never authority. `HoldoverClock::assess_restart` produces it without
+/// touching the engine; the engine stays unqualified until a fresh authenticated calibration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestartEvidence {
+    /// Sequence number of the record (the host continues the lineage after it).
+    pub sequence: u64,
+    /// The previous process's leap claim: at most an unauthenticated, shorten-only hint (Order C11).
+    pub leap: LeapClaim,
+    /// What the record's anchor would report NOW had its process never stopped, recomputed over all
+    /// elapsed time since the ORIGINAL calibration by the engine's own drift and ledger rules (no
+    /// leap view applied). Diagnostic only: it is not installed and qualifies nothing.
+    pub would_be_lower_ms: u64,
+    pub would_be_half_width_ms: u64,
+    pub would_be_remaining_ms: u64,
+}
+/// Separate protected-owner checkpoint. Decoding is documentary and grants no
+/// authority. Ordinary unprotected PersistedAnchor/assess_restart remains
+/// unchanged. The dedicated owner must authenticate its current, final exact
+/// lineage/journal/binding and selected installation before the new entry.
+/// Retains the complete observed gap ledger, not only persist endpoints.
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub struct ProtectedCheckpoint {
+    anchor:PersistedAnchor,gap_high_ns:i128,gap_low_ns:i128,
+}
+impl ProtectedCheckpoint {
+    pub const LEN:usize=PersistedAnchor::LEN+32;
+    pub fn anchor(&self)->&PersistedAnchor {&self.anchor}
+    pub fn encode(&self)->Vec<u8> {
+        let mut raw=self.anchor.encode();raw.extend_from_slice(&self.gap_high_ns.to_be_bytes());
+        raw.extend_from_slice(&self.gap_low_ns.to_be_bytes());raw
+    }
+    pub fn decode(raw:&[u8])->Result<Self,AnchorError> {
+        if raw.len()!=Self::LEN {return Err(AnchorError::Inconsistent);}
+        let anchor=PersistedAnchor::decode(&raw[..PersistedAnchor::LEN])?;
+        let high=i128::from_be_bytes(raw[PersistedAnchor::LEN..PersistedAnchor::LEN+16].try_into().map_err(|_|AnchorError::Inconsistent)?);
+        let low=i128::from_be_bytes(raw[PersistedAnchor::LEN+16..].try_into().map_err(|_|AnchorError::Inconsistent)?);
+        let at=gap_ns(&anchor.at);let persisted=gap_ns(&anchor.persisted_at());
+        if low>high || low>at.min(persisted) || high<at.max(persisted)
+            || high.checked_sub(low).and_then(|n|u64::try_from(n).ok()).is_none() {return Err(AnchorError::Inconsistent);}
+        let value=Self{anchor,gap_high_ns:high,gap_low_ns:low};
+        if value.encode()!=raw {return Err(AnchorError::Inconsistent);}Ok(value)
+    }
+}
+
+/// One reading of the local elapsed-time source (Linux: CLOCK_MONOTONIC and CLOCK_BOOTTIME).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Elapsed {
+    /// Stops while the host is suspended.
+    pub monotonic_ns: u64,
+    /// Keeps counting through suspend.
+    pub boottime_ns: u64,
+    /// Identity of the current boot. Elapsed values are only comparable within one boot.
+    pub boot_id: u128,
+}
+pub trait ElapsedSource: Send + Sync {
+    fn read(&self) -> Option<Elapsed>;
+}
+
+/// An authenticated UTC interval `[lower_ms, upper_ms]` measured at `at` (the adapter's own
+/// elapsed-source reading at the measurement midpoint; uncertainty already includes round trip).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceSample {
+    pub source: String,
+    pub authenticated: bool,
+    pub utc_ms: u64,
+    pub uncertainty_ms: u64,
+    pub at: Elapsed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Anchor {
+    lower_ms: u64,
+    upper_ms: u64,
+    at: Elapsed,
+    /// Order C10: highest `boottime - monotonic` (ns) among `at` and every reading folded into
+    /// this anchor since. Real suspends only raise it; never lowered.
+    gap_high_ns: i128,
+    /// Order C10: lowest such gap (the pairing jitter's downward excursions). Never raised.
+    gap_low_ns: i128,
+}
+impl Anchor {
+    /// A freshly measured interval: nothing folded yet (an empty range).
+    fn measured(lower_ms: u64, upper_ms: u64, at: Elapsed) -> Self {
+        Self {
+            lower_ms,
+            upper_ms,
+            at,
+            gap_high_ns: gap_ns(&at),
+            gap_low_ns: gap_ns(&at),
+        }
+    }
+    /// The ledger (ns) including the reading `now` (not stored): the range of the observed gaps,
+    /// `max - min`. It depends on the gap VALUES observed, not on how many readings there were.
+    /// `None` only when it cannot be represented (fail closed).
+    fn ledger_to(&self, now: &Elapsed) -> Option<u64> {
+        let g = gap_ns(now);
+        let range = self.gap_high_ns.max(g).checked_sub(self.gap_low_ns.min(g))?;
+        u64::try_from(range).ok()
+    }
+}
+/// `boottime - monotonic` of one reading in nanoseconds (signed: the pairing error of the two
+/// clock reads can make it negative).
+fn gap_ns(e: &Elapsed) -> i128 {
+    i128::from(e.boottime_ns) - i128::from(e.monotonic_ns)
+}
+/// Change of the gap between two readings (ns), in either direction.
+fn gap_step_ns(from: &Elapsed, to: &Elapsed) -> Option<u64> {
+    u64::try_from((gap_ns(to) - gap_ns(from)).unsigned_abs()).ok()
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unqualified {
+    NeverCalibrated,
+    ElapsedSourceUnavailable,
+    ElapsedRegressed,
+    BootChanged,
+    SuspendDetected,
+    HoldoverExpired,
+    IntervalTooWide,
+    Arithmetic,
+    Regression,
+    Discontinuity,
+    /// No leap view is installed (start-up, or the adapter withdrew it). The anchor is kept.
+    LeapUnassessed,
+    /// The anchor met a leap event that is not modelled: its rolled interval reached the step
+    /// instant (holdover expired), or its ADOPTED interval is one the current view's admission
+    /// predicate refuses (it touches the ambiguous zone, or lies past an unresolved event).
+    LeapTransition,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Qualified {
+        lower_ms: u64,
+        half_width_ms: u64,
+        holdover_remaining_ms: u64,
+    },
+    Unqualified(Unqualified),
+}
+struct State {
+    anchor: Option<Anchor>,
+    /// Highest lower bound (ms) ever reported to a consumer, including a persisted predecessor.
+    high_water_ms: u64,
+    /// Why an anchor was dropped (reported until a new anchor is adopted).
+    fault: Option<Unqualified>,
+    /// Calibration awaiting confirmation (cold start, discontinuity, regression catch-up).
+    pending: Option<(Anchor, u32)>,
+    faults: u64,
+    leap: LeapView,
+}
+
+/// Same-lock engine decision snapshot, not authentication or qualification.
+/// The adopted reference is the EXACT existing Anchor::at, not a new wall-time
+/// claim about the state assignment. No caller constructor or Deserialize.
+pub struct CalibrationDecision {
+    adopted: Option<((u64,u64),Elapsed)>,
+    pending: Option<((u64,u64),Elapsed,u32)>,
+    fault: Option<Unqualified>, high_water_ms:u64, leap:LeapView,
+}
+impl CalibrationDecision {
+    pub fn adopted(&self)->Option<((u64,u64),Elapsed)> {self.adopted}
+    pub fn pending(&self)->Option<((u64,u64),Elapsed,u32)> {self.pending}
+    pub fn fault(&self)->Option<Unqualified> {self.fault}
+    pub fn high_water_ms(&self)->u64 {self.high_water_ms}
+    pub fn leap(&self)->LeapView {self.leap}
+}
+/// Diagnostic result of this invocation. `input` is the engine's actual read;
+/// `after_return` is a separate actual read AFTER the state lock was released.
+/// Neither is fabricated from the adapter's earlier retention capture. This
+/// type cannot restore an anchor, authenticate SourceSample or issue a clock.
+pub struct CalibrationResult {
+    outcome:Result<bool,ClockError>,input:Option<Elapsed>,
+    decision:Option<CalibrationDecision>,after_return:Option<Elapsed>,
+}
+impl CalibrationResult {
+    pub fn outcome(&self)->Result<bool,ClockError> {self.outcome}
+    pub fn input(&self)->Option<Elapsed> {self.input}
+    pub fn decision(&self)->Option<&CalibrationDecision> {self.decision.as_ref()}
+    pub fn after_return(&self)->Option<Elapsed> {self.after_return}
+}
+pub struct HoldoverClock {
+    profile: ClockProfile,
+    elapsed: Arc<dyn ElapsedSource>,
+    state: Mutex<State>,
+}
+fn drift_ms(d_ms: u64, ppb: u64) -> Option<u64> {
+    let n = u128::from(d_ms).checked_mul(u128::from(ppb))?;
+    u64::try_from(n.div_ceil(1_000_000_000)).ok()
+}
+impl HoldoverClock {
+    pub fn new(
+        profile: ClockProfile,
+        elapsed: Arc<dyn ElapsedSource>,
+    ) -> Result<Arc<Self>, ClockError> {
+        profile.validate()?;
+        Ok(Arc::new(Self {
+            profile,
+            elapsed,
+            state: Mutex::new(State {
+                anchor: None,
+                high_water_ms: 0,
+                fault: None,
+                pending: None,
+                faults: 0,
+                leap: LeapView::Unassessed,
+            }),
+        }))
+    }
+    pub fn profile(&self) -> &ClockProfile {
+        &self.profile
+    }
+    /// Continuity of the elapsed source between two readings of ONE boot: the boot identity is the
+    /// same, neither clock went backwards, and the gap `boottime - monotonic` changed by at most
+    /// the profile's suspend gap in EITHER direction. Returns the elapsed boottime in nanoseconds:
+    /// the elapsed time is always the difference of two boottime samples, never a monotonic one.
+    ///
+    /// Boottime counts through suspend and monotonic does not, so growth of the gap is a suspend
+    /// (unchanged rule: exactly the tolerated growth passes, one millisecond more does not). The
+    /// two clocks are read in separate calls, so each reading's gap also carries the time between
+    /// its samples, and a later reading's gap can be SMALLER with no suspend at all (independent
+    /// review, MAJOR-2: the previous zero-tolerance rule turned about half of all real reading
+    /// pairs into `SuspendDetected`). The gap may therefore also shrink by up to the same bound;
+    /// a larger shrink is impossible for a sane kernel and is refused the same way. The jitter
+    /// cannot move an interval (the elapsed time is boottime-only); it can only move the suspend
+    /// detector's threshold by its own size. No new constant: docs/CLOCK-PROFILE-V1.md, 5.6.
+    fn continuity(&self, from: &Elapsed, to: &Elapsed) -> Result<u64, Unqualified> {
+        if from.boot_id != to.boot_id {
+            return Err(Unqualified::BootChanged);
+        }
+        let boot = to
+            .boottime_ns
+            .checked_sub(from.boottime_ns)
+            .ok_or(Unqualified::ElapsedRegressed)?;
+        let mono = to
+            .monotonic_ns
+            .checked_sub(from.monotonic_ns)
+            .ok_or(Unqualified::ElapsedRegressed)?;
+        // Change of the gap in whole milliseconds (floored, as the growth rule always was), with
+        // the same tolerance for growth (boot > mono) and shrink (boot < mono).
+        let change_ms = boot.abs_diff(mono) / 1_000_000;
+        if change_ms > self.profile.max_suspend_gap_ms {
+            return Err(Unqualified::SuspendDetected);
+        }
+        Ok(boot)
+    }
+    /// Roll an interval measured at `from` forward to `to`, widening by the drift bound and by the
+    /// elapsed-time uncertainty ledger (Order C10): `ledger_ns` (the observed gap range), rounded UP
+    /// to whole milliseconds, is subtracted below and added above. At age `d` (whole ms, floored) with drift
+    /// `g = ceil(d * ppb / 1e9)` and widening `w = ceil(ledger_ns / 1e6)`:
+    /// lower `lo + d - g - w`, upper `hi + d + 1 + g + w` (checked; an underflow is `Arithmetic`).
+    fn roll(
+        &self,
+        lo: u64,
+        hi: u64,
+        from: &Elapsed,
+        to: &Elapsed,
+        ledger_ns: u64,
+    ) -> Result<(u64, u64), Unqualified> {
+        let boot = self.continuity(from, to)?;
+        let d_ms = boot / 1_000_000;
+        if d_ms > self.profile.max_holdover_ms {
+            return Err(Unqualified::HoldoverExpired);
+        }
+        let drift = drift_ms(d_ms, self.profile.drift_bound_ppb).ok_or(Unqualified::Arithmetic)?;
+        let widen = ledger_ns.div_ceil(1_000_000);
+        let below = drift.checked_add(widen).ok_or(Unqualified::Arithmetic)?;
+        let above = d_ms
+            .checked_add(1)
+            .and_then(|v| v.checked_add(drift))
+            .and_then(|v| v.checked_add(widen))
+            .ok_or(Unqualified::Arithmetic)?;
+        Ok((
+            lo.checked_add(d_ms)
+                .and_then(|v| v.checked_sub(below))
+                .ok_or(Unqualified::Arithmetic)?,
+            hi.checked_add(above).ok_or(Unqualified::Arithmetic)?,
+        ))
+    }
+    /// Every holdover check EXCEPT the leap view: (lower, upper, half-width, remaining). Recomputed
+    /// from the elapsed reading `now` every time (Order C3): nothing is cached between readings.
+    fn interval(&self, state: &State, now: &Elapsed) -> Result<(u64, u64, u64, u64), Unqualified> {
+        let a = state.anchor.as_ref().ok_or_else(|| {
+            state.fault.unwrap_or(Unqualified::NeverCalibrated)
+        })?;
+        let ledger = a.ledger_to(now).ok_or(Unqualified::Arithmetic)?;
+        let (lo, hi) = self.roll(a.lower_ms, a.upper_ms, &a.at, now, ledger)?;
+        let half = (hi - lo).div_ceil(2);
+        if half > self.profile.max_interval_half_width_ms {
+            return Err(Unqualified::IntervalTooWide);
+        }
+        let boot = now.boottime_ns - a.at.boottime_ns;
+        let remaining = self
+            .profile
+            .max_holdover_ms
+            .saturating_sub(boot / 1_000_000);
+        Ok((lo, hi, half, remaining))
+    }
+    /// Pure function of (anchor, leap view, now): leap rules L0-L3 on top of `interval`.
+    fn evaluate(&self, state: &State, now: &Elapsed) -> Result<(u64, u64, u64), Unqualified> {
+        let (lo, hi, half, remaining) = self.interval(state, now)?;
+        match state.leap {
+            LeapView::Unassessed => return Err(Unqualified::LeapUnassessed),
+            LeapView::Clear { .. } | LeapView::Pending { .. } => {
+                if hi >= state.leap.horizon_ms() || !Self::adopted_admitted(state) {
+                    return Err(Unqualified::LeapTransition);
+                }
+            }
+        }
+        Ok((lo, half, remaining))
+    }
+    /// L3: the anchor's ADOPTED interval passes the admission predicate (L5) of the CURRENT view.
+    /// An anchor adopted before an event was learned is judged exactly like a sample offered after
+    /// it, whichever came first. True without an anchor or without a view (L0 abstains instead).
+    fn adopted_admitted(state: &State) -> bool {
+        match (state.anchor, state.leap) {
+            (Some(a), LeapView::Clear { .. } | LeapView::Pending { .. }) => {
+                state.leap.admits(a.upper_ms).is_ok()
+            }
+            _ => true,
+        }
+    }
+    /// A calibration awaiting confirmation is judged by the same predicate: a candidate the
+    /// current view refuses is discarded, so it cannot count toward a confirmation.
+    fn discard_refused_candidate(state: &mut State) {
+        if let Some((candidate, _)) = state.pending
+            && state.leap.admits(candidate.upper_ms) == Err(ClockError::SourceLeapAmbiguity)
+        {
+            state.pending = None;
+        }
+    }
+    /// Order C10: fold the reading `now` into the live anchor's gap range (after it was evaluated).
+    /// A reading that failed a terminal check has already dropped the anchor; then nothing happens.
+    fn fold_reading(state: &mut State, now: &Elapsed) {
+        if let Some(a) = state.anchor.as_mut() {
+            match a.ledger_to(now) {
+                Some(_) => {
+                    let g = gap_ns(now);
+                    a.gap_high_ns = a.gap_high_ns.max(g);
+                    a.gap_low_ns = a.gap_low_ns.min(g);
+                }
+                // An overflowing ledger cannot be represented: the anchor cannot be trusted.
+                None => Self::drop_if_terminal(state, Unqualified::Arithmetic),
+            }
+        }
+    }
+    /// Drop the anchor for good on a terminal error (a missing leap view is NOT terminal).
+    fn drop_if_terminal(state: &mut State, reason: Unqualified) {
+        if reason != Unqualified::LeapUnassessed && state.anchor.is_some() {
+            state.anchor = None;
+            state.fault = Some(reason);
+            state.faults += 1;
+        }
+    }
+    /// Push the adapter's current leap view; returns whether it is now installed. The existing
+    /// anchor is first evaluated under the OLD view (so a new view can never revive holdover that
+    /// already violated it) and again under the NEW view, which includes the admission predicate on
+    /// the anchor's ADOPTED interval (L3): new leap information reassesses existing holdover at
+    /// once, whether the anchor was adopted before or after the event was learned. A
+    /// candidate awaiting confirmation that the new view refuses is discarded. When the elapsed
+    /// source cannot be read the old view cannot be assessed, so only a view that vouches for no
+    /// more than before (no later horizon AND no later guard start) is installed, and `false` is
+    /// returned otherwise: the host then runs no calibration in that poll. The caller must only
+    /// EXTEND a clear horizon on evidence it authenticated; the engine cannot judge that.
+    pub fn set_leap_view(&self, view: LeapView) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let Some(now) = self.elapsed.read() else {
+            let no_more = view.horizon_ms() <= state.leap.horizon_ms()
+                && view.guard_start_ms().unwrap_or(0) <= state.leap.guard_start_ms().unwrap_or(0);
+            if no_more {
+                state.leap = view;
+                // The predicate on the ADOPTED interval needs no elapsed reading.
+                if !Self::adopted_admitted(&state) {
+                    Self::drop_if_terminal(&mut state, Unqualified::LeapTransition);
+                }
+                Self::discard_refused_candidate(&mut state);
+            }
+            return no_more;
+        };
+        if let Err(reason) = self.evaluate(&state, &now) {
+            Self::drop_if_terminal(&mut state, reason);
+        }
+        state.leap = view;
+        if let Err(reason) = self.evaluate(&state, &now) {
+            Self::drop_if_terminal(&mut state, reason);
+        }
+        Self::fold_reading(&mut state, &now);
+        Self::discard_refused_candidate(&mut state);
+        true
+    }
+    pub fn leap_view(&self) -> LeapView {
+        self.state
+            .lock()
+            .map(|s| s.leap)
+            .unwrap_or(LeapView::Unassessed)
+    }
+    /// The anchor interval as ADOPTED (not rolled forward), for adapters that bound a leap view
+    /// by the anchor's own month end (Order C9). Read-only.
+    pub fn anchor_interval_ms(&self) -> Option<(u64, u64)> {
+        let state = self.state.lock().ok()?;
+        state.anchor.as_ref().map(|a| (a.lower_ms, a.upper_ms))
+    }
+    /// The anchor interval rolled forward to now, if every interval check passes. Read-only: it
+    /// never drops the anchor and ignores the leap view.
+    pub fn interval_ms(&self) -> Option<(u64, u64)> {
+        let state = self.state.lock().ok()?;
+        let now = self.elapsed.read()?;
+        self.interval(&state, &now).ok().map(|(lo, hi, ..)| (lo, hi))
+    }
+    /// Current status, recomputed from a fresh elapsed reading at EVERY call (Order C3): a decision
+    /// taken 4.9 s after the last poll sees the age, drift, ledger and holdover of that instant, not
+    /// the last poll's verdict. Never blocks on I/O; the lock is held only for a few integer
+    /// operations.
+    pub fn status(&self) -> Status {
+        let Ok(mut state) = self.state.lock() else {
+            return Status::Unqualified(Unqualified::Arithmetic);
+        };
+        let Some(now) = self.elapsed.read() else {
+            return Status::Unqualified(Unqualified::ElapsedSourceUnavailable);
+        };
+        let verdict = self.evaluate(&state, &now);
+        Self::fold_reading(&mut state, &now);
+        match verdict {
+            Ok((lo, half, remaining)) => {
+                if lo < state.high_water_ms {
+                    return Status::Unqualified(Unqualified::Regression);
+                }
+                state.high_water_ms = lo;
+                Status::Qualified {
+                    lower_ms: lo,
+                    half_width_ms: half,
+                    holdover_remaining_ms: remaining,
+                }
+            }
+            Err(reason) => {
+                // A broken anchor is dropped for good: only authenticated calibration can
+                // re-establish it (a boot change or suspend cannot be "waited out").
+                Self::drop_if_terminal(&mut state, reason);
+                Status::Unqualified(reason)
+            }
+        }
+    }
+    /// Conservative lower bound in milliseconds, or `None` while unqualified.
+    pub fn lower_bound_ms(&self) -> Option<u64> {
+        match self.status() {
+            Status::Qualified { lower_ms, .. } => Some(lower_ms),
+            Status::Unqualified(_) => None,
+        }
+    }
+    pub fn fault_count(&self) -> u64 {
+        self.state.lock().map(|s| s.faults).unwrap_or(u64::MAX)
+    }
+    /// Fold authenticated samples into one interval at `now`, or reject them. `view` is the leap
+    /// view the samples are judged under (L5). Each sample is rolled from its own reading to `now`
+    /// with the gap change of that capture window as its ledger (Order C10), so the calibration cap
+    /// (`TooUncertain`) is checked on the interval INCLUDING it.
+    fn combine(
+        &self,
+        samples: &[SourceSample],
+        now: &Elapsed,
+        view: &LeapView,
+    ) -> Result<(u64, u64), ClockError> {
+        let n = samples.len();
+        if n < self.profile.min_sources as usize {
+            return Err(ClockError::TooFewSources);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut los: Vec<u64> = Vec::with_capacity(n);
+        let mut his: Vec<u64> = Vec::with_capacity(n);
+        for s in samples {
+            if !s.authenticated {
+                return Err(ClockError::Unauthenticated);
+            }
+            if !seen.insert(s.source.as_str()) {
+                return Err(ClockError::DuplicateSource);
+            }
+            if s.uncertainty_ms > self.profile.max_source_uncertainty_ms {
+                return Err(ClockError::SourceUncertainty);
+            }
+            let lo = s
+                .utc_ms
+                .checked_sub(s.uncertainty_ms)
+                .ok_or(ClockError::Arithmetic)?;
+            let hi = s
+                .utc_ms
+                .checked_add(s.uncertainty_ms)
+                .ok_or(ClockError::Arithmetic)?;
+            let capture = gap_step_ns(&s.at, now).ok_or(ClockError::Arithmetic)?;
+            let (lo, hi) = self
+                .roll(lo, hi, &s.at, now, capture)
+                .map_err(|_| ClockError::ElapsedSource)?;
+            // L5: an interval that reaches a leap boundary cannot identify the physical side of
+            // a repeated/skipped second, and an anchor born at the boundary would die at once.
+            // Refused before ANY state change, so valid holdover is untouched.
+            view.admits(hi)?;
+            los.push(lo);
+            his.push(hi);
+        }
+        // Declared fault model: at most `f` samples are faulty, every correct interval contains
+        // the true time. The true time therefore lies in a region covered by at least N-f
+        // intervals; all such regions are inside the hull computed here (they cannot be disjoint
+        // because N >= 2f+1). No such region means more than `f` sources disagree: REJECT.
+        let need = n - (self.profile.max_faulty_sources as usize).min(n - 1);
+        let mut events: Vec<(u64, i32)> = Vec::with_capacity(2 * n);
+        for i in 0..n {
+            events.push((los[i], 1));
+            events.push((his[i], -1));
+        }
+        // Closed intervals: at equal coordinates, starts are processed before ends.
+        events.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        let (mut count, mut first, mut last) = (0i64, None, None);
+        for (coord, delta) in events {
+            if delta < 0 && count >= need as i64 {
+                last = Some(coord);
+            }
+            count += i64::from(delta);
+            if delta > 0 && count >= need as i64 && first.is_none() {
+                first = Some(coord);
+            }
+        }
+        let (Some(lower), Some(upper)) = (first, last) else {
+            return Err(ClockError::SourceDisagreement);
+        };
+        if lower > upper {
+            return Err(ClockError::SourceDisagreement);
+        }
+        if (upper - lower).div_ceil(2) > self.profile.max_calibration_half_width_ms {
+            return Err(ClockError::TooUncertain);
+        }
+        Ok((lower, upper))
+    }
+    /// Offer authenticated samples. `Ok(true)` when the clock is (now) anchored by them,
+    /// `Ok(false)` when they were consistent but more confirmations are required.
+    pub fn calibrate(&self, samples: &[SourceSample]) -> Result<bool, ClockError> {
+        self.calibrate_inner(samples,&mut None,&mut None)
+    }
+    /// Optional diagnostic hook. The original calibration has unchanged checks,
+    /// reads and lock ordering; only this explicit recorded variant adds a
+    /// completion read after all decision locks. Failure of that read records
+    /// None, without replacing the original calibration outcome.
+    pub fn calibrate_recorded(&self,samples:&[SourceSample])->CalibrationResult {
+        let mut input=None;let mut decision=None;
+        let outcome=self.calibrate_inner(samples,&mut input,&mut decision);
+        let after_return=if decision.is_some() {self.elapsed.read()}else{None};
+        CalibrationResult {outcome,input,decision,after_return}
+    }
+    fn calibrate_inner(&self,samples:&[SourceSample],input:&mut Option<Elapsed>,
+        decision:&mut Option<CalibrationDecision>)->Result<bool,ClockError> {
+        // L0: without a leap view no interval can be shown to avoid an ambiguous zone, so no sample
+        // is admitted, before any state change (an existing anchor is kept and keeps abstaining).
+        let view = self.state.lock().map_err(|_| ClockError::Arithmetic)?.leap;
+        if view == LeapView::Unassessed {
+            return Err(ClockError::LeapUnassessed);
+        }
+        let now = self.elapsed.read().ok_or(ClockError::ElapsedSource)?;
+        *input=Some(now);
+        let (lo, hi) = self.combine(samples, &now, &view)?;
+        let candidate = Anchor::measured(lo, hi, now);
+        let mut state = self.state.lock().map_err(|_| ClockError::Arithmetic)?;
+        let outcome=(|| {
+        // The samples were judged under the view read above, under an EARLIER lock (the elapsed
+        // read and the combination run without it). A view pushed in between by another caller is
+        // applied here with the same predicate, before anything is adopted or kept as a candidate;
+        // a view pushed later reassesses the adopted interval (L3), and every evaluation applies
+        // the predicate to it, so no interleaving can produce a qualified reading from an interval
+        // the current view refuses. Production has one calling thread (the `HostClock` poll, the
+        // only caller of `calibrate` and `set_leap_view`); this keeps the API safe for any caller.
+        state.leap.admits(hi)?;
+        // Is there a live holdover interval to be consistent with?
+        let current = self.evaluate(&state, &now).ok();
+        Self::fold_reading(&mut state, &now);
+        if let Some((cl, ch)) = current.map(|(l, half, _)| (l, l.saturating_add(half * 2))) {
+            let consistent = lo <= ch && cl <= hi;
+            if consistent && lo >= state.high_water_ms {
+                // Adopt the (never wider than the sample) intersection-free fresh interval: the
+                // new authenticated interval replaces the drifted one.
+                state.anchor = Some(candidate);
+                state.pending = None;
+                state.fault = None;
+                return Ok(true);
+            }
+            if consistent {
+                // Lower bound below what was already reported: keep the old anchor, do not adopt.
+                state.faults += 1;
+                return Err(ClockError::Regression);
+            }
+            // Disjoint from a live holdover interval: discontinuity. Drop the anchor, abstain.
+            state.anchor = None;
+            state.fault = Some(Unqualified::Discontinuity);
+            state.faults += 1;
+            state.pending = Some((candidate, 1));
+            return self.confirm(&mut state, ClockError::Discontinuity);
+        }
+        if lo < state.high_water_ms {
+            state.faults += 1;
+            state.fault = Some(Unqualified::Regression);
+            state.pending = None;
+            return Err(ClockError::Regression);
+        }
+        match state.pending {
+            None => {
+                state.pending = Some((candidate, 1));
+            }
+            Some((prev, count)) => {
+                let (pl, ph) = prev
+                    .ledger_to(&now)
+                    .ok_or(Unqualified::Arithmetic)
+                    .and_then(|ledger| {
+                        self.roll(prev.lower_ms, prev.upper_ms, &prev.at, &now, ledger)
+                    })
+                    .map_err(|_| ClockError::ElapsedSource)
+                    .unwrap_or((u64::MAX, 0));
+                if lo <= ph && pl <= hi {
+                    state.pending = Some((candidate, count + 1));
+                } else {
+                    state.faults += 1;
+                    state.pending = Some((candidate, 1));
+                }
+            }
+        }
+        self.confirm(&mut state, ClockError::Discontinuity)
+        })();
+        // Snapshot before releasing the SAME decision lock, including refused
+        // current leap view, retained old anchor or pending confirmation state.
+        *decision=Some(CalibrationDecision {
+            adopted:state.anchor.map(|a|((a.lower_ms,a.upper_ms),a.at)),
+            pending:state.pending.map(|(a,count)|((a.lower_ms,a.upper_ms),a.at,count)),
+            fault:state.fault,high_water_ms:state.high_water_ms,leap:state.leap,
+        });
+        outcome
+    }
+    fn confirm(&self, state: &mut State, _why: ClockError) -> Result<bool, ClockError> {
+        let Some((anchor, count)) = state.pending else {
+            return Ok(false);
+        };
+        if count >= self.profile.confirm_calibrations {
+            state.anchor = Some(anchor);
+            state.pending = None;
+            state.fault = None;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Largest elapsed age (ms since the calibration) at which the profile's checks still hold for
+    /// an adopted interval `[lower, upper]` with an EMPTY ledger: the holdover limit, and the
+    /// interval-width limit under the drift rule. At age `d` the rolled half-width is
+    /// `g(d) + w + ceil((width + 1) / 2)` with `g(d) = ceil(d * ppb / 1e9)` and the ledger widening
+    /// `w` (see `roll`), so with `w = 0` the width limit allows exactly
+    /// `d <= floor((limit - ceil((width + 1) / 2)) * 1e9 / ppb)`; a non-empty ledger only makes the
+    /// anchor expire earlier. This is the record's `validity_horizon_ms` (diagnostic since Order C4).
+    /// `None` when even age 0 is too wide.
+    fn validity_horizon_ms(&self, lower: u64, upper: u64) -> Option<u64> {
+        let base = upper.checked_sub(lower)?.checked_add(1)?.div_ceil(2);
+        let room = self.profile.max_interval_half_width_ms.checked_sub(base)?;
+        let by_width = if self.profile.drift_bound_ppb == 0 {
+            u64::MAX
+        } else {
+            let n = u128::from(room).checked_mul(1_000_000_000)?;
+            u64::try_from(n / u128::from(self.profile.drift_bound_ppb)).unwrap_or(u64::MAX)
+        };
+        Some(by_width.min(self.profile.max_holdover_ms))
+    }
+
+    /// Snapshot the live anchor as a durable record, or `None` when there is no valid anchor to
+    /// persist. `sequence` (>= 1) is the caller's lineage number and `leap_policy` the host
+    /// adapter's leap-policy version, carried inside the leap claim. The record holds the
+    /// calibration EVIDENCE (profile, adopted interval, elapsed readings, drift rules, validity
+    /// horizon, leap claim, high-water mark), never a "qualified" flag and never a current
+    /// uncertainty. Every holdover check is re-derived first: an anchor that is no longer valid is
+    /// dropped here and nothing is written for it, and the high-water mark is refreshed exactly as
+    /// a report to a consumer would refresh it.
+    pub fn persisted(&self, sequence: u64, leap_policy: u32) -> Option<PersistedAnchor> {
+        self.protected_checkpoint(sequence,leap_policy).map(|value|value.anchor)
+    }
+    /// Snapshot one real engine state/capture including complete gap extrema.
+    /// This is local implementation evidence, not a new public proof format.
+    pub fn protected_checkpoint(&self,sequence:u64,leap_policy:u32)->Option<ProtectedCheckpoint> {
+        if sequence == 0 {
+            return None;
+        }
+        let mut state = self.state.lock().ok()?;
+        let now = self.elapsed.read()?;
+        let verdict = self.evaluate(&state, &now);
+        Self::fold_reading(&mut state, &now);
+        match verdict {
+            Ok((lo, ..)) => {
+                if lo >= state.high_water_ms {
+                    state.high_water_ms = lo;
+                }
+            }
+            // A missing leap view does not invalidate the anchor; the claim simply says so.
+            Err(Unqualified::LeapUnassessed) => {}
+            Err(reason) => Self::drop_if_terminal(&mut state, reason),
+        }
+        let a = state.anchor?;
+        let width = a.upper_ms.checked_sub(a.lower_ms)?;
+        let anchor=PersistedAnchor {
+            params: self.profile.clone(),
+            sequence,
+            lower_ms: a.lower_ms,
+            upper_ms: a.upper_ms,
+            half_width_ms: width.div_ceil(2),
+            at: a.at,
+            validity_horizon_ms: self.validity_horizon_ms(a.lower_ms, a.upper_ms)?,
+            persisted_monotonic_ns: now.monotonic_ns,
+            persisted_boottime_ns: now.boottime_ns,
+            high_water_ms: state.high_water_ms,
+            leap: LeapClaim {
+                policy: leap_policy,
+                view: state.leap,
+            },
+        };
+        Some(ProtectedCheckpoint{anchor,gap_high_ns:a.gap_high_ns,gap_low_ns:a.gap_low_ns})
+    }
+    /// The highest lower bound reported so far (the high-water mark). A poisoned lock cannot have
+    /// corrupted an integer, so the real value is returned: a sentinel here would be written into the
+    /// durable lineage mark and refuse every honest calibration after the next start.
+    pub fn persisted_high_water(&self) -> u64 {
+        match self.state.lock() {
+            Ok(state) => state.high_water_ms,
+            Err(poisoned) => poisoned.into_inner().high_water_ms,
+        }
+    }
+    /// Raise the high-water mark (never lowers it). For a host that learned a mark from stored
+    /// bytes: the mark is a ratchet that can only REFUSE calibrations (`Regression`), never qualify
+    /// one, so honouring it can only make the clock stricter. A forged far-future mark therefore
+    /// denies fresh votes until real time reaches it; it can never make one premature.
+    pub fn ratchet_high_water(&self, ms: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            state.high_water_ms = state.high_water_ms.max(ms);
+        }
+    }
+    /// Verify a persisted record as EVIDENCE about the previous process of this boot (Order C4).
+    /// This never installs an anchor and never changes the engine: whatever the record says, the
+    /// engine stays exactly as it was (a restarted engine: unqualified until a fresh authenticated
+    /// calibration). The unkeyed record is not integrity or rollback protection, so it grants no
+    /// qualification; this function exists for operator diagnostics and lineage, and its checks
+    /// say precisely why a record could not even be evidence:
+    ///
+    /// 1. the profile identity AND every explicit parameter equal this clock's profile (`Profile`);
+    /// 2. every derived field (half-width, validity horizon) equals its recomputation, the interval
+    ///    respects the calibration cap, and the persist instant lies in the calibration's boot, not
+    ///    before the calibration and without a suspend in between (`Inconsistent`);
+    /// 3. the elapsed source is readable and the boot identity equals the current one;
+    /// 4. the elapsed source is continuous since persist (no suspend, no regression);
+    /// 5. recomputed over all elapsed time since the ORIGINAL calibration (with the gap changes
+    ///    inside the record and since persist in its ledger, Order C10) the anchor would still be
+    ///    within the holdover and width limits.
+    ///
+    /// On success the evidence carries what that anchor would report now, the record's sequence
+    /// and its leap claim, for the host to log; nothing in it is authority.
+    pub fn assess_restart(&self, p: &PersistedAnchor) -> Result<RestartEvidence, AnchorError> {
+        if p.params != self.profile || p.params.id() != self.profile.id() {
+            return Err(AnchorError::Profile);
+        }
+        let width = p
+            .upper_ms
+            .checked_sub(p.lower_ms)
+            .ok_or(AnchorError::Inconsistent)?;
+        if p.half_width_ms != width.div_ceil(2)
+            || p.half_width_ms > self.profile.max_calibration_half_width_ms
+            || self.validity_horizon_ms(p.lower_ms, p.upper_ms) != Some(p.validity_horizon_ms)
+            || self.continuity(&p.at, &p.persisted_at()).is_err()
+        {
+            return Err(AnchorError::Inconsistent);
+        }
+        let now = self.elapsed.read().ok_or(AnchorError::Unqualified(
+            Unqualified::ElapsedSourceUnavailable,
+        ))?;
+        if now.boot_id != p.at.boot_id {
+            return Err(AnchorError::Unqualified(Unqualified::BootChanged));
+        }
+        let persisted = p.persisted_at();
+        self.continuity(&persisted, &now)
+            .map_err(AnchorError::Unqualified)?;
+        // A PROBE state, local to this function: the engine's own state is never touched.
+        let probe = State {
+            anchor: Some(Anchor {
+                lower_ms: p.lower_ms,
+                upper_ms: p.upper_ms,
+                at: p.at,
+                gap_high_ns: gap_ns(&p.at).max(gap_ns(&persisted)),
+                gap_low_ns: gap_ns(&p.at).min(gap_ns(&persisted)),
+            }),
+            high_water_ms: 0,
+            fault: None,
+            pending: None,
+            faults: 0,
+            leap: LeapView::Unassessed,
+        };
+        // Every holdover check except the leap view, recomputed from the ORIGINAL calibration.
+        let (lower, _, half, remaining) = self
+            .interval(&probe, &now)
+            .map_err(AnchorError::Unqualified)?;
+        Ok(RestartEvidence {
+            sequence: p.sequence,
+            leap: p.leap,
+            would_be_lower_ms: lower,
+            would_be_half_width_ms: half,
+            would_be_remaining_ms: remaining,
+        })
+    }
+    /// Low-level protected-owner restoration algorithm, distinct from diagnostic
+    /// assess_restart. This method cannot authenticate bytes or issue a Node
+    /// clock. ONLY the private dedicated-owner factory may invoke it after its
+    /// native history, exact selected deployment/current and qualification gates.
+    /// No fresh calibration, cleared age, counter reset or revived terminal fault.
+    pub fn restore_protected_same_boot(&self,checkpoint:&ProtectedCheckpoint,
+        leap_policy:u32,leap:LeapView)->Result<RestartEvidence,AnchorError> {
+        let p=checkpoint.anchor();
+        if checkpoint.encode().len()!=ProtectedCheckpoint::LEN
+            || ProtectedCheckpoint::decode(&checkpoint.encode())?!=*checkpoint
+            || p.leap.policy!=leap_policy || p.leap.view!=leap || matches!(leap,LeapView::Unassessed) {
+            return Err(AnchorError::Inconsistent);
+        }
+        self.assess_restart(p)?; // All inherited profile/derived/boot/age checks.
+        let mut state=self.state.lock().map_err(|_|AnchorError::Inconsistent)?;
+        if state.anchor.is_some() || state.pending.is_some() || state.fault.is_some() || state.faults!=0 {
+            return Err(AnchorError::Inconsistent);
+        }
+        let now=self.elapsed.read().ok_or(AnchorError::Unqualified(Unqualified::ElapsedSourceUnavailable))?;
+        self.continuity(&p.persisted_at(),&now).map_err(AnchorError::Unqualified)?;
+        let mut candidate=State {anchor:Some(Anchor {lower_ms:p.lower_ms,upper_ms:p.upper_ms,at:p.at,
+            gap_high_ns:checkpoint.gap_high_ns,gap_low_ns:checkpoint.gap_low_ns}),
+            high_water_ms:state.high_water_ms.max(p.high_water_ms),fault:None,pending:None,faults:0,leap};
+        // Full original-age and cumulative gap ledger plus preserved leap rule.
+        let(lower,half,remaining)=self.evaluate(&candidate,&now).map_err(AnchorError::Unqualified)?;
+        if lower<candidate.high_water_ms {return Err(AnchorError::Unqualified(Unqualified::Regression));}
+        candidate.high_water_ms=lower;Self::fold_reading(&mut candidate,&now);
+        if candidate.anchor.is_none(){return Err(AnchorError::Inconsistent);}
+        *state=candidate;
+        Ok(RestartEvidence{sequence:p.sequence,leap:p.leap,would_be_lower_ms:lower,
+            would_be_half_width_ms:half,would_be_remaining_ms:remaining})
+    }
+}
+impl VoteClock for HoldoverClock {
+    fn reading(&self) -> ClockReading {
+        match self.lower_bound_ms() {
+            Some(ms) => ClockReading::Qualified {
+                utc_seconds: ms / 1000,
+            },
+            None => ClockReading::Unqualified,
+        }
+    }
+}
+
+/// Conservative UTC basis shared by the voter guard AND the proposer/operation admission.
+pub trait TimeBasis: Send + Sync {
+    /// Conservative lower bound in milliseconds, `None` while unqualified.
+    fn lower_bound_ms(&self) -> Option<u64>;
+    /// Whole seconds: floor of the lower bound.
+    fn seconds(&self) -> Option<u64> {
+        self.lower_bound_ms().map(|ms| ms / 1000)
+    }
+}
+impl TimeBasis for HoldoverClock {
+    fn lower_bound_ms(&self) -> Option<u64> {
+        HoldoverClock::lower_bound_ms(self)
+    }
+}
+impl<T: TimeBasis + ?Sized> TimeBasis for Arc<T> {
+    fn lower_bound_ms(&self) -> Option<u64> {
+        (**self).lower_bound_ms()
+    }
+}
+
+/// Deterministic elapsed source for tests and qualification harnesses. NOT a production source.
+#[derive(Debug)]
+pub struct ControlledElapsed {
+    inner: Mutex<Option<Elapsed>>,
+}
+impl ControlledElapsed {
+    pub fn start(boot_id: u128) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(Some(Elapsed {
+                monotonic_ns: 1_000_000_000,
+                boottime_ns: 1_000_000_000,
+                boot_id,
+            })),
+        })
+    }
+    /// Time passes with the host running.
+    pub fn run(&self, ms: u64) {
+        if let Some(e) = self.inner.lock().unwrap().as_mut() {
+            e.monotonic_ns += ms * 1_000_000;
+            e.boottime_ns += ms * 1_000_000;
+        }
+    }
+    /// Time passes while the host is suspended (boottime only).
+    pub fn suspend(&self, ms: u64) {
+        if let Some(e) = self.inner.lock().unwrap().as_mut() {
+            e.boottime_ns += ms * 1_000_000;
+        }
+    }
+    pub fn reboot(&self, boot_id: u128) {
+        *self.inner.lock().unwrap() = Some(Elapsed {
+            monotonic_ns: 5_000_000,
+            boottime_ns: 5_000_000,
+            boot_id,
+        });
+    }
+    pub fn regress_boottime(&self, ms: u64) {
+        if let Some(e) = self.inner.lock().unwrap().as_mut() {
+            e.boottime_ns = e.boottime_ns.saturating_sub(ms * 1_000_000);
+        }
+    }
+    pub fn fail(&self) {
+        *self.inner.lock().unwrap() = None;
+    }
+    pub fn now(&self) -> Elapsed {
+        self.inner.lock().unwrap().unwrap()
+    }
+}
+impl ElapsedSource for ControlledElapsed {
+    fn read(&self) -> Option<Elapsed> {
+        *self.inner.lock().unwrap()
+    }
+}
+/// Fixed basis for tests of proposer/admission wiring. NOT a production source.
+#[derive(Debug)]
+pub struct FixedBasis(pub std::sync::atomic::AtomicU64, pub std::sync::atomic::AtomicBool);
+impl FixedBasis {
+    pub fn at_ms(ms: u64) -> Arc<Self> {
+        Arc::new(Self(
+            std::sync::atomic::AtomicU64::new(ms),
+            std::sync::atomic::AtomicBool::new(true),
+        ))
+    }
+    pub fn set(&self, ms: u64) {
+        self.0.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn set_qualified(&self, q: bool) {
+        self.1.store(q, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl TimeBasis for FixedBasis {
+    fn lower_bound_ms(&self) -> Option<u64> {
+        if self.1.load(std::sync::atomic::Ordering::SeqCst) {
+            Some(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct CountedCapture {
+        at:Elapsed,reads:std::sync::atomic::AtomicU64,fail_second:bool,
+    }
+    impl ElapsedSource for CountedCapture {
+        fn read(&self)->Option<Elapsed> {
+            let read=self.reads.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+            if self.fail_second && read==2 {return None;}
+            Some(Elapsed {monotonic_ns:self.at.monotonic_ns+read*1_000_000,
+                boottime_ns:self.at.boottime_ns+read*1_000_000,boot_id:self.at.boot_id})
+        }
+    }
+    fn capture_clock(fail_second:bool)->(Arc<HoldoverClock>,Arc<CountedCapture>,Vec<SourceSample>) {
+        let at=Elapsed {monotonic_ns:1_000_000_000,boottime_ns:2_000_000_000,boot_id:7};
+        let source=Arc::new(CountedCapture {at,reads:std::sync::atomic::AtomicU64::new(0),fail_second});
+        let clock=HoldoverClock::new(profile(),source.clone()).unwrap();assert!(clock.set_leap_view(OPEN));
+        source.reads.store(0,std::sync::atomic::Ordering::SeqCst);
+        let samples=(1..=3).map(|n|SourceSample {source:format!("MODELED-{n}"),authenticated:true,
+            utc_ms:10_000_000,uncertainty_ms:100,at}).collect();
+        (clock,source,samples)
+    }
+    #[test]
+    fn modeled_recorded_calibration_uses_actual_input_and_distinct_post_return_capture() {
+        let (plain,plain_source,samples)=capture_clock(false);
+        let (recorded,recorded_source,_)=capture_clock(false);
+        let result=recorded.calibrate_recorded(&samples);
+        assert_eq!(result.outcome(),plain.calibrate(&samples));
+        assert_eq!(plain_source.reads.load(std::sync::atomic::Ordering::SeqCst),1);
+        assert_eq!(recorded_source.reads.load(std::sync::atomic::Ordering::SeqCst),2);
+        let input=result.input().unwrap();let completion=result.after_return().unwrap();
+        assert_eq!(completion.monotonic_ns-input.monotonic_ns,1_000_000);
+        let adopted=result.decision().unwrap().adopted().unwrap();assert_eq!(adopted.1,input);
+        assert_eq!(Some(adopted.0),plain.anchor_interval_ms());
+        assert_eq!(recorded.anchor_interval_ms(),plain.anchor_interval_ms());
+        assert_eq!(recorded.fault_count(),plain.fault_count());
+    }
+    #[test]
+    fn modeled_recorded_calibration_predecision_refusal_does_not_invent_capture_or_commit() {
+        let at=Elapsed {monotonic_ns:1,boottime_ns:1,boot_id:7};
+        let source=Arc::new(CountedCapture {at,reads:std::sync::atomic::AtomicU64::new(0),fail_second:false});
+        let unassessed=HoldoverClock::new(profile(),source.clone()).unwrap();
+        let refused=unassessed.calibrate_recorded(&[]);
+        assert_eq!(refused.outcome(),Err(ClockError::LeapUnassessed));
+        assert!(refused.input().is_none() && refused.decision().is_none() && refused.after_return().is_none());
+        assert_eq!(source.reads.load(std::sync::atomic::Ordering::SeqCst),0);
+        let (clock,source,samples)=capture_clock(false);
+        let refused=clock.calibrate_recorded(&samples[..2]);
+        assert_eq!(refused.outcome(),Err(ClockError::TooFewSources));
+        assert!(refused.input().is_some() && refused.decision().is_none() && refused.after_return().is_none());
+        assert_eq!(source.reads.load(std::sync::atomic::Ordering::SeqCst),1);
+        assert!(clock.anchor_interval_ms().is_none());
+    }
+    #[test]
+    fn modeled_recorded_completion_unavailable_preserves_original_success_and_exact_snapshot() {
+        let (clock,_,samples)=capture_clock(true);let result=clock.calibrate_recorded(&samples);
+        assert_eq!(result.outcome(),Ok(true));assert!(result.after_return().is_none());
+        assert_eq!(result.decision().unwrap().adopted().unwrap().1,result.input().unwrap());
+        assert!(clock.anchor_interval_ms().is_some());
+    }
+    #[test]
+    fn modeled_recorded_regression_retains_same_lock_refusal_highwater_without_false_commit() {
+        let (clock,_,samples)=capture_clock(false);clock.ratchet_high_water(20_000_000);
+        let result=clock.calibrate_recorded(&samples);assert_eq!(result.outcome(),Err(ClockError::Regression));
+        let decision=result.decision().unwrap();assert!(decision.adopted().is_none());
+        assert!(decision.pending().is_none());assert_eq!(decision.fault(),Some(Unqualified::Regression));
+        assert_eq!(decision.high_water_ms(),20_000_000);assert!(result.after_return().is_some());
+    }
+    /// Explicitly controlled TEST profile. Not a device profile; no production claim.
+    fn profile() -> ClockProfile {
+        ClockProfile {
+            max_source_uncertainty_ms: 500,
+            max_calibration_half_width_ms: 400,
+            min_sources: 3,
+            max_faulty_sources: 1,
+            drift_bound_ppb: 100_000, // 100 ppm, TEST VALUE
+            max_holdover_ms: 3_600_000,
+            max_interval_half_width_ms: 2_000,
+            max_suspend_gap_ms: 50,
+            confirm_calibrations: 1,
+        }
+    }
+    /// A view that vouches for everything: used by tests that are not about leap handling.
+    const OPEN: LeapView = LeapView::Clear {
+        valid_until_ms: u64::MAX,
+    };
+    fn assessed(p: ClockProfile, e: Arc<ControlledElapsed>) -> Arc<HoldoverClock> {
+        let c = HoldoverClock::new(p, e).unwrap();
+        c.set_leap_view(OPEN);
+        c
+    }
+    fn sample(name: &str, utc: u64, unc: u64, at: Elapsed) -> SourceSample {
+        SourceSample {
+            source: name.into(),
+            authenticated: true,
+            utc_ms: utc,
+            uncertainty_ms: unc,
+            at,
+        }
+    }
+    fn three(e: &ControlledElapsed, utc: u64) -> Vec<SourceSample> {
+        let at = e.now();
+        vec![
+            sample("a", utc, 100, at),
+            sample("b", utc + 10, 100, at),
+            sample("c", utc - 10, 100, at),
+        ]
+    }
+    fn clock() -> (Arc<HoldoverClock>, Arc<ControlledElapsed>) {
+        let e = ControlledElapsed::start(7);
+        (assessed(profile(), e.clone()), e)
+    }
+    #[test]
+    fn fail_closed_until_calibrated_and_floor_of_lower_bound() {
+        let (c, e) = clock();
+        assert_eq!(c.reading(), ClockReading::Unqualified);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        assert_eq!(c.calibrate(&three(&e, 1_000_000_500)), Ok(true));
+        // lower = start of the region covered by N-f = 2 intervals = 2nd smallest lower bound
+        assert_eq!(c.lower_bound_ms(), Some(1_000_000_400));
+        // floor to whole seconds, never rounded up
+        assert_eq!(c.reading(), ClockReading::Qualified { utc_seconds: 1_000_000 });
+        match c.status() {
+            Status::Qualified { half_width_ms, .. } => assert!(half_width_ms >= 100),
+            s => panic!("{s:?}"),
+        }
+    }
+    #[test]
+    fn holdover_advances_conservatively_and_expires() {
+        let (c, e) = clock();
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        let base = c.lower_bound_ms().unwrap();
+        e.run(10_000);
+        let later = c.lower_bound_ms().unwrap();
+        // 10_000 ms elapsed, minus ceil(10_000 * 100ppm) = 1 ms drift allowance.
+        assert_eq!(later, base + 10_000 - 1);
+        // Never ahead of the true lower bound: true time is at least base_true_lower + 10_000*(1-d).
+        e.run(3_600_000);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::HoldoverExpired));
+        assert_eq!(c.reading(), ClockReading::Unqualified);
+        // An expired anchor does not come back by itself.
+        assert!(c.lower_bound_ms().is_none());
+    }
+    #[test]
+    fn interval_widens_with_drift_until_width_limit() {
+        let mut p = profile();
+        p.drift_bound_ppb = 400_000; // 400 ppm TEST VALUE
+        p.max_interval_half_width_ms = 500;
+        let e = ControlledElapsed::start(1);
+        let c = assessed(p, e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(100_000); // 40 ms drift each side: half-width stays under 500
+        assert!(matches!(c.status(), Status::Qualified { .. }));
+        e.run(900_000); // 360+ ms more drift: width limit passed
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::IntervalTooWide));
+    }
+    #[test]
+    fn suspend_boot_change_and_elapsed_faults_drop_the_anchor() {
+        for (what, expect) in [
+            ("suspend", Unqualified::SuspendDetected),
+            ("reboot", Unqualified::BootChanged),
+            ("regress", Unqualified::ElapsedRegressed),
+        ] {
+            let (c, e) = clock();
+            c.calibrate(&three(&e, 10_000_000)).unwrap();
+            e.run(1_000);
+            assert!(c.lower_bound_ms().is_some());
+            match what {
+                "suspend" => e.suspend(60_000),
+                "reboot" => e.reboot(8),
+                _ => e.regress_boottime(5_000),
+            }
+            assert_eq!(c.status(), Status::Unqualified(expect), "{what}");
+            e.run(1);
+            // The anchor is gone for good; only a new authenticated calibration can restore it.
+            assert!(c.lower_bound_ms().is_none(), "{what}");
+        }
+        let (c, e) = clock();
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.fail();
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::ElapsedSourceUnavailable));
+    }
+    #[test]
+    fn source_fault_model_rejects_disagreement_and_unauthenticated_samples() {
+        let (c, e) = clock();
+        let at = e.now();
+        // One faulty source (far in the future) is tolerated with N=3, f=1.
+        let ok = vec![
+            sample("a", 10_000_000, 100, at),
+            sample("b", 10_000_050, 100, at),
+            sample("liar", 99_000_000, 100, at),
+        ];
+        assert_eq!(c.calibrate(&ok), Ok(true));
+        assert!(c.lower_bound_ms().unwrap() <= 10_000_150);
+        // Two disagreeing sources of three exceed the declared model: rejected, nothing adopted.
+        let (c, e) = clock();
+        let at = e.now();
+        let bad = vec![
+            sample("a", 10_000_000, 100, at),
+            sample("x", 50_000_000, 100, at),
+            sample("y", 90_000_000, 100, at),
+        ];
+        assert_eq!(c.calibrate(&bad), Err(ClockError::SourceDisagreement));
+        assert!(c.lower_bound_ms().is_none());
+        // Unauthenticated, duplicate, too-few and too-uncertain samples never qualify.
+        let mut unauth = three(&e, 10_000_000);
+        unauth[1].authenticated = false;
+        assert_eq!(c.calibrate(&unauth), Err(ClockError::Unauthenticated));
+        let mut dup = three(&e, 10_000_000);
+        dup[1].source = "a".into();
+        assert_eq!(c.calibrate(&dup), Err(ClockError::DuplicateSource));
+        assert_eq!(c.calibrate(&three(&e, 10_000_000)[..2]), Err(ClockError::TooFewSources));
+        let mut wide = three(&e, 10_000_000);
+        wide[0].uncertainty_ms = 501;
+        assert_eq!(c.calibrate(&wide), Err(ClockError::SourceUncertainty));
+        assert!(c.lower_bound_ms().is_none());
+    }
+    #[test]
+    fn a_calibration_below_the_reported_high_water_is_a_regression_and_is_not_adopted() {
+        let (c, e) = clock();
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        let reported = c.lower_bound_ms().unwrap();
+        // An authenticated set claiming an EARLIER time (still within the holdover interval's
+        // reach) is refused: voting authority never moves backward.
+        let at = e.now();
+        let earlier = vec![
+            sample("a", 10_000_000 - 80, 100, at),
+            sample("b", 10_000_000 - 70, 100, at),
+            sample("c", 10_000_000 - 90, 100, at),
+        ];
+        assert_eq!(c.calibrate(&earlier), Err(ClockError::Regression));
+        assert_eq!(c.lower_bound_ms(), Some(reported), "old anchor retained");
+        assert!(c.fault_count() >= 1);
+    }
+    #[test]
+    fn discontinuity_abstains_until_consecutive_consistent_calibrations_confirm() {
+        let mut p = profile();
+        p.confirm_calibrations = 2;
+        let e = ControlledElapsed::start(3);
+        let c = assessed(p, e.clone());
+        // Cold start needs two consistent calibrations.
+        assert_eq!(c.calibrate(&three(&e, 10_000_000)), Ok(false));
+        assert!(c.lower_bound_ms().is_none());
+        e.run(1_000);
+        assert_eq!(c.calibrate(&three(&e, 10_001_000)), Ok(true));
+        assert!(c.lower_bound_ms().is_some());
+        // An authenticated set jumping FORWARD far outside the holdover interval is not adopted
+        // on first sight (an OS or source step cannot silently advance voting authority).
+        e.run(1_000);
+        assert_eq!(c.calibrate(&three(&e, 20_000_000)), Ok(false));
+        assert!(c.lower_bound_ms().is_none());
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::Discontinuity));
+        e.run(1_000);
+        assert_eq!(c.calibrate(&three(&e, 20_001_000)), Ok(true));
+        assert!(c.lower_bound_ms().unwrap() >= 20_000_000);
+    }
+    #[test]
+    fn persisted_anchor_is_not_a_qualified_flag() {
+        let (c, e) = clock();
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(2_000);
+        c.lower_bound_ms().unwrap();
+        let saved = c.persisted(1, 1).unwrap();
+        let raw = saved.encode();
+        assert_eq!(raw.len(), PersistedAnchor::LEN);
+        let decoded = PersistedAnchor::decode(&raw).unwrap();
+        assert_eq!(decoded, saved);
+        let mut corrupt = raw.clone();
+        corrupt[125] ^= 1;
+        assert_eq!(PersistedAnchor::decode(&corrupt), Err(AnchorError::Integrity));
+        // Same boot, continuous: the record is valid EVIDENCE, and it still grants nothing (Order C4).
+        let c2 = HoldoverClock::new(profile(), e.clone()).unwrap();
+        let evidence = c2.assess_restart(&decoded).unwrap();
+        assert_eq!(evidence.sequence, 1);
+        assert_eq!(evidence.leap, LeapClaim { policy: 1, view: OPEN });
+        assert_eq!(c2.leap_view(), LeapView::Unassessed);
+        assert_eq!(c2.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        c2.set_leap_view(OPEN);
+        e.run(1_000);
+        assert_eq!(c2.lower_bound_ms(), None, "a valid record does not qualify a restarted engine");
+        assert_eq!(c2.anchor_interval_ms(), None);
+        // After a reboot the elapsed powered-off time is unknown: not even evidence.
+        e.reboot(99);
+        let c3 = HoldoverClock::new(profile(), e.clone()).unwrap();
+        assert_eq!(
+            c3.assess_restart(&decoded),
+            Err(AnchorError::Unqualified(Unqualified::BootChanged))
+        );
+        assert!(c3.lower_bound_ms().is_none());
+        // The assessment touches nothing, not even the high-water mark. A host may ratchet the stored
+        // mark (it can only refuse): a calibration below it is then a regression.
+        assert_eq!(c3.persisted_high_water(), 0);
+        c3.ratchet_high_water(saved.high_water_ms);
+        assert_eq!(c3.persisted_high_water(), saved.high_water_ms);
+        let at = e.now();
+        let earlier = vec![
+            sample("a", saved.high_water_ms - 5_000, 100, at),
+            sample("b", saved.high_water_ms - 5_000, 100, at),
+            sample("c", saved.high_water_ms - 5_000, 100, at),
+        ];
+        // No view yet: no sample is admitted at all (L0). With a view, the ratchet refuses it.
+        assert_eq!(c3.calibrate(&earlier), Err(ClockError::LeapUnassessed));
+        c3.set_leap_view(OPEN);
+        assert_eq!(c3.calibrate(&earlier), Err(ClockError::Regression));
+        // A record of a different profile is not evidence for this clock.
+        let mut other = profile();
+        other.drift_bound_ppb += 1;
+        let e2 = ControlledElapsed::start(7);
+        let c4 = HoldoverClock::new(other, e2).unwrap();
+        assert_eq!(c4.assess_restart(&decoded), Err(AnchorError::Profile));
+        // A suspend between save and restart (same boot) is not continuity: not evidence either.
+        let e3 = ControlledElapsed::start(7);
+        let c5 = assessed(profile(), e3.clone());
+        c5.calibrate(&three(&e3, 10_000_000)).unwrap();
+        let saved = c5.persisted(1, 1).unwrap();
+        e3.suspend(10_000);
+        let c6 = HoldoverClock::new(profile(), e3).unwrap();
+        assert_eq!(
+            c6.assess_restart(&saved),
+            Err(AnchorError::Unqualified(Unqualified::SuspendDetected))
+        );
+    }
+    #[test]
+    fn profile_validation_and_checked_arithmetic() {
+        let mut p = profile();
+        p.min_sources = 2; // N >= 2f+1 violated
+        assert_eq!(p.validate(), Err(ClockError::Profile));
+        let mut p = profile();
+        p.drift_bound_ppb = 1_000_000_000;
+        assert_eq!(p.validate(), Err(ClockError::Profile));
+        let e = ControlledElapsed::start(5);
+        let c = assessed(profile(), e.clone());
+        let at = e.now();
+        let huge = vec![
+            sample("a", u64::MAX, 100, at),
+            sample("b", u64::MAX, 100, at),
+            sample("c", u64::MAX, 100, at),
+        ];
+        assert_eq!(c.calibrate(&huge), Err(ClockError::Arithmetic));
+        let tiny = vec![sample("a", 5, 100, at), sample("b", 5, 100, at), sample("c", 5, 100, at)];
+        assert_eq!(c.calibrate(&tiny), Err(ClockError::Arithmetic));
+        assert!(c.lower_bound_ms().is_none());
+    }
+    #[test]
+    fn reading_feeds_the_vote_guard_with_zero_additional_allowance() {
+        use crate::vote_clock_v1::{TimeStatus, evaluate};
+        let (c, e) = clock();
+        c.calibrate(&three(&e, 10_000_500)).unwrap();
+        // lower bound 10_000_400 ms => qualified second 10_000.
+        assert_eq!(evaluate(&*c, 10_000), TimeStatus::Eligible);
+        assert_eq!(evaluate(&*c, 10_001), TimeStatus::Future { ahead_seconds: 1 });
+        e.suspend(1_000_000);
+        assert_eq!(evaluate(&*c, 0), TimeStatus::Unqualified);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Qualification budget, overhead and leap handling (Build 8 clock profile, P-C).
+    // REQUIREMENT profiles at the Architect's budget, NOT hardware qualifications.
+    // ---------------------------------------------------------------------------------------
+    const DAY_MS: u64 = 86_400_000;
+    fn q250() -> ClockProfile {
+        ClockProfile {
+            max_source_uncertainty_ms: 248,
+            max_calibration_half_width_ms: 250,
+            min_sources: 1,
+            max_faulty_sources: 0,
+            drift_bound_ppb: 8680,
+            max_holdover_ms: DAY_MS,
+            max_interval_half_width_ms: 1000,
+            max_suspend_gap_ms: 50,
+            confirm_calibrations: 1,
+        }
+    }
+    fn q100() -> ClockProfile {
+        ClockProfile {
+            max_source_uncertainty_ms: 98,
+            max_calibration_half_width_ms: 100,
+            drift_bound_ppb: 10_416,
+            ..q250()
+        }
+    }
+    const UTC0: u64 = 1_790_899_300_000;
+    /// One chrony-like sample measured at `at`.
+    fn one(utc: u64, unc: u64, at: Elapsed) -> [SourceSample; 1] {
+        [sample("chrony-nts", utc, unc, at)]
+    }
+    fn half(c: &HoldoverClock) -> u64 {
+        match c.status() {
+            Status::Qualified { half_width_ms, .. } => half_width_ms,
+            s => panic!("{s:?}"),
+        }
+    }
+
+    #[test]
+    fn overhead_budget_matches_formula() {
+        // Reported half-width right after adoption = U + ROLL_ROUNDING_MS + g_cal with
+        // U = ceil(E) + W + 1, i.e. ceil(E) + W + 2 + g_cal. Capture age >= 1 ms gives g_cal = 1.
+        for (ceil_e, w) in [(0u64, 0u64), (100, 10), (237, 10), (150, 50)] {
+            let u = ceil_e + w + ADAPTER_GRANULARITY_MS;
+            let e = ControlledElapsed::start(1);
+            let c = assessed(q250(), e.clone());
+            let s = one(UTC0, u, e.now());
+            e.run(w.max(1)); // the capture age is at least the measurement window
+            assert_eq!(c.calibrate(&s), Ok(true));
+            assert_eq!(half(&c), ceil_e + w + 2 + 1, "E={ceil_e} W={w}");
+        }
+        // The largest allowed sample (U = 248, i.e. E = 247 - W) lands exactly on the 250 ms cap.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(q250(), e.clone());
+        assert_eq!(q250().max_chrony_error_ms(10), Some(237));
+        let s = one(UTC0, 248, e.now());
+        e.run(10);
+        assert_eq!(c.calibrate(&s), Ok(true));
+        assert_eq!(half(&c), 250);
+        // One more millisecond of sample uncertainty is refused at the SAMPLE ceiling ...
+        let e = ControlledElapsed::start(1);
+        let c = assessed(q250(), e.clone());
+        let s = one(UTC0, 249, e.now());
+        e.run(10);
+        assert_eq!(c.calibrate(&s), Err(ClockError::SourceUncertainty));
+        // ... and a capture age large enough to raise g_cal to 2 (> 115_207 ms) is refused at the
+        // TOTAL cap although the sample itself was within its ceiling.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(q250(), e.clone());
+        let s = one(UTC0, 248, e.now());
+        e.run(120_000);
+        assert_eq!(c.calibrate(&s), Err(ClockError::TooUncertain));
+        assert!(c.lower_bound_ms().is_none());
+    }
+
+    #[test]
+    fn age_budget_closes_at_24h() {
+        for (p, u) in [(q250(), 248u64), (q100(), 98)] {
+            let e = ControlledElapsed::start(1);
+            let c = assessed(p.clone(), e.clone());
+            let s = one(UTC0, u, e.now());
+            e.run(10);
+            assert_eq!(c.calibrate(&s), Ok(true));
+            assert_eq!(half(&c), p.max_calibration_half_width_ms);
+            e.run(DAY_MS);
+            assert_eq!(half(&c), 1000, "exactly the fresh-vote maximum at 24 h");
+            e.run(1);
+            assert_eq!(c.status(), Status::Unqualified(Unqualified::HoldoverExpired));
+        }
+        // Rounding the ppb budget UP (8681 / 10417) closes late: the width limit trips first.
+        for (p, u) in [(q250(), 248u64), (q100(), 98)] {
+            let mut p = p;
+            p.drift_bound_ppb += 1;
+            assert_eq!(p.validate_qualification(), Err(ClockError::ProfileBudget));
+            let e = ControlledElapsed::start(1);
+            let c = assessed(p, e.clone());
+            let s = one(UTC0, u, e.now());
+            e.run(10);
+            assert_eq!(c.calibrate(&s), Ok(true));
+            e.run(DAY_MS - 1_000);
+            assert_eq!(c.status(), Status::Unqualified(Unqualified::IntervalTooWide));
+        }
+        // The floored budgets.
+        assert_eq!(drift_budget_ppb(DAY_MS, 250, 1000), Some(8680));
+        assert_eq!(drift_budget_ppb(DAY_MS, 100, 1000), Some(10_416));
+    }
+
+    #[test]
+    fn profile_budget_validation() {
+        assert_eq!(q250().validate_qualification(), Ok(()));
+        assert_eq!(q100().validate_qualification(), Ok(()));
+        let bad = |f: &dyn Fn(&mut ClockProfile)| {
+            let mut p = q250();
+            f(&mut p);
+            p.validate_qualification()
+        };
+        // M + 1 + g_min <= C
+        assert_eq!(bad(&|p| p.max_source_uncertainty_ms = 249), Err(ClockError::ProfileBudget));
+        // C + drift(max_holdover) <= width
+        assert_eq!(bad(&|p| p.max_interval_half_width_ms = 999), Err(ClockError::ProfileBudget));
+        assert_eq!(bad(&|p| p.drift_bound_ppb = 8681), Err(ClockError::ProfileBudget));
+        assert_eq!(bad(&|p| p.max_holdover_ms = DAY_MS + 100_000), Err(ClockError::ProfileBudget));
+        // width <= fresh-vote maximum (1.0 s)
+        assert_eq!(
+            bad(&|p| {
+                p.max_interval_half_width_ms = 1001;
+                p.drift_bound_ppb = 8680;
+            }),
+            Err(ClockError::ProfileBudget)
+        );
+        // single-sample host adapter
+        assert_eq!(
+            bad(&|p| {
+                p.min_sources = 3;
+                p.max_faulty_sources = 1;
+            }),
+            Err(ClockError::ProfileBudget)
+        );
+        assert_eq!(bad(&|p| p.drift_bound_ppb = 0), Err(ClockError::ProfileBudget));
+        // Structural errors keep their own error; the lenient structural check is unchanged.
+        assert_eq!(bad(&|p| p.confirm_calibrations = 0), Err(ClockError::Profile));
+        assert_eq!(profile().validate(), Ok(()));
+        assert_eq!(profile().validate_qualification(), Err(ClockError::ProfileBudget));
+        // Frozen identities of the two REQUIREMENT profiles (V1 domain, nine fields).
+        assert_eq!(hex_of(&q250().id()), REFERENCE_BUDGET_250_ID);
+        assert_eq!(FRESH_VOTE_MAX_UNCERTAINTY_MS, 1000);
+    }
+    fn hex_of(h: &Hash) -> String {
+        h.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    /// Identity of the REFERENCE BUDGET profile (a requirements profile, NOT a hardware
+    /// qualification). Frozen here and in docs/CLOCK-PROFILE-V1.md.
+    const REFERENCE_BUDGET_250_ID: &str = "1aac4fe452dfb6b11dac6ddf18aa9507e730b0d5caac6102e8a368b47fccc81c";
+
+    #[test]
+    fn leap_clear_before_event_continues() {
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        let e2 = ControlledElapsed::start(1);
+        let plain = assessed(profile(), e2.clone());
+        let event = 10_000_000 + 600_000;
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: event,
+        });
+        assert_eq!(c.calibrate(&three(&e, 10_000_000)), Ok(true));
+        assert_eq!(plain.calibrate(&three(&e2, 10_000_000)), Ok(true));
+        for _ in 0..40 {
+            e.run(10_000);
+            e2.run(10_000);
+            // Qualified operation continues before the event, identical to the no-event clock.
+            assert_eq!(c.status(), plain.status());
+            assert!(c.lower_bound_ms().is_some());
+        }
+    }
+
+    #[test]
+    fn leap_expires_before_unmodelled_event() {
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        let event = 10_000_000 + 60_000;
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: event,
+        });
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        let mut last_lo = 0;
+        let mut expired_at = None;
+        for step in 0..120u64 {
+            match c.status() {
+                Status::Qualified { lower_ms, .. } => last_lo = lower_ms,
+                Status::Unqualified(r) => {
+                    assert_eq!(r, Unqualified::LeapTransition);
+                    expired_at = Some(step);
+                    break;
+                }
+            }
+            e.run(1_000);
+        }
+        assert!(expired_at.is_some(), "holdover must expire at the event");
+        assert!(last_lo < event, "no lower bound at or past the unmodelled transition");
+        // The anchor is gone for good: time passing does not bring it back.
+        e.run(10_000);
+        assert_eq!(c.lower_bound_ms(), None);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+        assert_eq!(c.fault_count(), 1);
+        // Boundary exactness: a Clear horizon equal to the interval's upper bound already expires.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        let (_, hi) = c.interval_ms().unwrap();
+        c.set_leap_view(LeapView::Clear { valid_until_ms: hi + 1 });
+        assert!(c.lower_bound_ms().is_some());
+        c.set_leap_view(LeapView::Clear { valid_until_ms: hi });
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+    }
+
+    #[test]
+    fn new_leap_info_reassesses_existing_holdover() {
+        // Pending information that arrives AFTER holdover already reached the event.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(700_000);
+        let event = 10_000_000 + 600_000;
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Delete,
+            boundary_ms: event + LEAP_STEP_MS, // the step begins at `event`
+        });
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+        // A horizon moved earlier (Clear -> earlier) also reassesses immediately.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(100_000);
+        c.set_leap_view(LeapView::Clear {
+            valid_until_ms: 10_050_000,
+        });
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+        // A later view must not REVIVE holdover that already violated the earlier view, even when
+        // the violation was never read before the new view arrived.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.set_leap_view(LeapView::Clear { valid_until_ms: 10_050_000 });
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(100_000);
+        c.set_leap_view(OPEN);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+        assert_eq!(c.lower_bound_ms(), None);
+        // A later view that extends a horizon NOT yet reached keeps qualified operation.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.set_leap_view(LeapView::Clear { valid_until_ms: 10_050_000 });
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(10_000);
+        c.set_leap_view(OPEN);
+        e.run(100_000);
+        assert!(c.lower_bound_ms().is_some());
+        // With the elapsed source unreadable only a view that vouches for no more is installed
+        // (no later horizon and no later guard start), and the caller is told whether it was.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        e.fail();
+        assert!(c.set_leap_view(LeapView::Clear { valid_until_ms: 5 }));
+        assert_eq!(c.leap_view(), LeapView::Clear { valid_until_ms: 5 });
+        assert!(!c.set_leap_view(OPEN));
+        assert_eq!(c.leap_view(), LeapView::Clear { valid_until_ms: 5 });
+        // After an announced insertion, a Clear at its step instant has no later horizon but a later
+        // guard start (it would admit the zone [T - S, T)): refused. A Clear up to the zone start is
+        // no looser on either count: installed.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        let insert = LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: 20_000_000,
+        };
+        assert!(c.set_leap_view(insert));
+        e.fail();
+        assert!(!c.set_leap_view(LeapView::Clear { valid_until_ms: 20_000_000 }));
+        assert_eq!(c.leap_view(), insert);
+        assert!(c.set_leap_view(LeapView::Clear {
+            valid_until_ms: 20_000_000 - LEAP_STEP_MS
+        }));
+        // Nothing can be installed over `Unassessed` without a reading (the host then runs no
+        // calibration in that poll; a never-assessed clock would refuse it anyway).
+        let n = HoldoverClock::new(profile(), e.clone()).unwrap();
+        assert!(!n.set_leap_view(insert));
+        assert_eq!(n.leap_view(), LeapView::Unassessed);
+    }
+
+    #[test]
+    fn sample_inside_ambiguity_zone_rejected_without_state_change() {
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(1_000);
+        let before = c.lower_bound_ms().unwrap();
+        let persisted = c.persisted(1, 1).unwrap();
+        let faults = c.fault_count();
+        let event = 10_030_000;
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: event,
+        });
+        // Inside the zone [event - 1000, ...): refused, nothing mutated.
+        let at = e.now();
+        let inside = vec![
+            sample("a", event - 600, 100, at),
+            sample("b", event - 600, 100, at),
+            sample("c", event - 600, 100, at),
+        ];
+        assert_eq!(c.calibrate(&inside), Err(ClockError::SourceLeapAmbiguity));
+        assert_eq!(c.fault_count(), faults);
+        assert_eq!(c.lower_bound_ms(), Some(before));
+        assert_eq!(c.persisted(2, 1).unwrap().lower_ms, persisted.lower_ms);
+        // A Clear horizon reached by the sample's own interval is refused the same way.
+        c.set_leap_view(LeapView::Clear { valid_until_ms: 10_001_800 });
+        assert_eq!(c.calibrate(&three(&e, 10_001_750)), Err(ClockError::SourceLeapAmbiguity));
+        assert_eq!(c.fault_count(), faults);
+    }
+
+    #[test]
+    fn requalify_after_event() {
+        let mut p = profile();
+        p.confirm_calibrations = 2;
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let e = ControlledElapsed::start(1);
+            let c = assessed(p.clone(), e.clone());
+            assert_eq!(c.calibrate(&three(&e, 10_000_000)), Ok(false));
+            e.run(1_000);
+            assert_eq!(c.calibrate(&three(&e, 10_001_000)), Ok(true));
+            let event = 10_001_000 + 5_000;
+            c.set_leap_view(LeapView::Pending {
+                kind,
+                // The step begins at `event` for both kinds (a deletion steps one second before its boundary).
+                boundary_ms: match kind {
+                    LeapKind::Insert => event,
+                    LeapKind::Delete => event + LEAP_STEP_MS,
+                },
+            });
+            // Read every 100 ms (the highest reported lower bound is the high-water mark).
+            let mut nominal = 10_001_000u64;
+            loop {
+                if c.lower_bound_ms().is_none() {
+                    break;
+                }
+                e.run(100);
+                nominal += 100;
+                assert!(nominal < event + 2_000, "must expire");
+            }
+            assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+            // The adapter reports the event as past (view Clear again).
+            c.set_leap_view(OPEN);
+            e.run(100);
+            nominal += 100;
+            let posix = |nom: u64| match kind {
+                LeapKind::Insert => nom - 1000,
+                LeapKind::Delete => nom + 1000,
+            };
+            match kind {
+                LeapKind::Insert => {
+                    // POSIX time stepped back: authenticated samples sit below the high-water mark.
+                    assert_eq!(
+                        c.calibrate(&three(&e, posix(nominal))),
+                        Err(ClockError::Regression)
+                    );
+                    // Fresh voting resumes only after time has caught up AND confirmation.
+                    e.run(1_500);
+                    nominal += 1_500;
+                }
+                LeapKind::Delete => {}
+            }
+            assert_eq!(c.calibrate(&three(&e, posix(nominal))), Ok(false));
+            assert!(c.lower_bound_ms().is_none(), "not qualified before confirmation");
+            e.run(1_000);
+            nominal += 1_000;
+            assert_eq!(c.calibrate(&three(&e, posix(nominal))), Ok(true));
+            assert!(c.lower_bound_ms().is_some());
+        }
+    }
+
+    #[test]
+    fn unassessed_view_abstains_at_start_and_a_restart_inherits_neither_anchor_nor_view() {
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        e.run(2_000);
+        c.lower_bound_ms().unwrap();
+        let saved = c.persisted(1, 1).unwrap();
+        let fresh = HoldoverClock::new(profile(), e.clone()).unwrap();
+        assert_eq!(fresh.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        // Order C4: the record is evidence only; the restarted engine holds no anchor and no view.
+        assert!(fresh.assess_restart(&saved).is_ok());
+        assert_eq!(fresh.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        assert_eq!(fresh.reading(), ClockReading::Unqualified);
+        assert_eq!(
+            (fresh.fault_count(), fresh.anchor_interval_ms(), fresh.leap_view()),
+            (0, None, LeapView::Unassessed)
+        );
+        // Without a view no sample is admitted, before any state change (L0).
+        assert_eq!(fresh.calibrate(&three(&e, 10_002_000)), Err(ClockError::LeapUnassessed));
+        fresh.set_leap_view(OPEN);
+        assert_eq!(fresh.lower_bound_ms(), None, "a view alone qualifies nothing");
+        // Only a fresh authenticated calibration does, and the anchor is the SAMPLE's, not the record's.
+        assert_eq!(fresh.calibrate(&three(&e, 10_002_000)), Ok(true));
+        assert!(fresh.lower_bound_ms().is_some());
+        assert_ne!(fresh.anchor_interval_ms(), Some((saved.lower_ms, saved.upper_ms)));
+        // A clock that was never assessed admits no sample at all (L0): without a view the
+        // unambiguity of an interval cannot be established. Refused before any state change.
+        let e2 = ControlledElapsed::start(2);
+        let n = HoldoverClock::new(profile(), e2.clone()).unwrap();
+        assert_eq!(n.calibrate(&three(&e2, 10_000_000)), Err(ClockError::LeapUnassessed));
+        assert_eq!(n.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        assert_eq!((n.fault_count(), n.anchor_interval_ms()), (0, None));
+        n.set_leap_view(OPEN);
+        assert_eq!(n.calibrate(&three(&e2, 10_000_000)), Ok(true));
+        assert!(n.lower_bound_ms().is_some());
+    }
+
+    #[test]
+    fn failed_recalibration_keeps_valid_holdover() {
+        let e = ControlledElapsed::start(1);
+        let c = assessed(q250(), e.clone());
+        let s = one(UTC0, 100, e.now());
+        e.run(5);
+        c.calibrate(&s).unwrap();
+        e.run(1_000);
+        let reported = c.lower_bound_ms().unwrap();
+        let persisted = c.persisted(1, 1).unwrap();
+        let faults = c.fault_count();
+        let at = e.now();
+        let mut unauth = one(UTC0 + 1_005, 100, at);
+        unauth[0].authenticated = false;
+        assert_eq!(c.calibrate(&unauth), Err(ClockError::Unauthenticated));
+        assert_eq!(
+            c.calibrate(&one(UTC0 + 1_005, 249, at)),
+            Err(ClockError::SourceUncertainty)
+        );
+        assert_eq!(c.calibrate(&one(u64::MAX, 100, at)), Err(ClockError::Arithmetic));
+        let far = UTC0 + 2_000_000;
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: UTC0 + 1_500,
+        });
+        assert_eq!(
+            c.calibrate(&one(UTC0 + 1_005, 100, at)),
+            Err(ClockError::SourceLeapAmbiguity)
+        );
+        c.set_leap_view(LeapView::Clear { valid_until_ms: far });
+        assert_eq!(c.fault_count(), faults);
+        // No failed offer touched the calibration evidence that would be stored.
+        let again = c.persisted(2, 1).unwrap();
+        assert_eq!(
+            (again.lower_ms, again.upper_ms, again.at),
+            (persisted.lower_ms, persisted.upper_ms, persisted.at)
+        );
+        let now_lo = c.lower_bound_ms().unwrap();
+        assert!(now_lo >= reported, "valid holdover continues");
+    }
+
+    #[test]
+    fn the_leap_claim_is_bound_into_the_record_and_never_asserts_qualification() {
+        let e = ControlledElapsed::start(1);
+        let c = assessed(profile(), e.clone());
+        c.calibrate(&three(&e, 10_000_000)).unwrap();
+        c.lower_bound_ms().unwrap();
+        let a = c.persisted(1, 7).unwrap();
+        assert_eq!(a.leap, LeapClaim { policy: 7, view: OPEN });
+        let pending = LeapView::Pending {
+            kind: LeapKind::Delete,
+            boundary_ms: 10_000_000 + 3_001_000,
+        };
+        c.set_leap_view(pending);
+        let b = c.persisted(2, 7).unwrap();
+        assert_eq!(b.leap.view, pending);
+        assert!(!a.same_evidence(&b), "new leap information changes the stored evidence");
+        assert_eq!(PersistedAnchor::decode(&b.encode()).unwrap(), b);
+        assert_eq!(b.encode().len(), PersistedAnchor::LEN);
+        // The claim comes back inside the EVIDENCE, for the host's leap policy to treat as an
+        // unauthenticated hint at most (Order C11); the engine installs neither claim nor anchor.
+        let n = HoldoverClock::new(profile(), e.clone()).unwrap();
+        assert_eq!(n.assess_restart(&b).unwrap().leap, b.leap);
+        assert_eq!((n.leap_view(), n.anchor_interval_ms()), (LeapView::Unassessed, None));
+        assert!(n.persisted(1, 7).is_none(), "nothing to persist: nothing was installed");
+        // A clock that holds an anchor but no view (the adapter withdrew it) persists "no claim".
+        let u = assessed(profile(), e.clone());
+        u.calibrate(&three(&e, 10_000_000)).unwrap();
+        assert!(u.set_leap_view(LeapView::Unassessed));
+        let none = u.persisted(1, 7).unwrap();
+        assert_eq!(none.leap.view, LeapView::Unassessed);
+        assert_eq!(PersistedAnchor::decode(&none.encode()).unwrap(), none);
+        assert_eq!(u.status(), Status::Unqualified(Unqualified::LeapUnassessed));
+        // Sequence 0 is reserved: nothing is produced for it.
+        assert!(c.persisted(0, 7).is_none());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Ruling 4: the ambiguous transition zone is DERIVED from the POSIX step mapping.
+    // ---------------------------------------------------------------------------------------
+    /// Event boundary used below: 2027-01-01T00:00:00Z in POSIX milliseconds.
+    const T: u64 = 1_798_761_600_000;
+    /// The label the OS clock shows at nominal instant `tau` for an event at boundary `t`
+    /// (POSIX-step semantics, the module documentation's table).
+    fn shown(kind: LeapKind, t: u64, tau: u64) -> u64 {
+        match kind {
+            LeapKind::Insert if tau >= t => tau - LEAP_STEP_MS,
+            LeapKind::Delete if tau >= t - LEAP_STEP_MS => tau + LEAP_STEP_MS,
+            _ => tau,
+        }
+    }
+    /// How many nominal instants show each label (a label absent from the map is shown never).
+    fn label_counts(kind: LeapKind) -> std::collections::BTreeMap<u64, u32> {
+        let mut count = std::collections::BTreeMap::new();
+        for tau in (T - 6_000)..(T + 6_000) {
+            *count.entry(shown(kind, T, tau)).or_default() += 1;
+        }
+        count
+    }
+
+    #[test]
+    fn the_ambiguous_zone_is_exactly_the_labels_the_step_mapping_shows_other_than_once() {
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let count = label_counts(kind);
+            let model: Vec<u64> = ((T - 3_000)..(T + 3_000))
+                .filter(|l| count.get(l).copied().unwrap_or(0) != 1)
+                .collect();
+            let (start, end) = leap_ambiguity_zone_ms(T);
+            assert_eq!((start, end), (T - 1000, T));
+            assert_eq!(model, (start..end).collect::<Vec<_>>(), "{kind:?}");
+            // Insert shows labels twice, Delete never: either way the label -> time map is not a
+            // function inside the zone and is one everywhere else.
+            let twice = count.values().any(|n| *n == 2);
+            let never = ((T - 3_000)..(T + 3_000)).any(|l| !count.contains_key(&l));
+            assert_eq!((twice, never), (kind == LeapKind::Insert, kind == LeapKind::Delete));
+            // The first nominal instant at which the clock steps is where holdover must expire.
+            let step = ((T - 6_000)..(T + 6_000))
+                .find(|&tau| shown(kind, T, tau) != tau)
+                .unwrap();
+            assert_eq!(step, kind.step_begins_ms(T), "{kind:?}");
+            let view = LeapView::Pending { kind, boundary_ms: T };
+            assert_eq!(view.horizon_ms(), step);
+            assert_eq!(view.guard_start_ms(), Some(start));
+        }
+        // The only duration involved is the defined size of a leap second.
+        assert_eq!(LEAP_STEP_MS, 1000);
+    }
+
+    #[test]
+    fn the_guard_refuses_every_interval_that_touches_the_zone_and_admits_everything_below_it() {
+        // The grid checks THE predicate the engine applies (`LeapView::admits`, behind admission
+        // and reassessment), not a re-implementation of it, against the label-count model. That
+        // `calibrate` and `set_leap_view` use exactly this predicate is checked over every
+        // single-sample interval around the zone in
+        // `whichever_comes_first_every_interval_near_the_zone_is_judged_by_the_one_predicate`.
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let count = label_counts(kind);
+            let base = T - 2_000;
+            let span = 6_000usize;
+            // prefix[i] = number of ambiguous labels among base .. base + i
+            let mut prefix = vec![0u32; span + 1];
+            for i in 0..span {
+                let ambiguous = count.get(&(base + i as u64)).copied().unwrap_or(0) != 1;
+                prefix[i + 1] = prefix[i] + u32::from(ambiguous);
+            }
+            let view = LeapView::Pending { kind, boundary_ms: T };
+            let (_, end) = leap_ambiguity_zone_ms(T);
+            for lo in 0..span - 2_001 {
+                for width in [0usize, 1, 2, 27, 500, 999, 1_000, 1_001, 2_000] {
+                    let hi = lo + width;
+                    let touches = prefix[hi + 1] - prefix[lo] > 0;
+                    let (lo_ms, hi_ms) = (base + lo as u64, base + hi as u64);
+                    let verdict = view.admits(hi_ms);
+                    let refused = verdict.is_err();
+                    if refused {
+                        assert_eq!(verdict, Err(ClockError::SourceLeapAmbiguity));
+                    }
+                    if touches {
+                        assert!(refused, "{kind:?} [{lo_ms}, {hi_ms}] touches the zone but is admitted");
+                    }
+                    if hi_ms < leap_ambiguity_zone_ms(T).0 {
+                        assert!(!refused, "{kind:?} [{lo_ms}, {hi_ms}] lies below the zone but is refused");
+                    }
+                    if refused && !touches {
+                        // Only an interval wholly past the zone is refused without touching it: the
+                        // event is still unresolved (the adapter has not withdrawn it).
+                        assert!(lo_ms >= end, "{kind:?} [{lo_ms}, {hi_ms}]");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sample_edges_at_the_zone_are_exact_and_no_extra_second_is_added_outside_it() {
+        let unc = 13u64;
+        let guard = T - LEAP_STEP_MS;
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let try_at = |utc: u64| {
+                let e = ControlledElapsed::start(1);
+                let c = assessed(q250(), e.clone());
+                c.set_leap_view(LeapView::Pending { kind, boundary_ms: T });
+                let r = c.calibrate(&one(utc, unc, e.now()));
+                (r, c)
+            };
+            // The roll adds exactly one millisecond to the upper bound at capture age 0, so the
+            // adopted interval ends at utc + unc + 1.
+            // One millisecond below the zone: accepted, and NOTHING was added for the announcement.
+            let (r, c) = try_at(guard - unc - 2);
+            assert_eq!(r, Ok(true), "{kind:?}");
+            let plain = {
+                let e = ControlledElapsed::start(1);
+                let p = assessed(q250(), e.clone());
+                p.calibrate(&one(guard - unc - 2, unc, e.now())).unwrap();
+                p
+            };
+            // The adopted interval is exactly centre -/+ uncertainty (+1 ms roll): identical to the
+            // same sample with no announcement at all, so NOTHING was added for the announcement.
+            assert_eq!(c.anchor_interval_ms(), plain.anchor_interval_ms(), "no blanket second");
+            assert_eq!(c.anchor_interval_ms(), Some((guard - 2 * unc - 2, guard - 1)));
+            // A calibration whose interval ends at the step of a DELETION is adopted (it is
+            // unambiguous) but the holdover it starts is empty: the clock steps one millisecond later.
+            match kind {
+                LeapKind::Insert => assert_eq!(half(&c), unc + 1),
+                LeapKind::Delete => {
+                    assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition))
+                }
+            }
+            // The interval ends exactly ON the first zone label: refused, no state change.
+            let (r, c) = try_at(guard - unc - 1);
+            assert_eq!(r, Err(ClockError::SourceLeapAmbiguity), "{kind:?}");
+            assert_eq!(c.fault_count(), 0);
+            assert_eq!(c.anchor_interval_ms(), None);
+            // One millisecond into the zone.
+            assert_eq!(try_at(guard - unc).0, Err(ClockError::SourceLeapAmbiguity));
+            // The MIDPOINT is outside the zone but the interval reaches into it: refused.
+            let mid = guard - 5;
+            assert!(mid < guard);
+            assert_eq!(try_at(mid).0, Err(ClockError::SourceLeapAmbiguity), "{kind:?}");
+            // Midpoint inside the zone, and an interval wholly past it while the event is unresolved.
+            assert_eq!(try_at(guard + 500).0, Err(ClockError::SourceLeapAmbiguity));
+            assert_eq!(try_at(T + 5_000).0, Err(ClockError::SourceLeapAmbiguity));
+            // Far before the event (a full day): accepted like any other sample.
+            let (r, c) = try_at(T - DAY_MS);
+            assert_eq!(r, Ok(true));
+            assert_eq!(half(&c), unc + 1);
+        }
+    }
+
+    #[test]
+    fn an_allowance_of_one_step_can_never_fit_so_inside_the_zone_the_engine_abstains() {
+        // Adding the step to a sample's uncertainty cannot keep it within the fresh-vote ceiling,
+        // whatever the sample: half-width + S > S = the ceiling. That is why the zone means
+        // abstention and not "widen by one second".
+        assert!(LEAP_STEP_MS >= FRESH_VOTE_MAX_UNCERTAINTY_MS);
+        for p in [q250(), q100()] {
+            assert!(p.max_calibration_half_width_ms + LEAP_STEP_MS > p.max_interval_half_width_ms);
+            let e = ControlledElapsed::start(1);
+            let c = assessed(p.clone(), e.clone());
+            let widened = one(UTC0, 13 + LEAP_STEP_MS, e.now());
+            assert_eq!(c.calibrate(&widened), Err(ClockError::SourceUncertainty));
+        }
+    }
+
+    #[test]
+    fn new_leap_information_updates_or_invalidates_live_holdover_and_a_restart_has_none() {
+        // LIVE: an announcement that arrives while holdover is running invalidates it at once when
+        // it already reaches the step, and merely schedules the expiry otherwise.
+        let (c, e) = q250_calibrated();
+        e.run(3_000);
+        let (_, hi) = c.interval_ms().unwrap();
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: hi + 5_000,
+        });
+        assert!(c.lower_bound_ms().is_some(), "the step is still ahead");
+        e.run(5_000);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+        assert!(c.persisted(9, 1).is_none(), "an invalidated anchor persists nothing");
+
+        // RESTART (Order C4): the record of a live anchor is evidence only. A restarted engine holds
+        // no holdover at all, so no later view (announced or clear) and no stored claim can keep,
+        // revive or extend one; there is nothing for new information to update.
+        let (a, e) = q250_calibrated();
+        a.lower_bound_ms().unwrap();
+        let rec = a.persisted(1, 1).unwrap();
+        e.run(60_000);
+        let (b, evidence) = restart(&e, &rec).unwrap();
+        assert_eq!(evidence.leap.view, OPEN, "the claim is reported, not installed");
+        for view in [
+            LeapView::Pending {
+                kind: LeapKind::Delete,
+                boundary_ms: UTC0 + 10_000_000,
+            },
+            OPEN,
+        ] {
+            b.set_leap_view(view);
+            assert_eq!(b.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        }
+        assert_eq!(b.fault_count(), 0, "nothing was dropped: nothing was installed");
+        assert!(b.persisted(2, 1).is_none());
+        // The writer, meanwhile, keeps its own anchor: a restart elsewhere does not touch it.
+        assert!(a.lower_bound_ms().is_some());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Independent review, MAJOR-1: the zone predicate cannot be bypassed by the order in which a
+    // sample is adopted and an event is learned (live or awaiting confirmation; since Order C4
+    // nothing is restored).
+    // ---------------------------------------------------------------------------------------
+    #[test]
+    fn review_r1_a_zone_sample_cannot_slip_in_before_the_view_nor_survive_the_view_that_follows() {
+        // Reviewer R1, reproduced before the fix: a never-assessed clock adopted a sample lying
+        // INSIDE the ambiguous zone of an insertion at T and stayed qualified, with a lower bound in
+        // the zone, after `Pending { Insert, T }` was pushed (only the step instant T was checked).
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let announced = LeapView::Pending { kind, boundary_ms: T };
+            let e = ControlledElapsed::start(1);
+            // Control: under the announced view the sample is refused as ambiguous.
+            let ctl = HoldoverClock::new(q250(), e.clone()).unwrap();
+            assert!(ctl.set_leap_view(announced));
+            assert_eq!(
+                ctl.calibrate(&one(T - 500, 13, e.now())),
+                Err(ClockError::SourceLeapAmbiguity)
+            );
+            // No view yet: refused as well, before any state change; nothing appears with the view.
+            let c = HoldoverClock::new(q250(), e.clone()).unwrap();
+            assert_eq!(c.calibrate(&one(T - 500, 13, e.now())), Err(ClockError::LeapUnassessed));
+            assert_eq!((c.anchor_interval_ms(), c.fault_count()), (None, 0));
+            c.set_leap_view(announced);
+            assert_eq!(c.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+            // The other order: the sample is adopted under a view that vouches for it, THEN the
+            // event is learned. The adopted interval [T - 513, T - 486] touches the zone: dropped at
+            // once, not merely expired at the step instant (for an insertion, T: ~486 ms later).
+            let d = assessed(q250(), e.clone());
+            assert_eq!(d.calibrate(&one(T - 500, 13, e.now())), Ok(true));
+            let (lo, hi) = d.anchor_interval_ms().unwrap();
+            assert!(lo >= T - LEAP_STEP_MS && hi < T, "[{lo}, {hi}] lies inside the zone");
+            d.set_leap_view(announced);
+            assert_eq!(d.status(), Status::Unqualified(Unqualified::LeapTransition), "{kind:?}");
+            assert_eq!((d.lower_bound_ms(), d.anchor_interval_ms()), (None, None));
+            assert!(d.persisted(1, 1).is_none(), "nothing is left to persist");
+            d.set_leap_view(OPEN);
+            assert_eq!(d.lower_bound_ms(), None, "a later view does not revive it");
+        }
+    }
+
+    #[test]
+    fn whichever_comes_first_every_interval_near_the_zone_is_judged_by_the_one_predicate() {
+        // Every single-sample interval around the zone, with the event learned BEFORE the sample is
+        // offered and with the sample adopted BEFORE the event is learned: refused intervals never
+        // leave an anchor in either order, and admitted ones end in the same state in both orders.
+        let mut seen = (0u32, 0u32);
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let view = LeapView::Pending { kind, boundary_ms: T };
+            for unc in [0u64, 13, 100] {
+                for utc in (T - 2_200)..(T + 200) {
+                    // Capture age 0: the adopted interval is [utc - unc, utc + unc + 1].
+                    let admitted = view.admits(utc + unc + 1).is_ok();
+                    let e = ControlledElapsed::start(1);
+                    let first = HoldoverClock::new(q250(), e.clone()).unwrap();
+                    first.set_leap_view(view);
+                    let offered = first.calibrate(&one(utc, unc, e.now()));
+                    assert_eq!(offered.is_ok(), admitted, "{kind:?} utc {utc} unc {unc}: {offered:?}");
+                    let second = assessed(q250(), e.clone());
+                    assert_eq!(second.calibrate(&one(utc, unc, e.now())), Ok(true));
+                    second.set_leap_view(view);
+                    let (s1, s2) = (first.status(), second.status());
+                    if admitted {
+                        assert_eq!(s1, s2, "{kind:?} utc {utc} unc {unc}");
+                        seen.0 += 1;
+                    } else {
+                        assert_eq!(first.anchor_interval_ms(), None);
+                        assert_eq!(second.anchor_interval_ms(), None, "{kind:?} utc {utc} unc {unc}");
+                        assert_eq!(s2, Status::Unqualified(Unqualified::LeapTransition));
+                        seen.1 += 1;
+                    }
+                }
+            }
+        }
+        assert!(seen.0 > 5_000 && seen.1 > 5_000, "both verdicts exercised: {seen:?}");
+    }
+
+    #[test]
+    fn a_stored_anchor_inside_an_announced_zone_installs_nothing_whatever_view_follows() {
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            // A record written before the announcement was known, its adopted interval
+            // [T - 513, T - 486] inside the zone of the event at T.
+            let e = ControlledElapsed::start(1);
+            let writer = assessed(q250(), e.clone());
+            assert_eq!(writer.calibrate(&one(T - 500, 13, e.now())), Ok(true));
+            let rec = PersistedAnchor::decode(&writer.persisted(1, 1).unwrap().encode()).unwrap();
+            e.run(100);
+            let r = HoldoverClock::new(q250(), e.clone()).unwrap();
+            // The record is self-consistent evidence (100 ms later, 1 ms of drift) ...
+            let evidence = r.assess_restart(&rec).unwrap();
+            assert_eq!(evidence.would_be_lower_ms, T - 513 + 100 - 1);
+            // ... but nothing is installed, so no view, announced or not, can resume it (Order C4);
+            // before C4 a restored anchor here had to be dropped by the zone predicate.
+            for view in [LeapView::Pending { kind, boundary_ms: T }, OPEN] {
+                assert!(r.set_leap_view(view));
+                assert_eq!(r.status(), Status::Unqualified(Unqualified::NeverCalibrated), "{kind:?}");
+            }
+            assert_eq!((r.anchor_interval_ms(), r.fault_count()), (None, 0));
+            assert!(r.persisted(2, 1).is_none());
+        }
+    }
+
+    /// An elapsed source that, once armed, pushes a leap view into its clock from INSIDE the next
+    /// read: a view push interleaved between the view read and the adoption in `calibrate`.
+    struct PushingElapsed {
+        inner: Arc<ControlledElapsed>,
+        clock: std::sync::OnceLock<std::sync::Weak<HoldoverClock>>,
+        armed: Mutex<Option<LeapView>>,
+    }
+    impl ElapsedSource for PushingElapsed {
+        fn read(&self) -> Option<Elapsed> {
+            let view = self.armed.lock().unwrap().take();
+            if let Some(view) = view
+                && let Some(clock) = self.clock.get().and_then(std::sync::Weak::upgrade)
+            {
+                clock.set_leap_view(view);
+            }
+            self.inner.read()
+        }
+    }
+    #[test]
+    fn a_view_pushed_while_a_calibration_is_in_flight_is_applied_before_adoption() {
+        // The reviewer's engine-API race: `calibrate` reads the view and adopts under separate
+        // locks. Here the announcement arrives exactly in between (inside the elapsed read).
+        let inner = ControlledElapsed::start(1);
+        let src = Arc::new(PushingElapsed {
+            inner: inner.clone(),
+            clock: std::sync::OnceLock::new(),
+            armed: Mutex::new(None),
+        });
+        let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+        src.clock.set(Arc::downgrade(&c)).unwrap();
+        assert!(c.set_leap_view(OPEN));
+        let announced = LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: T,
+        };
+        *src.armed.lock().unwrap() = Some(announced);
+        // Judged under OPEN when combined, refused under the announcement before adoption.
+        assert_eq!(
+            c.calibrate(&one(T - 500, 13, inner.now())),
+            Err(ClockError::SourceLeapAmbiguity)
+        );
+        assert_eq!(c.leap_view(), announced);
+        assert_eq!((c.anchor_interval_ms(), c.fault_count()), (None, 0));
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+    }
+
+    #[test]
+    fn a_candidate_awaiting_confirmation_that_a_new_view_refuses_cannot_confirm_anything() {
+        let mut p = q250();
+        p.confirm_calibrations = 2;
+        // Control, event never announced: a candidate whose interval [T - S - 18, T - S + 9] reaches
+        // the zone start and a consistent second sample below it confirm each other.
+        let e = ControlledElapsed::start(1);
+        let d = assessed(p.clone(), e.clone());
+        assert_eq!(d.calibrate(&one(T - LEAP_STEP_MS - 5, 13, e.now())), Ok(false));
+        e.run(1);
+        assert_eq!(d.calibrate(&one(T - LEAP_STEP_MS - 20, 13, e.now())), Ok(true));
+        // The event is announced between the two: the first candidate is judged by the same
+        // predicate as an adopted anchor and discarded, so the second starts a new count.
+        let e = ControlledElapsed::start(1);
+        let c = assessed(p, e.clone());
+        assert_eq!(c.calibrate(&one(T - LEAP_STEP_MS - 5, 13, e.now())), Ok(false));
+        c.set_leap_view(LeapView::Pending {
+            kind: LeapKind::Insert,
+            boundary_ms: T,
+        });
+        e.run(1);
+        assert_eq!(c.calibrate(&one(T - LEAP_STEP_MS - 20, 13, e.now())), Ok(false));
+        assert!(c.lower_bound_ms().is_none());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Ruling 5 and Order C4: the versioned persistent anchor (evidence only, never restored).
+    // ---------------------------------------------------------------------------------------
+    /// A q250 clock calibrated 5 ms after its sample was taken (capture age 5 ms, g_cal = 1).
+    fn q250_calibrated() -> (Arc<HoldoverClock>, Arc<ControlledElapsed>) {
+        let e = ControlledElapsed::start(21);
+        let c = assessed(q250(), e.clone());
+        let s = one(UTC0, 100, e.now());
+        e.run(5);
+        c.calibrate(&s).unwrap();
+        (c, e)
+    }
+    /// What a restarted process does since Order C4: decode the stored bytes, assess them as
+    /// EVIDENCE (nothing is installed) and push a view. The engine it returns is unqualified.
+    fn restart(
+        e: &Arc<ControlledElapsed>,
+        rec: &PersistedAnchor,
+    ) -> Result<(Arc<HoldoverClock>, RestartEvidence), AnchorError> {
+        let stored = PersistedAnchor::decode(&rec.encode())?;
+        let c = HoldoverClock::new(q250(), e.clone()).unwrap();
+        let evidence = c.assess_restart(&stored)?;
+        c.set_leap_view(OPEN);
+        assert_eq!(
+            c.status(),
+            Status::Unqualified(Unqualified::NeverCalibrated),
+            "Order C4: a record never qualifies a restarted engine"
+        );
+        Ok((c, evidence))
+    }
+    /// The evidence as the status the uninterrupted process would report.
+    fn would_be(e: &RestartEvidence) -> Status {
+        Status::Qualified {
+            lower_ms: e.would_be_lower_ms,
+            half_width_ms: e.would_be_half_width_ms,
+            holdover_remaining_ms: e.would_be_remaining_ms,
+        }
+    }
+    /// A qualified status widened by `w` ms on both sides (Order C10 ledger); anything else unchanged.
+    fn widened(s: Status, w: u64) -> Status {
+        match s {
+            Status::Qualified {
+                lower_ms,
+                half_width_ms,
+                holdover_remaining_ms,
+            } => Status::Qualified {
+                lower_ms: lower_ms - w,
+                half_width_ms: half_width_ms + w,
+                holdover_remaining_ms,
+            },
+            other => other,
+        }
+    }
+
+    #[test]
+    fn a_same_boot_restart_is_unqualified_and_its_evidence_spans_all_elapsed_time() {
+        let (control, e) = q250_calibrated();
+        e.run(1_000_000);
+        let at_persist = half(&control);
+        let rec = control.persisted(1, 1).unwrap();
+        // The process dies; an hour passes before the new one starts (same boot, no suspend).
+        e.run(3_600_000);
+        // Order C4: the restarted engine is unqualified whatever the record says (asserted in
+        // `restart`), and the record's evidence is exactly what the process that never stopped
+        // reports: the budget runs from the ORIGINAL calibration.
+        let (resumed, evidence) = restart(&e, &rec).unwrap();
+        assert_eq!(resumed.lower_bound_ms(), None);
+        assert_eq!(would_be(&evidence), control.status());
+        let h = evidence.would_be_half_width_ms;
+        assert!(h > at_persist, "the hour of downtime widened the interval ({h} > {at_persist})");
+        // H0 = U + 1 + g_cal = 100 + 1 + 1; widening = ceil(elapsed * ppb / 1e9) over ALL 4_600_000 ms.
+        assert_eq!(h, 102 + drift_ms(4_600_000, 8680).unwrap());
+        // The record holds evidence, not a verdict: nothing in it says "qualified".
+        assert_eq!(rec.half_width_ms, 102);
+    }
+
+    #[test]
+    fn restarting_in_a_loop_never_qualifies_and_never_re_baselines_the_evidence() {
+        let (control, e) = q250_calibrated();
+        let first = control.persisted(1, 1).unwrap();
+        let step = DAY_MS / 100;
+        for i in 1..=100u64 {
+            e.run(step);
+            // The live process keeps persisting: its records keep the ORIGINAL calibration.
+            let rec = control.persisted(i + 1, 1).unwrap();
+            assert_eq!(
+                (rec.lower_ms, rec.upper_ms, rec.at),
+                (first.lower_ms, first.upper_ms, first.at),
+                "restart {i}"
+            );
+            // Every restart is unqualified (Order C4) and its evidence equals the uninterrupted
+            // process; the first record says exactly the same: only the calibration instant counts.
+            let (restarted, evidence) = restart(&e, &rec).unwrap();
+            assert_eq!(restarted.lower_bound_ms(), None, "restart {i}");
+            assert_eq!(would_be(&evidence), control.status(), "restart {i}");
+            let (_, from_first) = restart(&e, &first).unwrap();
+            assert_eq!(from_first, RestartEvidence { sequence: 1, ..evidence }, "restart {i}");
+        }
+        // 24 h after the ORIGINAL calibration the budget is exactly spent; one ms later it is over,
+        // and the record that was evidence a moment ago no longer is.
+        assert_eq!(half(&control), 102 + drift_ms(DAY_MS, 8680).unwrap());
+        e.run(1);
+        assert_eq!(control.status(), Status::Unqualified(Unqualified::HoldoverExpired));
+        let late = restart(&e, &first);
+        assert_eq!(late.err(), Some(AnchorError::Unqualified(Unqualified::HoldoverExpired)));
+    }
+
+    #[test]
+    fn an_older_record_never_shows_a_smaller_uncertainty_or_a_later_expiry() {
+        // Rollback inside a boot: an older valid record is put back after a newer calibration.
+        let (c, e) = q250_calibrated();
+        let old = c.persisted(1, 1).unwrap();
+        e.run(500_000);
+        // A fresh authenticated calibration at +500 s (tighter than the drifted anchor).
+        c.calibrate(&one(UTC0 + 500_005, 100, e.now())).unwrap();
+        let newer = c.persisted(2, 1).unwrap();
+        e.run(2_000_000);
+        // Neither restart qualifies (Order C4); as evidence the older record is never better.
+        let (from_old, eo) = restart(&e, &old).unwrap();
+        let (from_new, en) = restart(&e, &newer).unwrap();
+        assert_eq!((from_old.lower_bound_ms(), from_new.lower_bound_ms()), (None, None));
+        assert!(eo.would_be_half_width_ms >= en.would_be_half_width_ms);
+        assert!(eo.would_be_remaining_ms <= en.would_be_remaining_ms);
+        // And the newer evidence is exactly the uninterrupted process that holds the newer anchor.
+        assert_eq!(c.status(), would_be(&en));
+    }
+
+    #[test]
+    fn a_record_that_does_not_prove_continuity_is_not_even_evidence() {
+        // One fixture per failure mode: a record persisted 10 s after the calibration.
+        let fixture = || {
+            let (c, e) = q250_calibrated();
+            e.run(10_000);
+            let rec = c.persisted(1, 1).unwrap();
+            (c, rec, e)
+        };
+        let refused = |e: &Arc<ControlledElapsed>, rec: &PersistedAnchor| {
+            let r = HoldoverClock::new(q250(), e.clone()).unwrap();
+            let outcome = r.assess_restart(rec);
+            // Whatever the outcome, nothing was installed and nothing is qualified.
+            assert!(r.anchor_interval_ms().is_none());
+            assert_eq!(r.reading(), ClockReading::Unqualified);
+            outcome
+        };
+        // Reboot or power loss: the elapsed time is unproven.
+        let (_, rec, e) = fixture();
+        e.reboot(22);
+        assert_eq!(refused(&e, &rec), Err(AnchorError::Unqualified(Unqualified::BootChanged)));
+        // A DIFFERENT boot that happens to show larger counters is still a different boot.
+        let (_, rec, e) = fixture();
+        e.reboot(22);
+        e.run(1_000_000);
+        assert_eq!(refused(&e, &rec), Err(AnchorError::Unqualified(Unqualified::BootChanged)));
+        // The same boot but the elapsed counters went backwards.
+        let (_, rec, e) = fixture();
+        e.regress_boottime(100_000);
+        assert_eq!(refused(&e, &rec), Err(AnchorError::Unqualified(Unqualified::ElapsedRegressed)));
+        // Suspend between persist and now: boottime outgrew monotonic by more than the tolerance
+        // (profile: 50 ms). Exactly the tolerated gap is still continuity, and since Order C10 it is
+        // in the ledger: the evidence equals the writer's own reading of the same instant, both
+        // widened by those 50 ms. One millisecond more is a suspend.
+        let (_, rec, e) = fixture();
+        e.suspend(51);
+        assert_eq!(refused(&e, &rec), Err(AnchorError::Unqualified(Unqualified::SuspendDetected)));
+        let (c, rec, e) = fixture();
+        let before = c.status();
+        e.suspend(50);
+        let evidence = refused(&e, &rec).unwrap();
+        assert_eq!(would_be(&evidence), c.status());
+        let (Status::Qualified { half_width_ms: h0, .. }, Status::Qualified { half_width_ms: h1, .. }) =
+            (before, c.status())
+        else {
+            panic!("qualified")
+        };
+        assert_eq!(h1, h0 + 50, "the tolerated gap widened the interval by 50 ms");
+        let (_, rec, e) = fixture();
+        e.suspend(25);
+        e.run(1_000);
+        e.suspend(26);
+        assert_eq!(refused(&e, &rec), Err(AnchorError::Unqualified(Unqualified::SuspendDetected)));
+        // A long suspend while the process was down.
+        let (_, rec, e) = fixture();
+        e.suspend(3_600_000);
+        assert_eq!(refused(&e, &rec), Err(AnchorError::Unqualified(Unqualified::SuspendDetected)));
+        // The elapsed source cannot be read.
+        let (_, rec, e) = fixture();
+        e.fail();
+        assert_eq!(
+            refused(&e, &rec),
+            Err(AnchorError::Unqualified(Unqualified::ElapsedSourceUnavailable))
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Independent review, MAJOR-2: read-order jitter of the two elapsed clocks is not a suspend.
+    // ---------------------------------------------------------------------------------------
+    /// An elapsed source whose readings pair each boottime sample with a monotonic sample taken
+    /// `lag` nanoseconds later (negative: earlier), as two separate clock reads do. The boottime
+    /// values, hence the elapsed time the engine uses, are the controlled source's; only each
+    /// reading's `boottime - monotonic` gap moves (by `-lag`).
+    struct Lagged {
+        inner: Arc<ControlledElapsed>,
+        lag_ns: Mutex<i64>,
+    }
+    impl Lagged {
+        fn start(boot_id: u128) -> Arc<Self> {
+            Arc::new(Self {
+                inner: ControlledElapsed::start(boot_id),
+                lag_ns: Mutex::new(0),
+            })
+        }
+        fn lag(&self, ns: i64) {
+            *self.lag_ns.lock().unwrap() = ns;
+        }
+        fn now(&self) -> Elapsed {
+            self.read().unwrap()
+        }
+    }
+    impl ElapsedSource for Lagged {
+        fn read(&self) -> Option<Elapsed> {
+            let mut e = self.inner.read()?;
+            e.monotonic_ns = e.monotonic_ns.checked_add_signed(*self.lag_ns.lock().unwrap())?;
+            Some(e)
+        }
+    }
+    const NS_PER_MS: i64 = 1_000_000;
+
+    #[test]
+    fn read_jitter_up_to_the_suspend_tolerance_is_continuity_and_goes_into_the_ledger() {
+        // Lag of the LATER reading's monotonic sample: +x shrinks the gap by x, -x grows it by x.
+        // Exactly the tolerance passes in both directions; one millisecond more fails in both. Since
+        // Order C10 a tolerated change is NOT forgiven: it widens both bounds by its ceiling in ms.
+        let tol = q250().max_suspend_gap_ms as i64 * NS_PER_MS;
+        let cases = [
+            (1, true),
+            (-1, true),
+            (80, true),
+            (tol, true),
+            (-tol, true),
+            (tol + NS_PER_MS, false),
+            (-(tol + NS_PER_MS), false),
+        ];
+        let ceil_ms = |ns: u64| ns.div_ceil(1_000_000);
+        for (lag, ok) in cases {
+            let w = ceil_ms(lag.unsigned_abs());
+            // LIVE: the anchor's reading against a later, jittered one.
+            let src = Lagged::start(3);
+            let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+            assert!(c.set_leap_view(OPEN));
+            let control = assessed(q250(), src.inner.clone());
+            let s = one(UTC0, 13, src.now());
+            src.inner.run(5);
+            assert_eq!(c.calibrate(&s), Ok(true));
+            assert_eq!(control.calibrate(&s), Ok(true));
+            src.inner.run(1_000);
+            src.lag(lag);
+            if ok {
+                assert_eq!(c.status(), widened(control.status(), w), "live, lag {lag} ns");
+                assert!(c.lower_bound_ms().is_some());
+            } else {
+                assert_eq!(
+                    c.status(),
+                    Status::Unqualified(Unqualified::SuspendDetected),
+                    "live, lag {lag} ns"
+                );
+            }
+            // CALIBRATION: the sample's reading against the calibration's own reading. The control
+            // is offered the same sample read without the lag.
+            let src = Lagged::start(3);
+            let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+            assert!(c.set_leap_view(OPEN));
+            let control = assessed(q250(), src.inner.clone());
+            let plain = one(UTC0, 13, src.inner.now());
+            src.lag(-lag);
+            let s = one(UTC0, 13, src.now());
+            src.lag(0);
+            src.inner.run(1_000);
+            let r = c.calibrate(&s);
+            if ok {
+                assert_eq!(r, Ok(true), "calibration, lag {lag} ns");
+                assert_eq!(control.calibrate(&plain), Ok(true));
+                let (lo, hi) = control.anchor_interval_ms().unwrap();
+                assert_eq!(c.anchor_interval_ms(), Some((lo - w, hi + w)), "calibration, lag {lag} ns");
+            } else {
+                assert_eq!(r, Err(ClockError::ElapsedSource), "calibration, lag {lag} ns");
+            }
+            // RESTART EVIDENCE (Order C4): (a) the record's own calibration -> persist readings,
+            // (b) the persist reading -> the restarting reading. Every tolerated change is in the
+            // evidence's ledger; the restarted engine stays unqualified either way.
+            let src = Lagged::start(3);
+            let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+            assert!(c.set_leap_view(OPEN));
+            assert_eq!(c.calibrate(&one(UTC0, 13, src.now())), Ok(true));
+            src.inner.run(1_000);
+            let rec = c.persisted(1, 1).unwrap();
+            src.inner.run(1_000);
+            let mut jittered = rec.clone();
+            jittered.persisted_monotonic_ns =
+                rec.persisted_monotonic_ns.checked_add_signed(lag).unwrap();
+            let jittered = PersistedAnchor::decode(&jittered.encode()).unwrap();
+            let r = HoldoverClock::new(q250(), src.clone()).unwrap();
+            let outcome = r.assess_restart(&jittered);
+            if ok {
+                // The jittered persist reading is off by `lag` against BOTH of its neighbours: the
+                // observed gap range is `lag`, charged once.
+                let evidence = outcome.unwrap_or_else(|e| panic!("assessment (a), lag {lag} ns: {e:?}"));
+                assert_eq!(
+                    would_be(&evidence),
+                    widened(c.status(), ceil_ms(lag.unsigned_abs())),
+                    "assessment (a), lag {lag} ns"
+                );
+            } else {
+                assert_eq!(outcome, Err(AnchorError::Inconsistent), "assessment (a), lag {lag} ns");
+            }
+            assert_eq!(r.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+            // Time passes first, so the writer's widened reading below is not below its own
+            // high-water mark from the reading above.
+            src.inner.run(1_000);
+            src.lag(lag);
+            let r = HoldoverClock::new(q250(), src.clone()).unwrap();
+            let outcome = r.assess_restart(&rec);
+            if ok {
+                // The writer reads the same lagged instant and widens by the same step.
+                let evidence = outcome.unwrap_or_else(|e| panic!("assessment (b), lag {lag} ns: {e:?}"));
+                assert_eq!(would_be(&evidence), c.status(), "assessment (b), lag {lag} ns");
+            } else {
+                assert_eq!(
+                    outcome,
+                    Err(AnchorError::Unqualified(Unqualified::SuspendDetected)),
+                    "assessment (b), lag {lag} ns"
+                );
+            }
+            assert_eq!(r.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        }
+        // The reviewer's R6 numbers: calibrated at a reading with a 120 ns lag, read a second later
+        // with a 40 ns lag (80 ns smaller, no suspend). This was once `SuspendDetected` and dropped
+        // the anchor for good; it is continuity, widened by the 80 ns rounded up to 1 ms.
+        let src = Lagged::start(1);
+        let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+        assert!(c.set_leap_view(OPEN));
+        let control = assessed(q250(), src.inner.clone());
+        src.lag(-120);
+        let s = one(UTC0, 13, src.now());
+        assert_eq!(c.calibrate(&s), Ok(true));
+        assert_eq!(control.calibrate(&one(UTC0, 13, src.inner.now())), Ok(true));
+        src.inner.run(1_000);
+        src.lag(-40);
+        assert_eq!(c.status(), widened(control.status(), 1));
+    }
+
+    #[test]
+    fn randomized_read_jitter_is_never_a_suspend_and_the_ledger_is_exactly_its_observed_range() {
+        // Every reading pairs its boottime sample with a monotonic sample off by a random lag in
+        // [-J, J], so the gaps of two readings differ by up to 2J. Three regimes: J = 1 us
+        // (realistic), 0.1 ms, and half the tolerance (the largest jitter that can never trip the
+        // detector). Compared readings are at least 2J + 1 ms apart, as real ones are, so neither
+        // counter goes backwards and no widening can push a lower bound below an earlier one.
+        // Without a suspend no reading, calibration, persist or assessment reports
+        // `SuspendDetected`, and the jittered clock always equals the unjittered one WIDENED by its
+        // ledger (Order C10), which this test models independently: the capture window's swing,
+        // plus the RANGE of the lags of the anchor's own reading and every reading since, each
+        // rounded up to whole ms. Once that widening exceeds the 1 s budget the clock is
+        // `IntervalTooWide`. A real suspend longer than the tolerance PLUS the jitter span
+        // 2J (the jitter can hide up to its own size) is always detected, live and by an assessment
+        // across it.
+        let tol_ms = q250().max_suspend_gap_ms;
+        let limit = q250().max_interval_half_width_ms;
+        let mut rng = Rng(0x00c1_0c4a_5eed_0002);
+        let (mut reads, mut too_wide, mut assessed_ok) = (0u32, 0u32, 0u32);
+        let ms = |ns: u64| ns.div_ceil(1_000_000);
+        for jitter_ns in [1_000u64, 100_000, tol_ms * 1_000_000 / 2] {
+            let apart = 2 * jitter_ns.div_ceil(1_000_000) + 1;
+            let detectable_ms = ((tol_ms + 1) * 1_000_000 + 2 * jitter_ns).div_ceil(1_000_000);
+            let jitter = |rng: &mut Rng| rng.upto(2 * jitter_ns + 1) as i64 - jitter_ns as i64;
+            for scenario in 0..40u64 {
+                let src = Lagged::start(5);
+                let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+                assert!(c.set_leap_view(OPEN));
+                let control = assessed(q250(), src.inner.clone());
+                // Model of c's anchor: the capture widening folded into the adopted interval, the
+                // ledger since adoption, the lag of the anchor's own reading and of the last reading
+                // folded into the ledger.
+                let read_lag = jitter(&mut rng);
+                src.lag(read_lag);
+                let s = one(UTC0, 13, src.now());
+                let plain = one(UTC0, 13, src.inner.now());
+                src.inner.run(apart);
+                let mut anchor_lag = jitter(&mut rng);
+                src.lag(anchor_lag);
+                assert_eq!(c.calibrate(&s), Ok(true));
+                assert_eq!(control.calibrate(&plain), Ok(true));
+                let mut capture = ms((anchor_lag - read_lag).unsigned_abs());
+                let (mut ledger, mut lag_lo, mut lag_hi, mut alive) = (0u64, anchor_lag, anchor_lag, true);
+                let mut sequence = 0;
+                for _ in 0..(30 + rng.upto(50)) {
+                    src.inner.run(apart + rng.upto(600_000));
+                    let lag = jitter(&mut rng);
+                    src.lag(lag);
+                    let status = c.status();
+                    let unjittered = control.status();
+                    reads += 1;
+                    let Status::Qualified { half_width_ms: base, .. } = unjittered else {
+                        panic!("control {unjittered:?}")
+                    };
+                    if alive {
+                        (lag_lo, lag_hi) = (lag_lo.min(lag), lag_hi.max(lag));
+                        ledger = (lag_hi - lag_lo).unsigned_abs();
+                        if base + capture + ms(ledger) > limit {
+                            alive = false;
+                            too_wide += 1;
+                        }
+                    }
+                    if alive {
+                        assert_eq!(
+                            status,
+                            widened(unjittered, capture + ms(ledger)),
+                            "J {jitter_ns} #{scenario}"
+                        );
+                    } else {
+                        assert_eq!(
+                            status,
+                            Status::Unqualified(Unqualified::IntervalTooWide),
+                            "J {jitter_ns} #{scenario}"
+                        );
+                    }
+                    match rng.upto(4) {
+                        0 => {
+                            // A sample read now and offered a little later: both adopt it, and c's
+                            // anchor starts a new ledger with its own capture widening.
+                            let (lo, hi) = control.interval_ms().unwrap();
+                            let read_lag = jitter(&mut rng);
+                            src.lag(read_lag);
+                            let s = one((lo + hi) / 2, 13, src.now());
+                            let plain = one((lo + hi) / 2, 13, src.inner.now());
+                            src.inner.run(apart + rng.upto(50));
+                            anchor_lag = jitter(&mut rng);
+                            src.lag(anchor_lag);
+                            assert_eq!(c.calibrate(&s), Ok(true), "J {jitter_ns} #{scenario}");
+                            assert_eq!(control.calibrate(&plain), Ok(true));
+                            capture = ms((anchor_lag - read_lag).unsigned_abs());
+                            (ledger, lag_lo, lag_hi, alive) = (0, anchor_lag, anchor_lag, true);
+                        }
+                        1 if alive => {
+                            // Persisted at one reading (folded into the ledger like any reading)
+                            // and assessed as restart evidence at a later one (Order C4).
+                            let persist_lag = jitter(&mut rng);
+                            src.lag(persist_lag);
+                            (lag_lo, lag_hi) = (lag_lo.min(persist_lag), lag_hi.max(persist_lag));
+                            ledger = (lag_hi - lag_lo).unsigned_abs();
+                            sequence += 1;
+                            let rec = c.persisted(sequence, 1);
+                            if base + capture + ms(ledger) > limit {
+                                assert!(rec.is_none(), "J {jitter_ns} #{scenario}");
+                                alive = false;
+                                too_wide += 1;
+                                continue;
+                            }
+                            let rec = rec.unwrap();
+                            src.inner.run(apart + rng.upto(60_000));
+                            let restart_lag = jitter(&mut rng);
+                            src.lag(restart_lag);
+                            let r = HoldoverClock::new(q250(), src.clone()).unwrap();
+                            let outcome = r.assess_restart(&rec);
+                            assert_eq!(r.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+                            // The record carries no ledger: its evidence sees only the range of
+                            // the three readings anchor, persist and now.
+                            let three = [anchor_lag, persist_lag, restart_lag];
+                            let steps = (three.iter().max().unwrap() - three.iter().min().unwrap())
+                                .unsigned_abs();
+                            let unjittered = control.status();
+                            let Status::Qualified { half_width_ms: base, .. } = unjittered else {
+                                panic!("control {unjittered:?}")
+                            };
+                            if base + capture + ms(steps) > limit {
+                                assert_eq!(
+                                    outcome,
+                                    Err(AnchorError::Unqualified(Unqualified::IntervalTooWide))
+                                );
+                            } else {
+                                let evidence = outcome.unwrap();
+                                assert_eq!(
+                                    would_be(&evidence),
+                                    widened(unjittered, capture + ms(steps)),
+                                    "J {jitter_ns} #{scenario}"
+                                );
+                                assessed_ok += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // A real suspend just past what the jitter could hide (and often much longer), on
+                // fresh anchors.
+                let (lo, hi) = control.interval_ms().unwrap();
+                let read_lag = jitter(&mut rng);
+                src.lag(read_lag);
+                let s = one((lo + hi) / 2, 13, src.now());
+                let plain = one((lo + hi) / 2, 13, src.inner.now());
+                src.inner.run(apart);
+                src.lag(jitter(&mut rng));
+                assert_eq!(c.calibrate(&s), Ok(true));
+                assert_eq!(control.calibrate(&plain), Ok(true));
+                src.inner.run(apart);
+                src.lag(jitter(&mut rng));
+                let rec = c.persisted(sequence + 1, 1).unwrap();
+                let suspend_ms = detectable_ms + if scenario % 4 == 0 { 0 } else { rng.upto(3_600_000) };
+                src.inner.run(apart);
+                src.inner.suspend(suspend_ms);
+                src.inner.run(apart);
+                src.lag(jitter(&mut rng));
+                assert_eq!(
+                    c.status(),
+                    Status::Unqualified(Unqualified::SuspendDetected),
+                    "J {jitter_ns} #{scenario}: suspend of {suspend_ms} ms"
+                );
+                let r = HoldoverClock::new(q250(), src.clone()).unwrap();
+                assert_eq!(
+                    r.assess_restart(&rec),
+                    Err(AnchorError::Unqualified(Unqualified::SuspendDetected)),
+                    "J {jitter_ns} #{scenario}: suspend of {suspend_ms} ms"
+                );
+            }
+        }
+        // Jitter of half the tolerance (25 ms) charged once fits the 1 s budget, so no regime
+        // exhausts it here; the budget is reached deterministically in
+        // `c10_a_real_jump_beyond_the_budget_room_ends_holdover_and_is_never_forgiven`.
+        assert_eq!(too_wide, 0, "the range of a bounded jitter is bounded");
+        assert!(reads > 5_000, "enough jittered readings ({reads})");
+        assert!(assessed_ok > 100, "enough records were assessed ({assessed_ok})");
+    }
+
+    #[test]
+    fn a_record_of_another_profile_or_parameter_is_not_evidence() {
+        let (c, e) = q250_calibrated();
+        let rec = c.persisted(1, 1).unwrap();
+        assert_eq!(rec.params, q250());
+        let edits: [&dyn Fn(&mut ClockProfile); 9] = [
+            &|p| p.max_source_uncertainty_ms += 1,
+            &|p| p.max_calibration_half_width_ms += 1,
+            &|p| p.min_sources += 1,
+            &|p| p.max_faulty_sources += 1,
+            &|p| p.drift_bound_ppb += 1,
+            &|p| p.max_holdover_ms += 1,
+            &|p| p.max_interval_half_width_ms += 1,
+            &|p| p.max_suspend_gap_ms += 1,
+            &|p| p.confirm_calibrations += 1,
+        ];
+        for (i, edit) in edits.iter().enumerate() {
+            // A record written under a different profile (it decodes: identity and parameters
+            // are consistent with each other) is refused by the clock running the first one.
+            let mut other = rec.clone();
+            edit(&mut other.params);
+            let stored = PersistedAnchor::decode(&other.encode()).unwrap();
+            assert_eq!(stored.params.fields()[i], q250().fields()[i] + 1);
+            let r = HoldoverClock::new(q250(), e.clone()).unwrap();
+            assert_eq!(r.assess_restart(&stored), Err(AnchorError::Profile), "field {i}");
+            assert_eq!(r.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        }
+        // And the other way round: a clock with a different profile refuses this record.
+        let mut p2 = q250();
+        p2.drift_bound_ppb = 8000;
+        let r = HoldoverClock::new(p2, e.clone()).unwrap();
+        assert_eq!(r.assess_restart(&rec), Err(AnchorError::Profile));
+    }
+
+    #[test]
+    fn a_record_with_inconsistent_derived_fields_is_not_evidence() {
+        let (c, e) = q250_calibrated();
+        e.run(1_000);
+        let rec = c.persisted(1, 1).unwrap();
+        let fresh = || HoldoverClock::new(q250(), e.clone()).unwrap();
+        let bad: Vec<(&str, Box<dyn Fn(&mut PersistedAnchor)>)> = vec![
+            ("half-width", Box::new(|r| r.half_width_ms += 1)),
+            ("half-width below", Box::new(|r| r.half_width_ms -= 1)),
+            ("horizon late", Box::new(|r| r.validity_horizon_ms += 1)),
+            ("horizon early", Box::new(|r| r.validity_horizon_ms -= 1)),
+            ("inverted interval", Box::new(|r| std::mem::swap(&mut r.lower_ms, &mut r.upper_ms))),
+            ("persisted before calibration", Box::new(|r| r.persisted_boottime_ns = r.at.boottime_ns - 1)),
+            ("persist-time monotonic ahead", Box::new(|r| r.persisted_monotonic_ns = r.at.monotonic_ns - 1)),
+            ("persist-time suspend", Box::new(|r| r.persisted_boottime_ns += 1_000_000_000)),
+        ];
+        for (name, edit) in &bad {
+            let mut r = rec.clone();
+            edit(&mut r);
+            assert_eq!(fresh().assess_restart(&r), Err(AnchorError::Inconsistent), "{name}");
+        }
+        // The half-width must respect the profile's calibration cap even when self-consistent.
+        let mut wide = rec.clone();
+        wide.upper_ms = wide.lower_ms + 2 * 251;
+        wide.half_width_ms = 251;
+        wide.validity_horizon_ms = fresh().validity_horizon_ms(wide.lower_ms, wide.upper_ms).unwrap();
+        assert_eq!(fresh().assess_restart(&wide), Err(AnchorError::Inconsistent));
+        // The unmodified record is evidence (and, Order C4, nothing more).
+        assert!(fresh().assess_restart(&rec).is_ok());
+    }
+
+    #[test]
+    fn corrupted_truncated_old_and_unknown_records_never_qualify_the_clock() {
+        let (c, e) = q250_calibrated();
+        let rec = c.persisted(1, 1).unwrap();
+        let good = rec.encode();
+        let legacy = super::anchor_v2::legacy_v1_encode(
+            q250().id(),
+            rec.lower_ms,
+            rec.upper_ms,
+            &rec.at,
+            rec.high_water_ms,
+        );
+        let mut variants: Vec<(String, Vec<u8>)> = vec![
+            ("legacy v1".into(), legacy),
+            ("empty".into(), vec![]),
+            ("garbage".into(), vec![0xff; PersistedAnchor::LEN]),
+        ];
+        for d in [b'0', b'3', b'9'] {
+            let mut u = good.clone();
+            u[7] = d;
+            variants.push((format!("version {}", d as char), u));
+        }
+        for n in [0, 7, 8, 100, PersistedAnchor::LEN - 1] {
+            variants.push((format!("truncated {n}"), good[..n].to_vec()));
+        }
+        let mut longer = good.clone();
+        longer.push(0);
+        variants.push(("oversized".into(), longer));
+        for i in (0..good.len()).step_by(7) {
+            let mut flipped = good.clone();
+            flipped[i] ^= 0x10;
+            variants.push((format!("bit flip at {i}"), flipped));
+        }
+        for (name, bytes) in variants {
+            // A host assesses only what decodes; nothing here may decode, let alone qualify.
+            let fresh = HoldoverClock::new(q250(), e.clone()).unwrap();
+            fresh.set_leap_view(OPEN);
+            if let Ok(p) = PersistedAnchor::decode(&bytes) {
+                let _ = fresh.assess_restart(&p);
+                panic!("{name} decoded");
+            }
+            assert_eq!(
+                fresh.status(),
+                Status::Unqualified(Unqualified::NeverCalibrated),
+                "{name} must not qualify"
+            );
+            assert_eq!(fresh.reading(), ClockReading::Unqualified);
+        }
+        // The v1 file is refused specifically as a legacy format (a host may log it, never adopt it).
+        assert_eq!(
+            PersistedAnchor::decode(&super::anchor_v2::legacy_v1_encode(
+                q250().id(),
+                1,
+                2,
+                &rec.at,
+                3
+            )),
+            Err(AnchorError::Legacy)
+        );
+    }
+
+    #[test]
+    fn the_validity_horizon_is_exactly_where_the_engine_stops_trusting_the_anchor() {
+        // The stored horizon is recomputed by the engine's own drift rule; check it against the
+        // engine's checks by running time to the horizon and one millisecond past it.
+        let wide_ppb0 = ClockProfile {
+            drift_bound_ppb: 0,
+            max_holdover_ms: 2_000_000,
+            ..profile()
+        };
+        let mut tight = q250();
+        tight.max_interval_half_width_ms = 400; // the width limit, not the holdover, ends it
+        tight.max_holdover_ms = DAY_MS;
+        let mut exercised = 0;
+        for p in [q250(), q100(), tight, wide_ppb0] {
+            for unc in [0u64, 1, 13, 98] {
+                let e = ControlledElapsed::start(1);
+                let c = assessed(p.clone(), e.clone());
+                let samples: Vec<SourceSample> = (0..p.min_sources)
+                    .map(|i| sample(&format!("s{i}"), UTC0, unc, e.now()))
+                    .collect();
+                if c.calibrate(&samples).is_err() {
+                    continue;
+                }
+                let (lo, hi) = c.anchor_interval_ms().unwrap();
+                let h = c.validity_horizon_ms(lo, hi).unwrap();
+                e.run(h);
+                assert!(c.interval_ms().is_some(), "{p:?} unc {unc}: valid at the horizon {h}");
+                e.run(1);
+                assert!(c.interval_ms().is_none(), "{p:?} unc {unc}: invalid one ms after {h}");
+                assert!(h <= p.max_holdover_ms);
+                exercised += 1;
+            }
+        }
+        assert!(exercised >= 14, "the fixed profiles were really exercised ({exercised})");
+        // An interval that is already too wide at age 0 has no horizon at all.
+        let c = HoldoverClock::new(q250(), ControlledElapsed::start(1)).unwrap();
+        assert_eq!(c.validity_horizon_ms(0, 2_000), None);
+        assert_eq!(c.validity_horizon_ms(5, 4), None);
+    }
+
+    #[test]
+    fn c4_assessing_a_record_never_changes_the_engine_whatever_its_state() {
+        // Order C4: `assess_restart` is evidence only. Whatever the clock's state (qualified,
+        // dropped by a leap transition, never calibrated, faulted, awaiting confirmation) and
+        // whatever the record (valid evidence or refused), the engine is byte-for-byte as before:
+        // status, view, anchor, candidate, fault count and high-water mark.
+        let (c, e) = q250_calibrated();
+        e.run(1_000);
+        let rec = c.persisted(1, 1).unwrap();
+        let mut foreign = rec.clone();
+        foreign.params.drift_bound_ppb += 1;
+        let foreign = PersistedAnchor::decode(&foreign.encode()).unwrap();
+        let snapshot = |x: &HoldoverClock| {
+            (
+                x.status(),
+                x.leap_view(),
+                x.anchor_interval_ms(),
+                x.fault_count(),
+                x.persisted_high_water(),
+            )
+        };
+        // A clock whose anchor a leap transition dropped, one with a recorded fault (a regression)
+        // and one awaiting confirmation.
+        let dropped = assessed(q250(), e.clone());
+        dropped.calibrate(&one(UTC0 + 1_000, 100, e.now())).unwrap();
+        dropped.set_leap_view(LeapView::Clear { valid_until_ms: 1 });
+        let faulted = assessed(q250(), e.clone());
+        faulted.calibrate(&one(UTC0 + 1_000, 100, e.now())).unwrap();
+        faulted.lower_bound_ms().unwrap();
+        let below = one(UTC0 + 1_000 - 150, 100, e.now());
+        assert_eq!(faulted.calibrate(&below), Err(ClockError::Regression));
+        assert_eq!(faulted.fault_count(), 1);
+        let mut p2 = q250();
+        p2.confirm_calibrations = 2;
+        let awaiting = assessed(p2.clone(), e.clone());
+        assert_eq!(awaiting.calibrate(&one(UTC0 + 1_000, 100, e.now())), Ok(false));
+        let cases: Vec<(&str, Arc<HoldoverClock>)> = vec![
+            ("qualified", c.clone()),
+            ("dropped by a leap transition", dropped),
+            ("never calibrated, no view", HoldoverClock::new(q250(), e.clone()).unwrap()),
+            ("never calibrated, assessed", assessed(q250(), e.clone())),
+            ("faulted", faulted),
+            ("awaiting confirmation", awaiting),
+        ];
+        for (name, clock) in cases {
+            let before = snapshot(&clock);
+            for record in [&rec, &foreign] {
+                let _ = clock.assess_restart(record);
+                assert_eq!(snapshot(&clock), before, "{name}");
+            }
+        }
+        // The candidate awaiting confirmation is still the one that was there: one more consistent
+        // calibration confirms it, exactly as if no record had been assessed.
+        let awaiting = assessed(p2, e.clone());
+        assert_eq!(awaiting.calibrate(&one(UTC0 + 1_000, 100, e.now())), Ok(false));
+        let _ = awaiting.assess_restart(&rec);
+        e.run(1_000);
+        assert_eq!(awaiting.calibrate(&one(UTC0 + 2_000, 100, e.now())), Ok(true));
+    }
+
+    #[test]
+    fn a_poisoned_lock_never_turns_into_a_durable_high_water_sentinel() {
+        let (c, e) = q250_calibrated();
+        e.run(1_000);
+        let hw = c.persisted(1, 1).unwrap().high_water_ms;
+        // Poison the state lock the way a panic inside a locked section would.
+        let shared = c.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = shared.state.lock().unwrap();
+            panic!("poison the engine lock");
+        })
+        .join();
+        assert!(c.state.is_poisoned());
+        assert_eq!(c.persisted_high_water(), hw, "the real mark, not u64::MAX");
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::Arithmetic), "fail closed");
+    }
+
+    #[test]
+    fn persisting_refreshes_the_high_water_and_never_writes_for_an_invalid_anchor() {
+        let (c, e) = q250_calibrated();
+        // Nothing to persist for a clock without an anchor.
+        let empty = HoldoverClock::new(q250(), e.clone()).unwrap();
+        assert!(empty.persisted(1, 1).is_none());
+        e.run(30_000);
+        // The record's high-water mark is the highest lower bound reported by the time of writing.
+        let rec = c.persisted(1, 1).unwrap();
+        assert_eq!(rec.high_water_ms, c.persisted_high_water());
+        assert!(rec.high_water_ms >= rec.lower_ms);
+        assert_eq!(rec.persisted_boottime_ns, e.now().boottime_ns);
+        assert_eq!(rec.persisted_monotonic_ns, e.now().monotonic_ns);
+        // A ratchet only ever rises.
+        c.ratchet_high_water(5);
+        assert_eq!(c.persisted_high_water(), rec.high_water_ms);
+        c.ratchet_high_water(rec.high_water_ms + 7);
+        assert_eq!(c.persisted_high_water(), rec.high_water_ms + 7);
+        // An anchor that is no longer valid is dropped and nothing is produced for it.
+        e.run(DAY_MS);
+        assert!(c.persisted(2, 1).is_none());
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::HoldoverExpired));
+        // The expired record is not even evidence, and the assessment touches nothing: a host that
+        // wants the stored mark's protection ratchets it explicitly (the ratchet can only refuse).
+        let fresh = HoldoverClock::new(q250(), e.clone()).unwrap();
+        assert_eq!(
+            fresh.assess_restart(&rec),
+            Err(AnchorError::Unqualified(Unqualified::HoldoverExpired))
+        );
+        assert_eq!(fresh.persisted_high_water(), 0);
+        fresh.ratchet_high_water(rec.high_water_ms);
+        assert_eq!(fresh.persisted_high_water(), rec.high_water_ms);
+    }
+
+    /// Deterministic xorshift for the randomized tests below.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn upto(&mut self, n: u64) -> u64 {
+            self.next() % n.max(1)
+        }
+    }
+
+    #[test]
+    fn randomized_restart_evidence_equals_the_uninterrupted_process_and_an_older_record_is_never_better() {
+        // Order C4: no restart is ever qualified (asserted for every restart below). What the
+        // record still is, is EVIDENCE: recomputed over all elapsed time since the ORIGINAL
+        // calibration it must say exactly what the process that never stopped reports, or be refused
+        // for exactly the reason that process lost its anchor.
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let (mut compared, mut refused, mut older_compared) = (0u32, 0u32, 0u32);
+        for scenario in 0..300u64 {
+            let p = match scenario % 3 {
+                0 => q250(),
+                1 => q100(),
+                _ => {
+                    let mut p = q250();
+                    p.drift_bound_ppb = 1 + rng.upto(2_000_000);
+                    p
+                }
+            };
+            let e = ControlledElapsed::start(9);
+            let control = assessed(p.clone(), e.clone());
+            let unc = rng.upto(p.max_source_uncertainty_ms.saturating_sub(1));
+            let s = one(UTC0, unc, e.now());
+            // A random capture age (0 .. ~3 minutes), which also moves g_cal.
+            e.run(rng.upto(200_000));
+            if control.calibrate(&s).is_err() {
+                continue;
+            }
+            let mut elapsed_total = 0u64;
+            let mut sequence = 0u64;
+            let mut records: Vec<PersistedAnchor> = Vec::new();
+            for _ in 0..(2 + rng.upto(14)) {
+                // Time passes: usually seconds to minutes, sometimes hours, never past the budget.
+                let step = match rng.upto(10) {
+                    0 => rng.upto(6 * 3_600_000),
+                    1..=3 => rng.upto(600_000),
+                    _ => rng.upto(5_000),
+                };
+                if elapsed_total + step > p.max_holdover_ms / 2 {
+                    break;
+                }
+                e.run(step);
+                elapsed_total += step;
+                // Occasionally an authenticated recalibration that agrees with the holdover interval.
+                if rng.upto(4) == 0 {
+                    if let Some((lo, hi)) = control.interval_ms() {
+                        if hi - lo >= 60 {
+                            let centre = (lo + hi) / 2;
+                            let _ = control.calibrate(&one(centre, 10, e.now()));
+                        }
+                    }
+                }
+                // Persist the uninterrupted process and "restart" from the record.
+                sequence += 1;
+                let Some(rec) = control.persisted(sequence, 1) else {
+                    break;
+                };
+                records.push(rec.clone());
+                // Time passes while the process is down (same boot, no suspend).
+                let down = rng.upto(3_000_000);
+                if elapsed_total + down > p.max_holdover_ms / 2 {
+                    break;
+                }
+                e.run(down);
+                elapsed_total += down;
+                let stored = PersistedAnchor::decode(&rec.encode()).unwrap();
+                let restarted = HoldoverClock::new(p.clone(), e.clone()).unwrap();
+                let outcome = restarted.assess_restart(&stored);
+                restarted.set_leap_view(OPEN);
+                assert_eq!(
+                    restarted.status(),
+                    Status::Unqualified(Unqualified::NeverCalibrated),
+                    "scenario {scenario}: a record never qualifies"
+                );
+                let now = control.status();
+                match now {
+                    // Still valid: the evidence is indistinguishable from the process that never
+                    // stopped, down to the lower bound and the remaining holdover.
+                    Status::Qualified { .. } => {
+                        assert_eq!(would_be(&outcome.unwrap()), now, "scenario {scenario}");
+                        compared += 1;
+                    }
+                    // Expired or too wide while the process was down: refused for exactly the
+                    // reason the uninterrupted process lost its anchor.
+                    Status::Unqualified(reason) => {
+                        assert_eq!(outcome, Err(AnchorError::Unqualified(reason)), "scenario {scenario}");
+                        refused += 1;
+                        break;
+                    }
+                }
+                // An OLDER record is never better: no smaller uncertainty, no later expiry.
+                if records.len() > 1 {
+                    let old = &records[records.len() - 2];
+                    let from_old = HoldoverClock::new(p.clone(), e.clone()).unwrap();
+                    if let (
+                        Ok(evidence),
+                        Status::Qualified { half_width_ms: hn, holdover_remaining_ms: rn, .. },
+                    ) = (from_old.assess_restart(old), now)
+                    {
+                        let (ho, ro) = (evidence.would_be_half_width_ms, evidence.would_be_remaining_ms);
+                        assert!(ho >= hn, "scenario {scenario}: older half-width {ho} < {hn}");
+                        assert!(ro <= rn, "scenario {scenario}: older remaining {ro} > {rn}");
+                        older_compared += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 400, "enough qualified restarts were compared ({compared})");
+        assert!(refused > 10, "enough expired or too-wide restarts were compared ({refused})");
+        assert!(older_compared > 100, "enough older records were compared ({older_compared})");
+    }
+
+    #[test]
+    fn the_validity_horizon_closed_form_matches_the_engine_over_random_profiles() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let mut checked = 0;
+        for _ in 0..600 {
+            let c = 20 + rng.upto(380);
+            let p = ClockProfile {
+                max_source_uncertainty_ms: c,
+                max_calibration_half_width_ms: c,
+                min_sources: 1,
+                max_faulty_sources: 0,
+                drift_bound_ppb: 1 + rng.upto(3_000_000),
+                max_holdover_ms: 1_000 + rng.upto(500_000_000),
+                max_interval_half_width_ms: c + rng.upto(3_000),
+                max_suspend_gap_ms: 50,
+                confirm_calibrations: 1,
+            };
+            let e = ControlledElapsed::start(1);
+            let clock = assessed(p.clone(), e.clone());
+            let unc = rng.upto(c.saturating_sub(1));
+            if clock.calibrate(&one(UTC0, unc, e.now())).is_err() {
+                continue;
+            }
+            let (lo, hi) = clock.anchor_interval_ms().unwrap();
+            let Some(h) = clock.validity_horizon_ms(lo, hi) else {
+                continue;
+            };
+            assert!(h <= p.max_holdover_ms);
+            e.run(h);
+            assert!(clock.interval_ms().is_some(), "{p:?} unc {unc}: valid at {h}");
+            e.run(1);
+            assert!(clock.interval_ms().is_none(), "{p:?} unc {unc}: invalid at {}", h + 1);
+            checked += 1;
+        }
+        assert!(checked > 300, "enough random profiles were exercised ({checked})");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Order of 4 Oct 2026, decisions C2, C3, C4 and C10 (Lane C1). Software, Windows host,
+    // controlled elapsed sources: Implemented, not Qualified; Simulated, not Physical.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn c2_the_derived_t_minus_s_guard_is_exact_at_both_interval_endpoints() {
+        // Order C2. The zone is [T - S, T) for both kinds. A sample interval is refused if its
+        // rolled UPPER bound reaches the zone start T - S, and (while the event is unresolved) if it
+        // lies at or past T. Capture age 0 and U = 13: a reading at `utc` is adopted as
+        // [utc - 13, utc + 14].
+        let s = LEAP_STEP_MS;
+        for kind in [LeapKind::Insert, LeapKind::Delete] {
+            let view = LeapView::Pending { kind, boundary_ms: T };
+            let offer = |utc: u64| {
+                let e = ControlledElapsed::start(1);
+                let c = HoldoverClock::new(q250(), e.clone()).unwrap();
+                assert!(c.set_leap_view(view));
+                let r = c.calibrate(&one(utc, 13, e.now()));
+                (r, c, e)
+            };
+            // Upper bound exactly T - S - 1: admitted. Exactly T - S (touching the zone start): refused.
+            assert_eq!(offer(T - s - 15).0, Ok(true), "{kind:?}");
+            let (r, c, _) = offer(T - s - 14);
+            assert_eq!(r, Err(ClockError::SourceLeapAmbiguity), "{kind:?}");
+            assert_eq!((c.anchor_interval_ms(), c.fault_count()), (None, 0));
+            // Upper bound exactly T: the interval covers the zone's last label T - 1. Refused.
+            assert_eq!(offer(T - 14).0, Err(ClockError::SourceLeapAmbiguity), "{kind:?}");
+            // Lower bound exactly T (wholly past the zone, touching T): refused while the event is
+            // unresolved, admitted once the adapter has withdrawn it.
+            let (r, c, e) = offer(T + 13);
+            assert_eq!(r, Err(ClockError::SourceLeapAmbiguity), "{kind:?}");
+            assert!(c.set_leap_view(LeapView::Clear { valid_until_ms: T + 10 * s }));
+            assert_eq!(c.calibrate(&one(T + 13, 13, e.now())), Ok(true), "{kind:?}");
+            assert_eq!(c.anchor_interval_ms(), Some((T, T + 27)));
+        }
+        // Holdover endpoints: a deletion steps at T - S, an insertion at T. Rolled upper bound one
+        // millisecond below the step: qualified; exactly at the step: LeapTransition, for good.
+        for (kind, step) in [(LeapKind::Delete, T - s), (LeapKind::Insert, T)] {
+            let e = ControlledElapsed::start(1);
+            let c = HoldoverClock::new(q250(), e.clone()).unwrap();
+            assert!(c.set_leap_view(LeapView::Pending { kind, boundary_ms: T }));
+            assert_eq!(c.calibrate(&one(T - 10_000, 13, e.now())), Ok(true));
+            let hi = |c: &HoldoverClock| c.interval_ms().unwrap().1;
+            // One millisecond first, so the drift term is 1 from here on and each ms moves `hi` by 1.
+            e.run(1);
+            while hi(&c) < step - 1 {
+                e.run(step - 1 - hi(&c));
+            }
+            assert_eq!(hi(&c), step - 1, "{kind:?}");
+            assert!(c.lower_bound_ms().is_some(), "{kind:?}: one ms below the step");
+            e.run(1);
+            assert_eq!(hi(&c), step, "{kind:?}");
+            assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition), "{kind:?}");
+            e.run(1);
+            assert_eq!(c.lower_bound_ms(), None);
+        }
+    }
+
+    #[test]
+    fn c3_every_reading_recomputes_age_and_uncertainty_between_polls() {
+        use crate::vote_clock_v1::{TimeStatus, evaluate};
+        // Order C3. A poll qualifies the clock; a signing decision 4.9 s later is judged on the age,
+        // drift and holdover of THAT instant (the engine re-reads the elapsed source at every
+        // reading), never on the last poll's verdict. Adopted interval of `q250_calibrated`:
+        // [UTC0 - 96, UTC0 + 107], half-width 102 at age 0.
+        let (c, e) = q250_calibrated();
+        assert_eq!(
+            c.status(),
+            Status::Qualified {
+                lower_ms: UTC0 - 96,
+                half_width_ms: 102,
+                holdover_remaining_ms: DAY_MS
+            }
+        );
+        // A block 5 s ahead of the poll's qualified second is not eligible at the poll ...
+        let later = (UTC0 - 96 + 4_900 - 1) / 1000;
+        assert!(matches!(evaluate(&*c, later), TimeStatus::Future { .. }));
+        e.run(4_900);
+        // ... and is, 4.9 s later, by the drift rule alone (g = ceil(4_900 * 8680 / 1e9) = 1).
+        assert_eq!(
+            c.status(),
+            Status::Qualified {
+                lower_ms: UTC0 - 96 + 4_900 - 1,
+                half_width_ms: 103,
+                holdover_remaining_ms: DAY_MS - 4_900
+            }
+        );
+        assert_eq!(evaluate(&*c, later), TimeStatus::Eligible);
+        // A holdover that ends BETWEEN two polls ends at the decision, though the poll said qualified.
+        let (c, e) = q250_calibrated();
+        let (_, hi) = c.interval_ms().unwrap();
+        c.set_leap_view(LeapView::Clear { valid_until_ms: hi + 4_800 });
+        assert!(matches!(c.status(), Status::Qualified { .. }), "qualified at the poll");
+        e.run(4_900);
+        assert_eq!(evaluate(&*c, 0), TimeStatus::Unqualified);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::LeapTransition));
+        // So does a suspend, and so does a tolerated gap that the ledger must account for (C10).
+        let (c, e) = q250_calibrated();
+        e.run(1_000);
+        e.suspend(51);
+        assert_eq!(evaluate(&*c, 0), TimeStatus::Unqualified);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::SuspendDetected));
+        let (c, e) = q250_calibrated();
+        e.run(1_000);
+        e.suspend(50);
+        assert_eq!(
+            c.status(),
+            Status::Qualified {
+                lower_ms: UTC0 - 96 + 1_050 - 1 - 50,
+                half_width_ms: 102 + 1 + 50,
+                holdover_remaining_ms: DAY_MS - 1_050
+            }
+        );
+    }
+
+    #[test]
+    fn c4_a_forged_future_record_is_refused_not_merely_bounded() {
+        use crate::vote_clock_v1::{TimeStatus, evaluate};
+        // Order C4. Whoever can write the anchor file can forge a self-consistent record (the hash
+        // is unkeyed) claiming a calibration ten years in the future. Nothing in it is detectably
+        // wrong, so it even passes as EVIDENCE; it still grants nothing: the restarted engine stays
+        // unqualified, its vote clock reads Unqualified for every timestamp, and only a fresh
+        // authenticated calibration qualifies it, at the HONEST time.
+        let ten_years = 10 * 365 * DAY_MS;
+        let (c, e) = q250_calibrated();
+        let honest = c.persisted(1, 1).unwrap();
+        let mut forged = honest.clone();
+        forged.lower_ms += ten_years;
+        forged.upper_ms += ten_years;
+        forged.high_water_ms += ten_years;
+        let forged = PersistedAnchor::decode(&forged.encode()).unwrap();
+        e.run(10);
+        let r = HoldoverClock::new(q250(), e.clone()).unwrap();
+        let evidence = r.assess_restart(&forged).unwrap();
+        assert!(evidence.would_be_lower_ms > UTC0 + ten_years - 1_000);
+        r.set_leap_view(OPEN);
+        assert_eq!(r.status(), Status::Unqualified(Unqualified::NeverCalibrated));
+        for ts in [0, UTC0 / 1000, (UTC0 + ten_years) / 1000] {
+            assert_eq!(evaluate(&*r, ts), TimeStatus::Unqualified);
+        }
+        assert_eq!(r.calibrate(&one(UTC0 + 10, 13, e.now())), Ok(true));
+        let lower = r.lower_bound_ms().unwrap();
+        assert!(lower > UTC0 - 100 && lower < UTC0 + 100, "{lower}");
+        assert!(matches!(evaluate(&*r, (UTC0 + ten_years) / 1000), TimeStatus::Future { .. }));
+        // A host that honours the forged HIGH-WATER mark (the one thing it may take from stored
+        // bytes; it can only refuse) gets a denial of service, never a premature vote: every honest
+        // calibration is a regression and the clock stays unqualified.
+        let d = HoldoverClock::new(q250(), e.clone()).unwrap();
+        d.ratchet_high_water(forged.high_water_ms);
+        d.set_leap_view(OPEN);
+        assert_eq!(d.calibrate(&one(UTC0 + 10, 13, e.now())), Err(ClockError::Regression));
+        assert_eq!(d.status(), Status::Unqualified(Unqualified::Regression));
+        for ts in [0, (UTC0 + ten_years) / 1000] {
+            assert_eq!(evaluate(&*d, ts), TimeStatus::Unqualified);
+        }
+    }
+
+    #[test]
+    fn c10_many_consecutive_just_under_tolerance_gaps_are_never_forgiven() {
+        // Order C10. `max_suspend_gap_ms` (50 ms) is a provisional development DETECTION tolerance.
+        // (a) Fifty REAL 1 ms suspends, each far below it, one per reading: a suspend only raises
+        //     `boottime - monotonic`, so every one raises the highest gap and widens both bounds by
+        //     exactly 1 ms more (not forgiven, not hidden); the 51st millisecond exceeds the
+        //     tolerance and is a suspend. The budget end by the same accumulation is in
+        //     `c10_a_real_jump_beyond_the_budget_room_ends_holdover_and_is_never_forgiven`.
+        let (c, e) = q250_calibrated();
+        let e2 = ControlledElapsed::start(21);
+        let control = assessed(q250(), e2.clone());
+        let s = one(UTC0, 100, e2.now());
+        e2.run(5);
+        control.calibrate(&s).unwrap();
+        assert_eq!(c.status(), control.status());
+        for k in 1..=50u64 {
+            // Ordinary time passes too, so the widened lower bound still rises (no Regression).
+            e.run(1_000);
+            e.suspend(1);
+            e2.run(1_001);
+            assert_eq!(c.status(), widened(control.status(), k), "{k} suspended ms");
+        }
+        e.run(1_000);
+        e.suspend(1);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::SuspendDetected));
+        // (b) The gap swings by 49 ms back and forth: read jitter of that amplitude, no suspend. Its
+        //     range is charged ONCE: 49 ms after the first swing and still 49 ms after a thousand
+        //     (the rule before the independent review of 4 Oct 2026 summed every swing and ended
+        //     the clock at the 21st). Back at the anchor's own gap it is NOT forgiven either.
+        let src = Lagged::start(4);
+        let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+        assert!(c.set_leap_view(OPEN));
+        let control = assessed(q250(), src.inner.clone());
+        let s = one(UTC0, 13, src.now());
+        assert_eq!(c.calibrate(&s), Ok(true));
+        assert_eq!(control.calibrate(&s), Ok(true));
+        for swing in 1..=1_000u64 {
+            src.inner.run(1_000);
+            src.lag(if swing % 2 == 1 { 49 * NS_PER_MS } else { 0 });
+            assert_eq!(c.status(), widened(control.status(), 49), "swing {swing}");
+        }
+        src.inner.run(1_000);
+        src.lag(0);
+        assert_eq!(c.status(), widened(control.status(), 49));
+    }
+
+    #[test]
+    fn c10_a_real_jump_beyond_the_budget_room_ends_holdover_and_is_never_forgiven() {
+        // Order C10 at the end of the reference budget: a sample of U = 240 ms adopted 5 ms after
+        // capture (half-width 242), 23 h of ordinary holdover (drift 719 ms) leaves about 40 ms of
+        // room under the 1 s limit. Real 1 ms suspends, one per reading, each far below the 50 ms
+        // tolerance, then use the room up exactly: the reading where the widened half-width first
+        // exceeds 1000 ms is `IntervalTooWide`, the anchor is gone for good, and the unsuspended
+        // control never noticed anything.
+        let e = ControlledElapsed::start(31);
+        let e2 = ControlledElapsed::start(31);
+        let c = assessed(q250(), e.clone());
+        let control = assessed(q250(), e2.clone());
+        let (s, s2) = (one(UTC0, 240, e.now()), one(UTC0, 240, e2.now()));
+        e.run(5);
+        e2.run(5);
+        assert_eq!(c.calibrate(&s), Ok(true));
+        assert_eq!(control.calibrate(&s2), Ok(true));
+        for _ in 0..23 {
+            e.run(3_600_000);
+            e2.run(3_600_000);
+            assert_eq!(c.status(), control.status());
+        }
+        let room = 1000 - half(&control);
+        assert!(room > 5 && room < 45, "room {room} ms");
+        let mut k = 0u64;
+        loop {
+            e.run(1_000);
+            e.suspend(1);
+            e2.run(1_001);
+            k += 1;
+            let base = control.status();
+            let Status::Qualified { half_width_ms: h, .. } = base else {
+                panic!("control {base:?}")
+            };
+            if h + k <= 1000 {
+                assert_eq!(c.status(), widened(base, k), "{k} suspended ms");
+            } else {
+                assert_eq!(c.status(), Status::Unqualified(Unqualified::IntervalTooWide), "{k}");
+                break;
+            }
+        }
+        assert!(k <= 45, "ended by the ledger, not by the 50 ms detector ({k})");
+        e.run(1_000);
+        e2.run(1_000);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::IntervalTooWide));
+        assert!(control.lower_bound_ms().is_some());
+    }
+
+    #[test]
+    fn c10_the_widening_does_not_depend_on_how_often_the_clock_is_read() {
+        // Independent review of 4 Oct 2026, MAJOR-1, kept as a regression test. The reviewer's
+        // demonstration (one hour, the same jitter process, only the NUMBER of status reads
+        // differs: one per 5 s poll versus one per 10 ms) measured 47 ms against 118 ms with the
+        // summed-swing ledger and asserted `fast > slow + 50`; with the range ledger both are the
+        // unjittered half-width plus the ceiling of the jitter's range, whatever the read rate
+        // (so message load cannot shorten holdover). Two jitter processes: the reviewer's 0 / 200
+        // ns alternation and a four-value cycle with both signs (range 350 ns).
+        let run = |step: u64, lags: &[i64]| {
+            let src = Lagged::start(77);
+            let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+            assert!(c.set_leap_view(OPEN));
+            let control = assessed(q250(), src.inner.clone());
+            let s = one(UTC0, 13, src.now());
+            assert_eq!(c.calibrate(&s), Ok(true));
+            assert_eq!(control.calibrate(&s), Ok(true));
+            let (mut i, mut t) = (0usize, 0u64);
+            while t < 3_600_000 {
+                src.inner.run(step);
+                t += step;
+                src.lag(lags[i % lags.len()]);
+                i += 1;
+                c.status();
+            }
+            src.lag(0);
+            (half(&c), half(&control))
+        };
+        for lags in [&[200i64, 0][..], &[0, 200, -150, 90]] {
+            let (slow, slow_control) = run(5_000, lags);
+            let (fast, fast_control) = run(10, lags);
+            assert_eq!(slow_control, fast_control);
+            assert_eq!((slow, fast), (slow_control + 1, fast_control + 1), "{lags:?}");
+        }
+    }
+
+    #[test]
+    fn c10_the_reference_profile_reaches_24_h_with_small_read_jitter() {
+        // The 24 h target of the reference profile (q250: 8680 ppb, 1000 ms limit) with the range
+        // ledger, read every 5 s for a full day under a +-200 ns pairing jitter (range 350 ns):
+        // sample U = 13 ms adopted 5 ms after capture gives an adopted half-width H0 = 15; at
+        // exactly 24 h the drift term is ceil(86,400,000 * 8680 / 1e9) = 750 and the ledger 1 ms,
+        // so the half-width is the control's (H0 + 750 + rounding) plus 1, far below 1000.
+        // Arithmetic in docs/CLOCK-PROFILE-V1.md section 3: the room for the ledger at 24 h is
+        // 1000 - 750 - H0 (about), ZERO for a calibration at the inclusive 250 ms cap.
+        let src = Lagged::start(41);
+        let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+        assert!(c.set_leap_view(OPEN));
+        let control = assessed(q250(), src.inner.clone());
+        let s = one(UTC0, 13, src.now());
+        src.inner.run(5);
+        assert_eq!(c.calibrate(&s), Ok(true));
+        assert_eq!(control.calibrate(&s), Ok(true));
+        assert_eq!(half(&control), 15);
+        let lags = [0i64, 200, -150, 90];
+        for i in 0..(DAY_MS / 5_000) as usize {
+            src.inner.run(5_000);
+            src.lag(lags[i % lags.len()]);
+            assert!(matches!(c.status(), Status::Qualified { .. }), "read {i}");
+        }
+        let base = control.status();
+        assert_eq!(c.status(), widened(base, 1));
+        let Status::Qualified { half_width_ms, holdover_remaining_ms, .. } = base else {
+            panic!("{base:?}")
+        };
+        assert_eq!(holdover_remaining_ms, 0, "exactly 24 h");
+        assert!(half_width_ms + 1 <= 1000, "{half_width_ms}");
+        assert!(half_width_ms >= 15 + 750, "{half_width_ms}");
+        // One more millisecond is beyond the holdover limit for both.
+        src.inner.run(1);
+        assert_eq!(c.status(), Status::Unqualified(Unqualified::HoldoverExpired));
+        assert_eq!(control.status(), Status::Unqualified(Unqualified::HoldoverExpired));
+    }
+
+    #[test]
+    fn c10_the_widening_is_the_exact_ceiling_of_the_observed_gap_range() {
+        // The RANGE of the observed gaps (ns; the anchor's own reading included) is rounded up to
+        // whole ms: 1 ns widens by 1 ms, 1,000,000 ns still by 1 ms, 1,000,001 ns by 2 ms; a swing
+        // repeated any number of times counts once; both signs span the range.
+        for (lags, ms) in [
+            (vec![1i64], 1u64),
+            (vec![1_000_000], 1),
+            (vec![1_000_001], 2),
+            (vec![1, 0, 1, 0], 1),
+            (vec![400_000, -400_000, 400_000], 1),
+            (vec![-600_000, 600_000], 2),
+            (vec![300_000, 0, 300_000, 0, 300_000, 0, 300_000, 0], 1),
+            (vec![0, 0, 0], 0),
+        ] {
+            let src = Lagged::start(6);
+            let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+            assert!(c.set_leap_view(OPEN));
+            let control = assessed(q250(), src.inner.clone());
+            let s = one(UTC0, 13, src.now());
+            assert_eq!(c.calibrate(&s), Ok(true));
+            assert_eq!(control.calibrate(&s), Ok(true));
+            for lag in &lags {
+                src.inner.run(1_000);
+                src.lag(*lag);
+                c.status();
+            }
+            assert_eq!(c.status(), widened(control.status(), ms), "{lags:?}");
+        }
+    }
+
+    #[test]
+    fn c10_the_capture_window_gap_counts_toward_the_inclusive_250_ms_cap() {
+        // q250: a sample of U = 248 at capture age 10 ms lands exactly on the 250 ms calibration cap
+        // (inclusive, unchanged). One nanosecond of gap change inside that capture window is in the
+        // interval's ledger, 1 ms each side: 251, refused as TooUncertain before any state change.
+        // With U = 247 the same window fits again, exactly at 250.
+        let try_with = |u: u64, swing: i64| {
+            let src = Lagged::start(1);
+            let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+            assert!(c.set_leap_view(OPEN));
+            let s = one(UTC0, u, src.now());
+            src.inner.run(10);
+            src.lag(swing);
+            (c.calibrate(&s), c)
+        };
+        let (r, c) = try_with(248, 0);
+        assert_eq!(r, Ok(true));
+        assert_eq!(half(&c), 250);
+        let (r, c) = try_with(248, 1);
+        assert_eq!(r, Err(ClockError::TooUncertain));
+        assert_eq!((c.anchor_interval_ms(), c.fault_count()), (None, 0));
+        let (r, c) = try_with(247, -1);
+        assert_eq!(r, Ok(true));
+        assert_eq!(half(&c), 250);
+    }
+
+    #[test]
+    fn c10_ledger_bookkeeping_is_bounded_and_overflow_fails_closed() {
+        // Bounded: two integers per anchor (highest and lowest gap), whatever the number of
+        // readings. A hundred thousand readings, each 1 ns off the previous one, span 1 ns: a 1 ms
+        // widening, exactly.
+        assert!(std::mem::size_of::<Anchor>() <= 96, "{}", std::mem::size_of::<Anchor>());
+        let src = Lagged::start(9);
+        let c = HoldoverClock::new(q250(), src.clone()).unwrap();
+        assert!(c.set_leap_view(OPEN));
+        let control = assessed(q250(), src.inner.clone());
+        let s = one(UTC0, 13, src.now());
+        assert_eq!(c.calibrate(&s), Ok(true));
+        assert_eq!(control.calibrate(&s), Ok(true));
+        for i in 0..100_000u64 {
+            src.inner.run(1);
+            src.lag((i % 2) as i64);
+            assert!(matches!(c.status(), Status::Qualified { .. }), "reading {i}");
+        }
+        assert_eq!(c.status(), widened(control.status(), 1));
+        // A range that cannot be represented (wider than u64 ns, or not even as i128) is not
+        // trusted: the anchor is dropped (Arithmetic).
+        let mut moved = src.inner.now();
+        moved.monotonic_ns -= 1;
+        for (high, low) in [(i128::MAX, 0), (0, i128::MIN), (i128::from(u64::MAX) + 2, 0)] {
+            let saturated = Anchor {
+                gap_high_ns: high,
+                gap_low_ns: low,
+                ..Anchor::measured(1, 2, src.inner.now())
+            };
+            assert_eq!(saturated.ledger_to(&moved), None, "{high} {low}");
+            let mut state = c.state.lock().unwrap();
+            state.anchor = Some(saturated);
+            HoldoverClock::fold_reading(&mut state, &moved);
+            assert_eq!((state.anchor, state.fault), (None, Some(Unqualified::Arithmetic)));
+        }
+    }
+    #[test]
+    fn qualification_refuses_initial_251ms_even_when_fresh_vote_budget_has_room() {
+        let mut profile = q250();
+        // Public TEST duration prevents the holdover budget from masking the
+        // initial-budget rule. No measured hardware ceiling is asserted.
+        profile.max_holdover_ms = 1;
+        assert_eq!(profile.validate_qualification(), Ok(()));
+        profile.max_calibration_half_width_ms = 251;
+        profile.max_source_uncertainty_ms = 249;
+        assert_eq!(profile.validate(), Ok(()));
+        assert_eq!(profile.validate_qualification(), Err(ClockError::ProfileBudget));
+        profile.max_calibration_half_width_ms = 250;
+        profile.max_source_uncertainty_ms = 248;
+        assert_eq!(profile.validate_qualification(), Ok(()));
+        profile.max_calibration_half_width_ms = 249;
+        profile.max_source_uncertainty_ms = 247;
+        assert_eq!(profile.validate_qualification(), Ok(()));
+    }
+
+}

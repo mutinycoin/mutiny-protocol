@@ -1,0 +1,75 @@
+[package]
+name = "mutiny-crypto-v2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+wallet-custody = []
+release-custody = []
+receipt-qualification = []
+qualification = ["wallet-custody", "release-custody"]
+
+[dependencies]
+pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
+fn-dsa = { path = "../qualification/crypto-v2-sources/rust-fn-dsa-custody-v2/fn-dsa", features = ["integer_backend"] }
+rand_core = "=0.6.4"
+getrandom = "=0.3.4"
+zeroize = { version = "=1.9.0", features = ["derive"] }
+sha2 = "=0.10.9"
+hkdf = "=0.12.4"
+bip39 = { version = "=3.0.0", features = ["zeroize"] }
+minicbor = { version = "=0.26.5", features = ["std"] }
+argon2 = { version = "=0.5.3", features = ["zeroize"] }
+chacha20poly1305 = "=0.10.1"
+
+[build-dependencies]
+cc = "=1.5.1"
+sha2 = "=0.10.9"
+serde_json = "=1.0.151"
+
+[[example]]
+name = "clean_restore"
+required-features = ["qualification"]
+
+[[example]]
+name = "wallet_entropy_provider"
+required-features = ["qualification"]
+
+[[example]]
+name = "treasury_rehearsal_keys"
+required-features = ["wallet-custody"]
+
+[dev-dependencies]
+hex = "=0.4.3"
+serde_json = "=1.0.151"
+
+[patch.crates-io]
+hkdf = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }
+
+# Shipping release profile (Build 8 configuration record: docs/BUILD-CONFIGURATIONS-V1.md).
+# Profile tables are honoured only in the ROOT manifest being built, so every shipped root
+# carries the same table. Cargo's release default would be overflow-checks = false while
+# all tests run with it on; consensus arithmetic must behave identically in both.
+[profile.release]
+opt-level = 3
+# Checked integer arithmetic in the shipped binary (tests already run with checks on).
+overflow-checks = true
+debug-assertions = false
+# One codegen unit: deterministic, reproducible code generation.
+codegen-units = 1
+# Symbols are kept: the exclusion checks (build/check-shipping-config.sh) inspect them.
+strip = "none"
+# LTO off: it is not needed for correctness, and the C sources compiled by build.rs make
+# cross-language LTO an unverified variable. Revisit only with a reproducibility test.
+lto = false
+# UNWIND, deliberately. node/src/peer_supervisor.rs, actor_service.rs and
+# hybrid_peer_worker_v2.rs detect a panicked worker through JoinHandle::join().is_err()
+# and fail closed; panic = "abort" would remove that supervision. Abort is not provably safe.
+panic = "unwind"

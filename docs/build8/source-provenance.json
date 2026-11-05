@@ -1,0 +1,123 @@
+{
+  "schema": "MUTINY-BUILD8-SOURCE-REVIEW-V1",
+  "recorded_date": "2026-10-16",
+  "public_baseline": {
+    "commit": "d9a4d3267065a499bb0137d879fe4eda327cbd72",
+    "tree": "4e8600d2e7395ebad3091bbd9c8bc3b8152ea77c",
+    "files": 52
+  },
+  "linux": {
+    "files": 2269,
+    "bytes": 67603300,
+    "roster_sha256": "ec1948bfbc13edc7417231d42e0dedb6c1fae490780300644bc543f4055457eb",
+    "roster_encoding": "sorted SHA256 + TAB + source/path + LF",
+    "accepted_manifest_sha256": "f260c132b34ca523cbc9bb4894427488b24ba6d25d9f9289aac8a5110e984105",
+    "accepted_receipt_sha256": "99146c511f6db0bea3787978a75d29184eb687c739bdd32117dd61a88013c136",
+    "accepted_utc": "2026-10-15T22:46:32.153986Z",
+    "earlier_archive_sha256": "9beecbb727fdc526c35c87b86282f76666168d290a41b4811bfbdc8e4b3d75ef",
+    "source_payload_in_this_commit": true
+  },
+  "desktop": {
+    "catalog_files": 2589,
+    "catalog_sha256": "689ff9834fcbb0eea7cb0a8e2072ae8dddb5088cec6975155db514bb68a39fac",
+    "same_record_in_four_frozen_compile_jobs": true,
+    "available_exact_payloads": 2589,
+    "pending_exact_payloads": 0,
+    "source_payload_in_this_commit": true,
+    "bytes": 76247045,
+    "roster_sha256": "c771a35ecf983a8d6c4299a4fac25d64d087d532926dd0cdedf158f4938db007",
+    "roster_encoding": "sorted SHA256 + TAB + relative path + LF",
+    "final_internal_publication_manifest_sha256": "c925d676eae496884bc6a635d10e47d5c19c0c01fe1f5c568a6d024d0c6c190b",
+    "final_publication_files": 341,
+    "final_publication_bytes": 8829292,
+    "independent_duplicate_files_verified": 5
+  },
+  "comparison": {
+    "identical_common_files": 2231,
+    "desktop_only_files": 350,
+    "linux_only_files": 30,
+    "divergent_common_files": [
+      {
+        "path": "consensus/src/block_envelope_v2.rs",
+        "desktop_sha256": "3feb301ba6ce55152cfc95f63af6e87d58bddaefa75afe9af042243124c778b2",
+        "linux_sha256": "9dd2e28d8d4d9496422a3f3edd0b93e79429792acc84823501eecd183ece41f7"
+      },
+      {
+        "path": "consensus/src/canonical_store_v2.rs",
+        "desktop_sha256": "4b36b90c56c455290f50f22076bcc3b7f921f52eeef61cd062c99fc012849241",
+        "linux_sha256": "22b37fb7692ad244053ca907161bdfa59edad492662043edca6892181f9b5cfe"
+      },
+      {
+        "path": "consensus/src/execution_v2.rs",
+        "desktop_sha256": "bcc348907951b1a2c2f86af7eb86e10c9b1a5a1e10eadda2ad46950e7fa6d353",
+        "linux_sha256": "f424ebb960808469c39f564f506ecaa24bdd2dbbc086349de019a07b58c75bd4"
+      },
+      {
+        "path": "consensus/src/mempool_v2.rs",
+        "desktop_sha256": "ade34cafbac5975345443267bf34454183b0e0ecc732c68668a453fe394db906",
+        "linux_sha256": "c747c766d28badf23d8a0832a512308282914c3642367511353cbf44f8a1f832"
+      },
+      {
+        "path": "consensus/src/parent_context_v2.rs",
+        "desktop_sha256": "189977a43b431885eba033155e83ad65c229178ade2797daf076bf32b5b5e94d",
+        "linux_sha256": "e4589822431f5e02470fc0f7a773016b36e53683d12f8d8be28cf5de977f6bc6"
+      },
+      {
+        "path": "consensus/src/votes_v2.rs",
+        "desktop_sha256": "8f769306e78f3416bdd959737afefbd5d701bd34746bdc0925f6deb60861786d",
+        "linux_sha256": "5ec1f5c4bdf9851d66504bde99a774dc6623c6fa1991f2f0465a62b48a6702a8"
+      },
+      {
+        "path": "crypto-v2/src/lib.rs",
+        "desktop_sha256": "97a0bfb5abce64c7708ab4b6ddb823e0a97941605d7876027beda810d369838d",
+        "linux_sha256": "b24da23e1c1120e8726c0599d48109d197cebb87c7116b176d53f5fea98600e0"
+      },
+      {
+        "path": "node/src/host_clock/chrony_task.rs",
+        "desktop_sha256": "c61c3cc1481d0d27907c589ff65692c0f4a9e18d55dbefc730455d0fc23f1f39",
+        "linux_sha256": "c8aa4368068429691038fe8888911d581ea1a58580919553f4618e7ec7bf8a9b"
+      }
+    ],
+    "coherent_single_candidate_claimed": false,
+    "replay_parent_cohort_production_patch_sha256": "603e1799477aff266267cff22c14e672f3fc09cd277992e6bfb08f2954480d4d",
+    "traced_variant_relationships": 8,
+    "unresolved_variant_paths": [],
+    "proposed_layout": [
+      "build8/linux/",
+      "build8/desktop/"
+    ],
+    "platform_projections_merged": false
+  },
+  "publication_review": {
+    "status": "EXACT_SCOPE_APPROVED_PUBLICATION_CONDITIONAL_ON_VERCEL",
+    "generated_chain_state_excluded": "qualification/integration-state-v2-1/chain.jsonl",
+    "existing_license_declaration_changed": false,
+    "vercel_branch_and_pr_behavior": "UNVERIFIED",
+    "internal_owner_publication_is_public_release_authority": false,
+    "machine_bound_modules_retained_unchanged": [
+      "node/src/host_clock/native_nts_installation.rs",
+      "node/src/host_clock/state_dir/windows_storage.rs",
+      "desktop/src/rootproducer_native/pipe.rs",
+      "desktop/src/rootproducer_native/policy.rs",
+      "desktop/src/rootproducer_native/launch.rs",
+      "desktop/src/rootproducer_native/continuous_own_native_late_dll_controls.rs",
+      "desktop/src/testvalue/continuous_own_native_late_dll_controls.rs"
+    ],
+    "architect_approval_utc": "2026-10-16T13:44:00Z",
+    "synthetic_inputs": "TEST only; synthetic; non-Genesis; no custody or physical-profile data; generator not located; fresh qualification required"
+  },
+  "verification": {
+    "snapshot_file_hashes_checked": true,
+    "source_manifest_hashes_checked": true,
+    "fresh_builds_or_test_campaigns_run": false,
+    "production_qualification_claimed": false
+  },
+  "committed_projection": {
+    "files": 4769,
+    "bytes": 142296715,
+    "roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
+    "inventory": "source-roster.json",
+    "platforms_merged": false,
+    "restored_package_pass_claimed": false
+  }
+}

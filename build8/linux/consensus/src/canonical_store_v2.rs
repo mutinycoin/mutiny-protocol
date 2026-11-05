@@ -1,0 +1,2145 @@
+//! Candidate atomic hybrid chain state + finality installation. Genesis inputs
+//! must already be independently authenticated. No production service activation.
+use crate::{
+    Hash,
+    anchors::FinalizedAnchor,
+    block_envelope_v2::BlockEnvelope,
+    execution::{MAX_STATE_RECORDS, State, WorkParent},
+    finality_v2::{FinalityEvidenceStore, StoreError},
+    votes_v2::HeightAuthority,
+};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
+
+/// Untrusted local work-selection request. Parent state and historical voting
+/// authority are supplied only by this authenticated canonical store.
+pub struct Preparation<'a> {
+    pub expected_parent: &'a FinalizedAnchor,
+    pub pool: &'a dyn crate::assembler_v2::PendingSource,
+    pub license: Hash,
+    pub worker: Hash,
+    pub timestamp: u64,
+    pub ticket: u64,
+    pub operations: &'a [Vec<u8>],
+}
+
+#[cfg(test)]
+#[path = "replay_parent_execution_tests_v1.rs"]
+mod replay_parent_execution_tests_v1;
+#[cfg(test)]
+#[path = "coherent_actor_authority_tests_v1.rs"]
+mod coherent_actor_authority_tests_v1;
+#[cfg(test)]
+#[path = "replay_parent_reuse_tests_v1.rs"]
+mod replay_parent_reuse_tests_v1;
+#[cfg(test)]
+#[path = "observation_validation_tests_v2.rs"]
+mod observation_validation_tests_v2;
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    #[test]
+    fn sqlite_capacity_failure_rolls_back_complete_canonical_commit() {
+        let f: serde_json::Value = serde_json::from_str(include_str!(
+            "../../qualification/hybrid-canonical-store-public-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(f["synthetic_only"], true);
+        assert_eq!(f["production_authorized"], false);
+        let raw = |v: &serde_json::Value| hex::decode(v.as_str().unwrap()).unwrap();
+        let root: Hash = raw(&f["root"]).try_into().unwrap();
+        let rows: Vec<_> = f["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (raw(&r["key"]).try_into().unwrap(), raw(&r["record"])))
+            .collect();
+        let state = State::from_records(&rows, root).unwrap();
+        let genesis = FinalizedAnchor::decode(&raw(&f["genesis"])).unwrap();
+        let envelope = BlockEnvelope::decode(&raw(&f["envelope"])).unwrap();
+        let txid: Hash = raw(&f["transaction_id"]).try_into().unwrap();
+        let mut nonce = [0; 16];
+        mutiny_crypto_v2::fill_os_random(&mut nonce).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("build8-capacity-{}.sqlite", hex::encode(nonce)));
+        assert!(!path.exists());
+        let mut chain =
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .unwrap();
+        let pool_path = path.with_extension("pending.sqlite");
+        let mut pool = crate::mempool_v2::Mempool::open(
+            &pool_path,
+            genesis.genesis,
+            genesis.fingerprint,
+            64 * 1024 * 1024,
+        )
+        .unwrap();
+        macro_rules! selection {
+            () => {
+                Preparation {
+                    expected_parent: &genesis,
+                    pool: &pool,
+                    license: envelope.header.candidate.license,
+                    worker: envelope.header.candidate.worker,
+                    timestamp: envelope.header.candidate.timestamp,
+                    ticket: envelope.authority.work.ticket_sequence,
+                    operations: &envelope.body.operations,
+                }
+            };
+        }
+        assert!(matches!(
+            chain.prepare_pending(selection!()),
+            Err(StoreError::Assembly(_))
+        ));
+        chain.reconcile_pool(&mut pool).unwrap();
+        let tx = crate::hybrid_transaction_v2::Transaction::decode(&envelope.body.transactions[0])
+            .unwrap();
+        pool.admit(&tx, &genesis, &state).unwrap();
+        let prepared = chain.prepare_pending(selection!()).unwrap();
+        assert_eq!(prepared.candidate, envelope.header.candidate);
+        assert_eq!(prepared.body, envelope.body);
+        assert_eq!(chain.load().unwrap().0.height, 0);
+        let mut wrong = genesis.clone();
+        wrong.block[0] ^= 1;
+        let mut request = selection!();
+        request.expected_parent = &wrong;
+        assert!(matches!(
+            chain.prepare_pending(request),
+            Err(StoreError::WrongParent)
+        ));
+        // This fixture's authenticated legacy parent permits 16-KiB ordinary
+        // items. Its exact selected-parent refusal is Oversize; the conservative
+        // absolute A2 prefilter is tested separately below.
+        let oversized = [vec![0; crate::body_capacity_v3::MAX_ORDINARY_ITEM_BYTES + 1]];
+        let mut request = selection!();
+        request.operations = &oversized;
+        let error = chain.prepare_pending(request).err().expect("oversized ordinary item refused");
+        assert!(matches!(&error, StoreError::Invalid(crate::Error::Oversize)), "{error:?}");
+        let beyond_absolute_limit = [vec![0; crate::body_capacity_v3::MAX_A2_OPERATION_BYTES + 1]];
+        let mut request = selection!();
+        request.operations = &beyond_absolute_limit;
+        let error = chain.prepare_pending(request).err().expect("absolute item ceiling refused");
+        assert!(matches!(&error, StoreError::Invalid(crate::Error::Capacity)), "{error:?}");
+        chain
+            .evidence
+            .db
+            .execute("UPDATE integrity_v2 SET halted=1 WHERE id=1", [])
+            .unwrap();
+        assert!(matches!(
+            chain.prepare_pending(selection!()),
+            Err(StoreError::Halted)
+        ));
+        chain
+            .evidence
+            .db
+            .execute("UPDATE integrity_v2 SET halted=0 WHERE id=1", [])
+            .unwrap();
+        drop(pool);
+        std::fs::remove_file(pool_path).unwrap();
+        let original_proof = chain
+            .state_proof(&genesis, rows[0].0)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let pages: u64 = chain
+            .evidence
+            .db
+            .pragma_query_value(None, "page_count", |r| r.get(0))
+            .unwrap();
+        chain
+            .evidence
+            .db
+            .pragma_update(None, "max_page_count", pages)
+            .unwrap();
+        let err = chain.commit(&envelope).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Storage(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::DiskFull),
+            "{err:?}"
+        );
+        assert_eq!(chain.load().unwrap().0.height, 0);
+        assert_eq!(chain.load().unwrap().0.root, root);
+        assert_eq!(
+            chain
+                .state_proof(&genesis, rows[0].0)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            original_proof
+        );
+        assert!(!chain.halted().unwrap());
+        assert!(chain.evidence.anchor(1).unwrap().is_none());
+        assert!(chain.confirmed_height(txid).unwrap().is_none());
+        for table in ["undo_v2", "confirmations_v2", "evidence_v2"] {
+            let count: u64 = chain
+                .evidence
+                .db
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+        let page_size: u64 = chain
+            .evidence
+            .db
+            .pragma_query_value(None, "page_size", |r| r.get(0))
+            .unwrap();
+        chain
+            .evidence
+            .db
+            .pragma_update(None, "max_page_count", (1024u64 * 1024 * 1024) / page_size)
+            .unwrap();
+        chain.evidence.db.execute_batch("CREATE TRIGGER fail_proof_tip BEFORE UPDATE ON state_merkle_tip BEGIN SELECT RAISE(ABORT,'synthetic proof index failure'); END;").unwrap();
+        assert!(matches!(
+            chain.commit(&envelope),
+            Err(StoreError::Integrity)
+        ));
+        assert!(chain.load().is_err());
+        chain
+            .evidence
+            .db
+            .execute_batch("DROP TRIGGER fail_proof_tip;")
+            .unwrap();
+        assert_eq!(chain.load().unwrap().0.height, 0);
+        assert!(chain.confirmed_height(txid).unwrap().is_none());
+        assert_eq!(
+            chain
+                .state_proof(&genesis, rows[0].0)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            original_proof
+        );
+        assert!(chain.commit(&envelope).unwrap());
+        assert_eq!(chain.confirmed_height(txid).unwrap(), Some(1));
+        let anchor = envelope.certificate.decision.anchor();
+        let point = crate::transactions::OutPoint {
+            transaction: txid,
+            index: 0,
+        };
+        let key = crate::state_proof::utxo_key(&point);
+        let proof = chain.state_proof(&anchor, key).unwrap().encode().unwrap();
+        assert_eq!(
+            crate::state_proof::verify_utxo(
+                &proof,
+                &anchor,
+                envelope.header.candidate.state_root,
+                &point,
+                [94; 32]
+            )
+            .unwrap()
+            .unwrap()
+            .output
+            .atoms,
+            95000
+        );
+        assert!(chain.state_proof(&genesis, key).is_err());
+        chain
+            .evidence
+            .db
+            .execute("UPDATE state_merkle_nodes SET value=x'8100'", [])
+            .unwrap();
+        assert!(chain.state_proof(&anchor, key).is_err());
+        chain.rebuild_proof_index(&state).unwrap();
+        assert_eq!(
+            chain.state_proof(&anchor, key).unwrap().encode().unwrap(),
+            proof
+        );
+        drop(chain);
+        let reopened =
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .unwrap();
+        assert_eq!(reopened.load().unwrap().0.height, 1);
+        drop(reopened);
+        let db = Connection::open(&path).unwrap();
+        db.execute(
+            "DELETE FROM confirmations_v2 WHERE id=?1",
+            [txid.as_slice()],
+        )
+        .unwrap();
+        assert!(
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .is_err()
+        );
+        db.execute(
+            "INSERT INTO confirmations_v2 VALUES(?1,?2)",
+            params![txid.as_slice(), 1u64.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE confirmations_v2 SET height=?1",
+            [0u64.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+        assert!(
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .is_err()
+        );
+        db.execute(
+            "UPDATE confirmations_v2 SET height=?1",
+            [1u64.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+        let (key, old): (Vec<u8>, Option<Vec<u8>>) = db
+            .query_row("SELECT key,previous FROM undo_v2 LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        db.execute(
+            "UPDATE undo_v2 SET previous=?1 WHERE key=?2",
+            params![vec![255u8], key],
+        )
+        .unwrap();
+        assert!(
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .is_err()
+        );
+        db.execute(
+            "UPDATE undo_v2 SET previous=?1 WHERE key=?2",
+            params![old, key],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO undo_v2 VALUES(?1,?2,NULL)",
+            params![0u64.to_be_bytes().as_slice(), [0u8; 32].as_slice()],
+        )
+        .unwrap();
+        assert!(
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .is_err()
+        );
+        db.execute(
+            "DELETE FROM undo_v2 WHERE height=?1",
+            [0u64.to_be_bytes().as_slice()],
+        )
+        .unwrap();
+        drop(db);
+        drop(
+            CanonicalStore::open_trusted_genesis(&path, &genesis, &state, root, 1000, [255; 32])
+                .unwrap(),
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+}
+type Result<T> = std::result::Result<T, StoreError>;
+fn index_error(error: crate::canonical_store::ChainError) -> StoreError {
+    match error {
+        crate::canonical_store::ChainError::Storage(e) => StoreError::Storage(e),
+        crate::canonical_store::ChainError::Invalid(e) => StoreError::Invalid(e),
+        _ => StoreError::Integrity,
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub height: u64,
+    pub block: Hash,
+    pub root: Hash,
+    pub target: Hash,
+    pub timestamp: u64,
+}
+pub struct CanonicalStore {
+    evidence: FinalityEvidenceStore,
+    genesis: FinalizedAnchor,
+    genesis_root: Hash,
+    t0: u64,
+}
+enum ExistingCanonicalCustody {
+    Connection(std::mem::ManuallyDrop<Connection>),
+    Canonical(std::mem::ManuallyDrop<CanonicalStore>),
+}
+/// Failed existing-connection validation preserves the same original connection
+/// or canonical owner. It exposes no invalid store, schema repair or close retry.
+pub struct ExistingCanonicalRefusal {cause:StoreError,custody:ExistingCanonicalCustody}
+impl ExistingCanonicalRefusal {pub fn cause(&self)->&StoreError{&self.cause}}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryAcceptance {
+    pub inserted: bool,
+    pub parent: FinalizedAnchor,
+    pub commitment: Hash,
+}
+/// An exporter outcome is local scheduling information, never finality authority.
+#[derive(Debug)]
+pub enum HistoryPreparation {
+    Page(PreparedCanonicalHistory),
+    Busy,
+    CheckpointRejected,
+    EvidenceUnavailable,
+}
+/// Constructed only after one coherent canonical read snapshot has verified the
+/// selected complete successor groups. No arbitrary-byte constructor is exposed.
+#[derive(Debug)]
+pub struct PreparedCanonicalHistory {
+    from: FinalizedAnchor,
+    through: FinalizedAnchor,
+    tip: FinalizedAnchor,
+    objects: Vec<CanonicalHistoryObject>,
+}
+#[derive(Debug)]
+pub struct CanonicalHistoryObject {
+    kind: u8,
+    height: u64,
+    bytes: Vec<u8>,
+}
+impl PreparedCanonicalHistory {
+    pub fn from(&self) -> &FinalizedAnchor { &self.from }
+    pub fn through(&self) -> &FinalizedAnchor { &self.through }
+    pub fn tip(&self) -> &FinalizedAnchor { &self.tip }
+    pub fn objects(&self) -> &[CanonicalHistoryObject] { &self.objects }
+    pub fn into_objects(self) -> Vec<CanonicalHistoryObject> { self.objects }
+}
+impl CanonicalHistoryObject {
+    pub fn kind(&self) -> u8 { self.kind }
+    pub fn height(&self) -> u64 { self.height }
+    pub fn bytes(&self) -> &[u8] { &self.bytes }
+    pub fn into_bytes(self) -> Vec<u8> { self.bytes }
+}
+#[cfg(test)]
+#[path = "history_export_tests_v1.rs"]
+mod history_export_tests_v1;
+fn fixed(raw: Vec<u8>) -> Result<Hash> {
+    raw.try_into().map_err(|_| StoreError::Integrity)
+}
+fn counter(raw: Vec<u8>) -> Result<u64> {
+    Ok(u64::from_be_bytes(
+        raw.try_into().map_err(|_| StoreError::Integrity)?,
+    ))
+}
+fn insert_operation_records(db: &Connection, rows: &[crate::operation_index_v2::OperationRecord]) -> Result<()> {
+    for row in rows {
+        let raw = row.encode().map_err(|_| StoreError::Integrity)?;
+        db.execute("INSERT INTO operation_index_v2 VALUES(?1,?2,?3,?4,?5)", params![row.height.to_be_bytes().as_slice(), row.list, row.position, row.op_id.as_slice(), raw])?;
+    }
+    Ok(())
+}
+fn operation_rows(db: &Connection, suffix: &str, parameter: &[u8]) -> Result<Vec<crate::operation_index_v2::OperationRecord>> {
+    let mut q = db.prepare(&format!("SELECT height,list,position,id,CASE WHEN length(record) BETWEEN 1 AND 512 THEN record ELSE NULL END FROM operation_index_v2 {suffix}"))?;
+    let mut out = Vec::new();
+    for r in q.query_map([parameter], |r| Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,u8>(1)?,r.get::<_,u32>(2)?,r.get::<_,Vec<u8>>(3)?,r.get::<_,Vec<u8>>(4)?)))? {
+        let (height,list,position,id,raw) = r?;
+        let row = crate::operation_index_v2::OperationRecord::decode(&raw).map_err(|_|StoreError::Integrity)?;
+        if row.height != counter(height)? || row.list != list || row.position != position || row.op_id != fixed(id)? {
+            return Err(StoreError::Integrity);
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+fn head(db: &Connection, height: Option<u64>) -> Result<Head> {
+    type Row = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+    let read = |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?));
+    let row: Row = if let Some(h) = height {
+        db.query_row(
+            "SELECT height,block,root,target,timestamp FROM canonical_v2 WHERE height=?1",
+            [h.to_be_bytes().as_slice()],
+            read,
+        )?
+    } else {
+        db.query_row("SELECT height,block,root,target,timestamp FROM canonical_v2 ORDER BY height DESC LIMIT 1",[],read)?
+    };
+    Ok(Head {
+        height: counter(row.0)?,
+        block: fixed(row.1)?,
+        root: fixed(row.2)?,
+        target: fixed(row.3)?,
+        timestamp: counter(row.4)?,
+    })
+}
+fn current_records(db: &Connection) -> Result<BTreeMap<Hash, Vec<u8>>> {
+    let mut q=db.prepare("SELECT key,CASE WHEN length(value) BETWEEN 1 AND 262144 THEN value ELSE NULL END FROM state_v2 ORDER BY key")?;
+    let mut rows = BTreeMap::new();
+    for row in q.query_map([], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })? {
+        let (k, v) = row?;
+        if rows.len() >= MAX_STATE_RECORDS {
+            return Err(StoreError::Integrity);
+        }
+        if rows.insert(fixed(k)?, v).is_some() {
+            return Err(StoreError::Integrity);
+        }
+    }
+    Ok(rows)
+}
+fn historical_state(db: &Connection, wanted: &Head, genesis: &FinalizedAnchor) -> Result<State> {
+    let tip = head(db, None)?;
+    if wanted.height > tip.height {
+        return Err(StoreError::WrongParent);
+    }
+    let mut records = current_records(db)?;
+    // Authenticate current state before applying undo; neither snapshots nor
+    // undo rows are a substitute for the committed roots at both endpoints.
+    let current = State::from_records(
+        &records
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect::<Vec<_>>(),
+        tip.root,
+    )?;
+    crate::trading_host_v1::records(&current, Some(&FinalizedAnchor {
+        height: tip.height, block: tip.block, ..genesis.clone()
+    }))?;
+    let mut q=db.prepare("SELECT key,CASE WHEN length(previous)<=262144 THEN previous ELSE NULL END,length(previous) FROM undo_v2 WHERE height>?1 ORDER BY height DESC,key")?;
+    for row in q.query_map([wanted.height.to_be_bytes().as_slice()], |r| {
+        Ok((
+            r.get::<_, Vec<u8>>(0)?,
+            r.get::<_, Option<Vec<u8>>>(1)?,
+            r.get::<_, Option<u64>>(2)?,
+        ))
+    })? {
+        let (k, v, size) = row?;
+        let k = fixed(k)?;
+        if size.is_some_and(|n| n > crate::state_tree::MAX_RECORD as u64) {
+            return Err(StoreError::Integrity);
+        }
+        if let Some(v) = v {
+            if v.len() > crate::state_tree::MAX_RECORD {
+                return Err(StoreError::Integrity);
+            }
+            records.insert(k, v);
+        } else {
+            records.remove(&k);
+        }
+        if records.len() > MAX_STATE_RECORDS {
+            return Err(StoreError::Integrity);
+        }
+    }
+    let restored = State::from_records(
+        &records.into_iter().collect::<Vec<_>>(),
+        wanted.root,
+    )?;
+    crate::trading_host_v1::records(&restored, Some(&FinalizedAnchor {
+        height: wanted.height, block: wanted.block, ..genesis.clone()
+    }))?;
+    Ok(restored)
+}
+// Scope is stack-local to one held full-replay transaction. No constructor is exported.
+struct ReplayScope<'a> { _connection: &'a Connection }
+/// An immutable, root-checked parent of ONE full-replay iteration, never a public
+/// authenticity marker or permission to reuse State across calls/commits.
+pub(crate) struct ReplayParent<'a> {
+    state: &'a State,
+    head: &'a Head,
+    parent: &'a WorkParent,
+    anchor: FinalizedAnchor,
+    capacity: crate::body_capacity_v3::BodyCapacity,
+    authority: std::cell::OnceCell<HeightAuthority>,
+    _scope: &'a ReplayScope<'a>,
+}
+impl<'a> ReplayParent<'a> {
+    pub(crate) fn state(&self) -> &'a State { self.state }
+    pub(crate) fn root(&self) -> Hash { self.capacity.parent_state_root() }
+    pub(crate) fn capacity(&self) -> &crate::body_capacity_v3::BodyCapacity { &self.capacity }
+    pub(crate) fn check_anchor(&self, state: &State, anchor: &FinalizedAnchor) -> crate::Result<()> {
+        if !std::ptr::eq(state, self.state) || anchor != &self.anchor
+            || self.capacity.parent() != &self.anchor || self.root() != self.head.root {
+            return Err(crate::Error::WrongAnchor);
+        }
+        Ok(())
+    }
+    pub(crate) fn check(&self, state: &State, parent: &WorkParent) -> crate::Result<()> {
+        let anchor = FinalizedAnchor { network: crate::NETWORK_ID,
+            genesis: parent.genesis, fingerprint: parent.fingerprint,
+            height: parent.height, block: parent.block };
+        self.check_anchor(state, &anchor)?;
+        if parent.target != self.head.target || parent.genesis != self.parent.genesis
+            || parent.fingerprint != self.parent.fingerprint || parent.block != self.parent.block
+            || parent.height != self.parent.height || parent.target != self.parent.target
+            || parent.t0 != self.parent.t0 || parent.ancestor_timestamps != self.parent.ancestor_timestamps {
+            return Err(crate::Error::WrongAnchor);
+        }
+        Ok(())
+    }
+    pub(crate) fn authority(&self) -> std::result::Result<&HeightAuthority, crate::votes::IngressError> {
+        if self.authority.get().is_none() {
+            // Exactly the original first-use full root, height and native component checks.
+            let authority = HeightAuthority::from_state(self.state, self.anchor.clone(), self.root())?;
+            self.authority.set(authority).map_err(|_| crate::Error::WrongAnchor)?;
+        }
+        self.authority.get().ok_or_else(|| crate::Error::WrongAnchor.into())
+    }
+}
+
+impl CanonicalStore {
+    /// Private factory shutdown consumes only a currently readable canonical
+    /// owner. Failure retains the exact store/Connection; no native lease is
+    /// released and no original worker join or file-close receipt is issued.
+    pub fn close_existing(self)->std::result::Result<(),ExistingCanonicalRefusal>{
+        let owner=std::mem::ManuallyDrop::new(self);
+        if let Err(cause)=owner.load(){return Err(ExistingCanonicalRefusal{
+            cause,custody:ExistingCanonicalCustody::Canonical(owner)});}
+        let Self{evidence,..}=std::mem::ManuallyDrop::into_inner(owner);
+        match evidence.close_existing(){Ok(())=>Ok(()),Err(refusal)=>{
+            let(cause,connection)=refusal.into_retained();
+            Err(ExistingCanonicalRefusal{cause,custody:ExistingCanonicalCustody::Connection(connection)})
+        }}
+    }
+    /// Resume the exact current schema through the host's already opened
+    /// existing native connection. No path open/CREATE, Genesis initialization
+    /// or migration occurs. Generic Connection/Genesis inputs confer no native
+    /// custody, production, clock, provider or installation qualification.
+    pub fn from_existing_connection(connection:std::mem::ManuallyDrop<Connection>,
+        genesis:&FinalizedAnchor,state:&State,root:Hash,t0:u64,target:Hash)
+        ->std::result::Result<Self,ExistingCanonicalRefusal> {
+        let context=(||->Result<()> {
+            if target==[0;32]||state.root()?!=root{return Err(StoreError::Context);}
+            crate::trading_host_v1::records(state,Some(genesis))?;
+            HeightAuthority::from_state(state,genesis.clone(),root).map_err(StoreError::Verification)?;
+            Ok(())
+        })();
+        if let Err(cause)=context{return Err(ExistingCanonicalRefusal{cause,
+            custody:ExistingCanonicalCustody::Connection(connection)});}
+        let evidence=match FinalityEvidenceStore::from_existing_canonical_connection(connection,genesis) {
+            Ok(evidence)=>evidence,Err(error)=>{let(cause,connection)=error.into_retained();
+                return Err(ExistingCanonicalRefusal{cause,custody:ExistingCanonicalCustody::Connection(connection)});},
+        };
+        let out=std::mem::ManuallyDrop::new(Self{evidence,genesis:genesis.clone(),genesis_root:root,t0});
+        let replay=(||->Result<()> {
+            let t=rusqlite::Transaction::new_unchecked(&out.evidence.db,TransactionBehavior::Deferred)?;
+            crate::store_schema_v2::validate(&t,genesis,true)?;
+            if head(&t,Some(0))? != (Head{height:0,block:genesis.block,root,target,timestamp:t0}) {
+                return Err(StoreError::Context);
+            }
+            let required:u64=t.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('canonical_v2','state_v2','undo_v2','confirmations_v2','state_merkle_nodes','state_merkle_tip','accepted_recovery_v2')",[],|r|r.get(0))?;
+            if required!=7{return Err(StoreError::Integrity);}
+            // Existing full authenticated replay is unchanged and runs while
+            // the same deferred read snapshot is held; no derived rows install.
+            out.verify_replay(state)?;
+            t.commit()?;Ok(())
+        })();
+        if let Err(cause)=replay{return Err(ExistingCanonicalRefusal{cause,
+            custody:ExistingCanonicalCustody::Canonical(out)});}
+        Ok(std::mem::ManuallyDrop::into_inner(out))
+    }
+    /// This opens only a new hybrid store or resumes the exact trusted Genesis.
+    /// It does not accept a peer-supplied Genesis or import legacy databases.
+    pub fn open_trusted_genesis(
+        path: &Path,
+        genesis: &FinalizedAnchor,
+        state: &State,
+        root: Hash,
+        t0: u64,
+        target: Hash,
+    ) -> Result<Self> {
+        if target == [0; 32] || state.root()? != root {
+            return Err(StoreError::Context);
+        }
+        crate::trading_host_v1::records(state, Some(genesis))?;
+        HeightAuthority::from_state(state, genesis.clone(), root)
+            .map_err(StoreError::Verification)?;
+        let mut evidence = FinalityEvidenceStore::open(path, genesis)?;
+        let exists: bool = evidence.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='canonical_v2')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            let t = evidence
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let count: u64 = t.query_row("SELECT count(*) FROM finalized_v2", [], |r| r.get(0))?;
+            let proofs: u64 = t.query_row("SELECT count(*) FROM evidence_v2", [], |r| r.get(0))?;
+            if count != 1 || proofs != 0 {
+                return Err(StoreError::Context);
+            }
+            for (_, sql) in crate::store_schema_v2::CANONICAL {
+                t.execute_batch(sql)?;
+            }
+            t.execute(
+                "INSERT INTO canonical_v2 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    0u64.to_be_bytes().as_slice(),
+                    genesis.block.as_slice(),
+                    root.as_slice(),
+                    target.as_slice(),
+                    t0.to_be_bytes().as_slice()
+                ],
+            )?;
+            for (k, v) in state.records()? {
+                t.execute(
+                    "INSERT INTO state_v2 VALUES(?1,?2)",
+                    params![k.as_slice(), v],
+                )?;
+            }
+            crate::state_tree::index::install(&t).map_err(index_error)?;
+            crate::state_tree::index::publish(&t, &state.records()?, genesis, root, &[], true)
+                .map_err(index_error)?;
+            t.execute_batch(crate::store_schema_v2::OPERATIONS)?;
+            t.execute_batch(crate::store_schema_v2::OPERATION_ID_INDEX)?;
+            t.pragma_update(None, "user_version", 4)?;
+            crate::store_schema_v2::validate(&t, genesis, true)?;
+            t.commit()?;
+        }
+        let first = head(&evidence.db, Some(0))?;
+        if first
+            != (Head {
+                height: 0,
+                block: genesis.block,
+                root,
+                target,
+                timestamp: t0,
+            })
+        {
+            return Err(StoreError::Context);
+        }
+        let required:u64=evidence.db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('canonical_v2','state_v2','undo_v2','confirmations_v2','state_merkle_nodes','state_merkle_tip','accepted_recovery_v2')",[],|r|r.get(0))?;
+        if required != 7 {
+            return Err(StoreError::Integrity);
+        }
+        let out = Self {
+            evidence,
+            genesis: genesis.clone(),
+            genesis_root: root,
+            t0,
+        };
+        let version: i64 = out.evidence.db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 3 {
+            // Schema creation, full authenticated replay, derived rows and version
+            // transition share one IMMEDIATE transaction. Retired formats fail
+            // replay and leave the version-3 canonical store unchanged.
+            let t = rusqlite::Transaction::new_unchecked(&out.evidence.db, TransactionBehavior::Immediate)?;
+            t.execute_batch(crate::store_schema_v2::OPERATIONS)?;
+            t.execute_batch(crate::store_schema_v2::OPERATION_ID_INDEX)?;
+            t.pragma_update(None, "user_version", 4)?;
+            out.verify_replay_inner(state, true).map_err(|_| StoreError::Integrity)?;
+            t.commit()?;
+        }
+        out.verify_replay(state)?;
+        Ok(out)
+    }
+    /// Accept the fully signed public recovery proof at the current canonical
+    /// parent. No parent state/root mutation or block finalization occurs here.
+    /// The write lock serializes this decision with ordinary finality commits.
+    pub fn accept_recovery(&mut self, record: crate::recovery_history_v2::Record) -> Result<bool> {
+        self.accept_recovery_with_public(record, None)
+    }
+    fn accept_recovery_with_public(&mut self, record: crate::recovery_history_v2::Record,
+        witness: Option<Vec<u8>>) -> Result<bool> {
+        let t = self.evidence.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::store_schema_v2::validate(&t, &self.genesis, true)?;
+        let halted: bool = t.query_row("SELECT halted FROM integrity_v2 WHERE id=1", [], |r| r.get(0))?;
+        if halted { return Err(StoreError::Halted); }
+        let tip = head(&t, None)?;
+        let parent = FinalizedAnchor { height: tip.height, block: tip.block, ..self.genesis.clone() };
+        if record.material.parent.height < tip.height {
+            // A retried public delivery after resumed finality is idempotent
+            // only for the exact retained proof. It never reactivates recovery.
+            let prior = head(&t, Some(record.material.parent.height))?;
+            let anchor = FinalizedAnchor { height: prior.height, block: prior.block, ..self.genesis.clone() };
+            let state = historical_state(&t, &prior, &self.genesis)?;
+            let accepted = crate::recovery_store_v2::prepared(&t, &state, &anchor, prior.root, self.t0)?.ok_or(StoreError::WrongParent)?;
+            let authority = state.recovery_authority_v2.as_ref().ok_or(StoreError::Integrity)?;
+            let signed = record.encode(authority)?;
+            let expected = match &witness {
+                Some(witness) => crate::recovery_public_v3::Carrier::new(signed,
+                    witness.clone(), authority)?.encode(authority)?,
+                None => signed,
+            };
+            if accepted.encoded_record(authority)? != expected { return Err(StoreError::WrongParent); }
+            return Ok(false);
+        }
+        if record.material.parent != parent || record.material.root != tip.root { return Err(StoreError::WrongParent); }
+        let finalized: Vec<u8> = t.query_row("SELECT CASE WHEN length(anchor) BETWEEN 1 AND 256 THEN anchor ELSE NULL END FROM finalized_v2 WHERE height=?1", [tip.height.to_be_bytes().as_slice()], |r| r.get(0))?;
+        if finalized != parent.encode() { return Err(StoreError::Integrity); }
+        let descendants: bool = t.query_row(
+            "SELECT EXISTS(SELECT 1 FROM finalized_v2 WHERE height>?1) OR EXISTS(SELECT 1 FROM evidence_v2 WHERE height>?1)",
+            [tip.height.to_be_bytes().as_slice()], |r| r.get(0),
+        )?;
+        if descendants { return Err(StoreError::WrongParent); }
+        let state = historical_state(&t, &tip, &self.genesis)?;
+        let reference_time = if witness.is_some() {
+            Some(crate::recovery_store_v2::parent_time(&t, &parent, tip.root, self.t0)?)
+        } else { None };
+        let prepared = crate::recovery_transition_v2::Prepared::verify_with_public_witness(
+            &state, &parent, tip.root, record, false, witness.as_deref().zip(reference_time))?;
+        let authority = state.recovery_authority_v2.as_ref().ok_or(StoreError::Integrity)?;
+        let bytes = prepared.encoded_record(authority)?;
+        let commitment = prepared.commitment()?;
+        if let Some(old) = crate::recovery_store_v2::raw(&t, tip.height)? {
+            if old != (commitment, bytes) { return Err(StoreError::WrongParent); }
+            return Ok(false);
+        }
+        t.execute("INSERT INTO accepted_recovery_v2 VALUES(?1,?2,?3)", params![tip.height.to_be_bytes().as_slice(), commitment.as_slice(), bytes])?;
+        t.commit()?;
+        Ok(true)
+    }
+    /// Untrusted public transport input. The immutable recovery authority comes
+    /// from canonical state, never from the sender or its embedded policy.
+    pub fn accept_recovery_encoded(&mut self, raw: &[u8]) -> Result<RecoveryAcceptance> {
+        crate::blocks::canonical(raw, crate::state_tree::MAX_RECORD)?;
+        let (record, witness) = self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (_, state) = store.load_snapshot()?;
+            let authority = state.recovery_authority_v2.as_ref().ok_or(crate::Error::RecoveryDisabled)?;
+            crate::recovery_public_v3::item(raw, &state, authority).map_err(StoreError::from)
+        })?;
+        let parent = record.material.parent.clone();
+        let commitment = record.material.commitment()?;
+        let inserted = self.accept_recovery_with_public(record, witness)?;
+        Ok(RecoveryAcceptance { inserted, parent, commitment })
+    }
+    /// Export the exact public proof needed before replaying its successor.
+    /// Transport delivery is not acceptance or a finalized state proof.
+    pub fn recovery_record(&self, parent_height: u64) -> Result<Option<Vec<u8>>> {
+        self.read_snapshot(|store| store.recovery_record_snapshot(parent_height))
+    }
+    fn recovery_record_snapshot(&self, parent_height: u64) -> Result<Option<Vec<u8>>> {
+        if self.halted()? { return Err(StoreError::Halted); }
+        let (parent, state, root) = self.execution_parent_snapshot(parent_height)?;
+        let anchor = FinalizedAnchor { height: parent.height, block: parent.block, ..self.genesis.clone() };
+        let Some(recovery) = crate::recovery_store_v2::prepared(&self.evidence.db, &state, &anchor, root, self.t0)? else { return Ok(None); };
+        let authority = state.recovery_authority_v2.as_ref().ok_or(StoreError::Integrity)?;
+        Ok(Some(recovery.encoded_record(authority)?))
+    }
+    pub fn halted(&self) -> Result<bool> {
+        self.evidence.halted()
+    }
+    /// Bounded derived-index lookup at the exact current canonical anchor.
+    /// Read the index and record in one transaction and verify the resulting
+    /// proof against the committed root. No peer-selected root is accepted.
+    pub fn state_proof(
+        &self,
+        expected: &FinalizedAnchor,
+        key: Hash,
+    ) -> Result<crate::state_tree::StateProof> {
+        let t = self.evidence.db.unchecked_transaction()?;
+        crate::store_schema_v2::validate(&t, &self.genesis, true)?;
+        if self.halted()? {
+            return Err(StoreError::Halted);
+        }
+        let tip = head(&t, None)?;
+        let anchor = FinalizedAnchor {
+            height: tip.height,
+            block: tip.block,
+            ..self.genesis.clone()
+        };
+        if &anchor != expected {
+            return Err(StoreError::WrongParent);
+        }
+        let proof =
+            crate::state_tree::index::prove_v2(&t, &anchor, tip.root, key).map_err(index_error)?;
+        t.commit()?;
+        Ok(proof)
+    }
+    /// Explicit repair of derived index data, never canonical history. Replay
+    /// from independently trusted Genesis before rebuilding in one transaction.
+    pub fn rebuild_proof_index(&mut self, genesis_state: &State) -> Result<()> {
+        self.verify_replay(genesis_state)?;
+        let t = self
+            .evidence
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::store_schema_v2::validate(&t, &self.genesis, true)?;
+        // State reconstruction here is checked against canonical records; full
+        // startup replay already authenticated this store before it was returned.
+        let first = head(&t, Some(0))?;
+        if genesis_state.root()? != first.root {
+            return Err(StoreError::Context);
+        }
+        let tip = head(&t, None)?;
+        let state = historical_state(&t, &tip, &self.genesis)?;
+        let anchor = FinalizedAnchor {
+            height: tip.height,
+            block: tip.block,
+            ..self.genesis.clone()
+        };
+        crate::state_tree::index::publish(&t, &state.records()?, &anchor, tip.root, &[], true)
+            .map_err(index_error)?;
+        t.commit()?;
+        Ok(())
+    }
+    fn read_snapshot<T>(&self, read: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        if !self.evidence.db.is_autocommit() {
+            crate::store_schema_v2::validate(&self.evidence.db, &self.genesis, true)?;
+            return read(self);
+        }
+        let transaction = self.evidence.db.unchecked_transaction()?;
+        crate::store_schema_v2::validate(&transaction, &self.genesis, true)?;
+        let result = read(self)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+    pub fn load(&self) -> Result<(Head, State)> {
+        self.read_snapshot(Self::load_snapshot)
+    }
+    /// The full current canonical anchor, with the same halted refusal and
+    /// authenticated load used by a runtime head read, in one read snapshot.
+    /// This is local verified state, never a peer-selected checkpoint.
+    pub fn current_anchor(&self) -> Result<FinalizedAnchor> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, _) = store.load_snapshot()?;
+            Ok(FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() })
+        })
+    }
+    /// Cheap change marker for a caller that reuses a snapshot it has already loaded and
+    /// verified: SQLite's `data_version` (it changes when ANY other connection commits to this
+    /// database) and this connection's own total row-change count. Two equal markers mean no
+    /// row of this store was written through SQLite in between. It is not an authenticity
+    /// proof and never replaces `load`.
+    pub fn change_marker(&self) -> Result<(i64, u64)> {
+        let version: i64 = self
+            .evidence
+            .db
+            .query_row("PRAGMA data_version", [], |r| r.get(0))?;
+        Ok((version, self.evidence.db.total_changes()))
+    }
+    fn load_snapshot(&self) -> Result<(Head, State)> {
+        let tip = head(&self.evidence.db, None)?;
+        let latest: Vec<u8> = self.evidence.db.query_row(
+            "SELECT height FROM finalized_v2 ORDER BY height DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )?;
+        if counter(latest)? != tip.height {
+            return Err(StoreError::Integrity);
+        }
+        let anchor = self
+            .evidence
+            .anchor(tip.height)?
+            .ok_or(StoreError::Integrity)?;
+        if anchor.block != tip.block {
+            return Err(StoreError::Integrity);
+        }
+        if tip.height > 0 {
+            let block = self
+                .retained_envelope(tip.height, tip.block)?
+                .ok_or(StoreError::Integrity)?;
+            let c = &block.header.candidate;
+            if block.block_hash() != tip.block
+                || c.height != tip.height
+                || c.state_root != tip.root
+                || c.timestamp != tip.timestamp
+            {
+                return Err(StoreError::Integrity);
+            }
+        }
+        let state = historical_state(&self.evidence.db, &tip, &self.genesis)?;
+        Ok((tip, state))
+    }
+    /// Reproduce every canonical transition and hybrid certificate from trusted
+    /// Genesis on open. A stable read transaction prevents a mixed snapshot.
+    /// Historical undo data supplies only states whose roots were authenticated
+    /// earlier in this replay; it cannot choose an old voter's authority.
+    fn verify_replay(&self, genesis_state: &State) -> Result<()> {
+        self.verify_replay_inner(genesis_state, false)
+    }
+    fn verify_replay_inner(&self, genesis_state: &State, rebuild_operations: bool) -> Result<()> {
+        let transaction = if self.evidence.db.is_autocommit() {
+            Some(self.evidence.db.unchecked_transaction()?)
+        } else { None };
+        let snapshot = &self.evidence.db;
+        let replay_scope = ReplayScope { _connection: snapshot };
+        crate::store_schema_v2::validate(&snapshot, &self.genesis, true)?;
+        let tip = head(&snapshot, None)?;
+        let mut previous = head(&snapshot, Some(0))?;
+        let mut state = genesis_state.clone();
+        let mut times = std::collections::VecDeque::from([self.t0]);
+        let mut undo_count = 0u64;
+        let mut confirmation_count = 0u64;
+        let mut recovery_count = 0u64;
+        let mut operation_count = 0u64;
+        for height in 1..=tip.height {
+            let stored = head(&snapshot, Some(height))?;
+            let (block, capacity) = self
+                .replay_parent_envelope_with_capacity(height, stored.block, &previous, &state)?
+                .ok_or(StoreError::Integrity)?;
+            let window: Vec<u64> = times.iter().copied().collect();
+            if !crate::pow::window_ends_at_parent(&window, previous.timestamp) {
+                return Err(StoreError::Integrity);
+            }
+            let parent = WorkParent {
+                genesis: self.genesis.genesis,
+                fingerprint: self.genesis.fingerprint,
+                block: previous.block,
+                height: previous.height,
+                t0: self.t0,
+                target: previous.target,
+                ancestor_timestamps: window,
+            };
+            let replayed = ReplayParent { state: &state, head: &previous, parent: &parent,
+                anchor: capacity.parent().clone(), capacity,
+                authority: std::cell::OnceCell::new(), _scope: &replay_scope };
+            let mut history = crate::evidence_history_v2::History::default();
+            for raw in &block.body.operations {
+                if crate::trading_host_v1::operation(raw)? { continue; }
+                if crate::blocks::operation_kind(raw)? != 17 {
+                    continue;
+                }
+                let proof = crate::equivocation_v2::Evidence::decode(raw)?;
+                let e = proof.a.decision.height;
+                if !crate::bonds::actionable(e, height) {
+                    return Err(crate::Error::InvalidCounter.into());
+                }
+                if history.contains_key(&e) {
+                    continue;
+                }
+                let (past, s, root) = self.execution_parent(e - 1)?;
+                let anchor = FinalizedAnchor {
+                    height: past.height,
+                    block: past.block,
+                    ..self.genesis.clone()
+                };
+                let recovery = crate::recovery_store_v2::prepared(&snapshot, &s, &anchor, root, self.t0)?;
+                history.insert(
+                    e,
+                    HeightAuthority::from_state(&s, anchor, root)
+                        .map_err(StoreError::Verification)?,
+                );
+                if let Some(r) = recovery { history.attach_recovery(e, &r)?; }
+            }
+            // Design 1.a.3: the same reference anchors that `operation_history` supplies to commit.
+            self.insert_reference_anchors(&snapshot, height, &crate::op_envelope_v1::referenced_heights(&block.body), &mut history)?;
+            let anchor = FinalizedAnchor { height: previous.height, block: previous.block, ..self.genesis.clone() };
+            let recovery = crate::recovery_store_v2::prepared(&snapshot, &state, &anchor, previous.root, self.t0)?;
+            let result = match recovery {
+                Some(ref r) => {
+                    recovery_count = recovery_count.checked_add(1).ok_or(StoreError::Integrity)?;
+                    r.verify_envelope(&state, &parent, &block, &history)
+                }
+                None => block.verify_execute_from_replayed_parent(&replayed, &parent, &history),
+            }.map_err(StoreError::Verification)?;
+            let timestamp = block.header.candidate.timestamp;
+            let start = if height.is_multiple_of(60) {
+                head(&snapshot, Some(height - 60))?.timestamp
+            } else {
+                timestamp
+            };
+            let target =
+                crate::pow::target_after_height(height, previous.target, start, timestamp)?;
+            let expected = Head {
+                height,
+                block: block.block_hash(),
+                root: result.root,
+                target,
+                timestamp,
+            };
+            if stored != expected
+                || self.evidence.anchor(height)?.as_ref()
+                    != Some(&block.certificate.decision.anchor())
+            {
+                return Err(StoreError::Integrity);
+            }
+            // These indexes are derived data, not independent authority. Check
+            // them against the reproduced transition before serving queries.
+            let before: BTreeMap<_, _> = state.records()?.into_iter().collect();
+            let after: BTreeMap<_, _> = result.state.records()?.into_iter().collect();
+            let keys: BTreeSet<_> = before.keys().chain(after.keys()).copied().collect();
+            let expected_undo: BTreeMap<_, _> = keys
+                .into_iter()
+                .filter(|key| before.get(key) != after.get(key))
+                .map(|key| (key, before.get(&key).cloned()))
+                .collect();
+            let mut actual_undo = BTreeMap::new();
+            let mut query = snapshot.prepare("SELECT key,CASE WHEN length(previous)<=262144 THEN previous ELSE NULL END,length(previous) FROM undo_v2 WHERE height=?1")?;
+            for row in query.query_map([height.to_be_bytes().as_slice()], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Option<Vec<u8>>>(1)?,
+                    r.get::<_, Option<u64>>(2)?,
+                ))
+            })? {
+                let (key, value, size) = row?;
+                if size.is_some_and(|n| n > crate::state_tree::MAX_RECORD as u64)
+                    || actual_undo.len() >= expected_undo.len()
+                    || actual_undo.insert(fixed(key)?, value).is_some()
+                {
+                    return Err(StoreError::Integrity);
+                }
+            }
+            if actual_undo != expected_undo {
+                return Err(StoreError::Integrity);
+            }
+            undo_count = undo_count
+                .checked_add(actual_undo.len() as u64)
+                .ok_or(StoreError::Integrity)?;
+            let expected_ids: BTreeSet<_> = block
+                .body
+                .transactions
+                .iter()
+                .map(|raw| {
+                    crate::hybrid_transaction_v2::Transaction::decode(raw)
+                        .and_then(|tx| tx.id())
+                        .map_err(|_| StoreError::Integrity)
+                })
+                .collect::<Result<_>>()?;
+            let mut actual_ids = BTreeSet::new();
+            let mut query = snapshot.prepare("SELECT id FROM confirmations_v2 WHERE height=?1")?;
+            for row in query.query_map([height.to_be_bytes().as_slice()], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })? {
+                if actual_ids.len() >= expected_ids.len() || !actual_ids.insert(fixed(row?)?) {
+                    return Err(StoreError::Integrity);
+                }
+            }
+            if actual_ids != expected_ids {
+                return Err(StoreError::Integrity);
+            }
+            confirmation_count = confirmation_count
+                .checked_add(actual_ids.len() as u64)
+                .ok_or(StoreError::Integrity)?;
+            let recovery_capacity;
+            let capacity = if recovery.is_some() {
+                recovery_capacity = crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(
+                    &state, FinalizedAnchor { height:previous.height,block:previous.block,..self.genesis.clone() }, previous.root)?;
+                &recovery_capacity
+            } else { replayed.capacity() };
+            let expected_operations = crate::operation_index_v2::records_with_capacity(&block.body, block.block_hash(), &result.bond_command_outcomes,&capacity)
+                .map_err(|_| StoreError::Integrity)?;
+            if rebuild_operations {
+                insert_operation_records(snapshot, &expected_operations)?;
+            } else {
+                let actual_operations = operation_rows(snapshot, "WHERE height=?1 ORDER BY list,position", height.to_be_bytes().as_slice())?;
+                if actual_operations != expected_operations { return Err(StoreError::Integrity); }
+            }
+            operation_count = operation_count.checked_add(expected_operations.len() as u64).ok_or(StoreError::Integrity)?;
+            drop(replayed);
+            state = result.state;
+            previous = expected;
+            times.push_back(timestamp);
+            if times.len() > 11 {
+                times.pop_front();
+            }
+        }
+        let last_anchor = FinalizedAnchor { height: previous.height, block: previous.block, ..self.genesis.clone() };
+        if crate::recovery_store_v2::prepared(&snapshot, &state, &last_anchor, previous.root, self.t0)?.is_some() {
+            recovery_count = recovery_count.checked_add(1).ok_or(StoreError::Integrity)?;
+        }
+        let actual_recovery: u64 = snapshot.query_row("SELECT count(*) FROM accepted_recovery_v2", [], |r| r.get(0))?;
+        if actual_recovery != recovery_count { return Err(StoreError::Integrity); }
+        let (stored, state_on_disk) = self.load()?;
+        if stored != previous || state_on_disk.records()? != state.records()? {
+            return Err(StoreError::Integrity);
+        }
+        // Reject orphan and height-zero rows, including rows beyond the tip.
+        let actual_undo: u64 =
+            snapshot.query_row("SELECT count(*) FROM undo_v2", [], |r| r.get(0))?;
+        let actual_confirmations: u64 =
+            snapshot.query_row("SELECT count(*) FROM confirmations_v2", [], |r| r.get(0))?;
+        let actual_operations: u64 = snapshot.query_row("SELECT count(*) FROM operation_index_v2", [], |r| r.get(0))?;
+        if actual_undo != undo_count || actual_confirmations != confirmation_count || actual_operations != operation_count {
+            return Err(StoreError::Integrity);
+        }
+        if let Some(t) = transaction { t.commit()?; }
+        Ok(())
+    }
+    /// Complete replay-authenticated Treasury lineage in one held read snapshot.
+    /// No prospective work/signing gate is used: terminal NoQuorum history stays
+    /// readable. The distinct integrity/conflicting-finality latch still refuses.
+    pub fn treasury_lineage(&self) -> Result<crate::treasury_lineage_v3::CanonicalTreasury> {
+        self.read_snapshot(|s| {
+            if s.halted()? { return Err(StoreError::Halted); }
+            let original = head(&s.evidence.db, Some(0))?;
+            if original.root != s.genesis_root { return Err(StoreError::Integrity); }
+            let initial = historical_state(&s.evidence.db, &original, &s.genesis)?;
+            if initial.root()? != s.genesis_root { return Err(StoreError::Integrity); }
+            s.verify_replay_inner(&initial, false)?;
+            let (tip, state) = s.load_snapshot()?;
+            let anchor = FinalizedAnchor { height: tip.height, block: tip.block, ..s.genesis.clone() };
+            crate::treasury_lineage_v3::CanonicalTreasury::from_replayed_state(anchor, tip.root, &state)
+                .map_err(|_| StoreError::Integrity)
+        })
+    }
+    /// Durable finalized confirmations; never inferred from the current payout UTXO.
+    /// Rows are keyed by position so duplicate lifecycle identities remain observable.
+    pub fn operation_records(&self, id: Hash) -> Result<Vec<crate::operation_index_v2::OperationRecord>> {
+        self.read_snapshot(|s| operation_rows(&s.evidence.db, "WHERE id=?1 ORDER BY height,list,position", id.as_slice()))
+    }
+    /// Confirmation for wallet/pool consumers, authenticated against this replica's
+    /// trusted Genesis and complete execution replay in one stable read snapshot.
+    /// This verifies the execution-derived receipt, including Applied/NoEffectBurned;
+    /// neither a peer report nor a structurally plausible index row is sufficient.
+    /// Missing/orphan rows fail integrity instead of becoming Unknown.
+    pub fn verified_operation_records(&self, id: Hash) -> Result<Vec<crate::operation_index_v2::OperationRecord>> {
+        Ok(self.verified_operation_records_many(&[id])?.remove(&id).unwrap_or_default())
+    }
+    /// One replay for a bounded status request, instead of one replay per ID.
+    pub fn verified_operation_records_many(&self,ids:&[Hash]) -> Result<BTreeMap<Hash,Vec<crate::operation_index_v2::OperationRecord>>> {
+        if ids.is_empty() || ids.len()>64 || ids.iter().copied().collect::<BTreeSet<_>>().len()!=ids.len() {return Err(StoreError::Integrity);}
+        self.read_snapshot(|s| {
+            if s.halted()? { return Err(StoreError::Halted); }
+            let genesis_head = head(&s.evidence.db, Some(0))?;
+            if genesis_head.root != s.genesis_root { return Err(StoreError::Integrity); }
+            let state = historical_state(&s.evidence.db, &genesis_head, &s.genesis)?;
+            if state.root()? != s.genesis_root { return Err(StoreError::Integrity); }
+            s.verify_replay_inner(&state, false)?;
+            let mut out=BTreeMap::new();for id in ids {out.insert(*id,operation_rows(&s.evidence.db,"WHERE id=?1 ORDER BY height,list,position",id.as_slice())?);} Ok(out)
+        })
+    }
+    pub fn operation_record_at(&self, height: u64, list: u8, position: u32) -> Result<Option<crate::operation_index_v2::OperationRecord>> {
+        if height == 0 || list > 1 || position > 4095 { return Err(StoreError::Integrity); }
+        self.read_snapshot(|s| {
+            let rows = operation_rows(&s.evidence.db, "WHERE height=?1 ORDER BY list,position", height.to_be_bytes().as_slice())?;
+            Ok(rows.into_iter().find(|r| r.list == list && r.position == position))
+        })
+    }
+    /// Reconstruct only the derived lookup after full replay from trusted Genesis.
+    /// A failed replay rolls back deletion and every rebuilt row together.
+    pub fn rebuild_operation_index(&mut self, genesis_state: &State) -> Result<()> {
+        let t = rusqlite::Transaction::new_unchecked(&self.evidence.db, TransactionBehavior::Immediate)?;
+        t.execute("DELETE FROM operation_index_v2", [])?;
+        self.verify_replay_inner(genesis_state, true)?;
+        t.commit()?;
+        Ok(())
+    }
+    pub fn confirmed_height(&self, id: Hash) -> Result<Option<u64>> {
+        self.read_snapshot(|s| s.confirmed_height_snapshot(id))
+    }
+    fn confirmed_height_snapshot(&self, id: Hash) -> Result<Option<u64>> {
+        let raw: Option<Vec<u8>> = self
+            .evidence
+            .db
+            .query_row(
+                "SELECT height FROM confirmations_v2 WHERE id=?1",
+                [id.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(counter).transpose()
+    }
+    /// Recover the separate pending cache from canonical confirmations, one
+    /// height at a time. Canonical state + confirmation records commit together;
+    /// a crash before this cache update cannot lose a confirmation or spend twice.
+    /// Callers must use pending_at against the current canonical basis before
+    /// assembly, and must not present stale cache status as canonical finality.
+    pub fn reconcile_pool(&self, pool: &mut crate::mempool_v2::Mempool) -> Result<()> {
+        self.read_snapshot(|s| s.reconcile_pool_snapshot(pool))
+    }
+    /// Authenticated admission context for one complete signed object. Older
+    /// references are resolved from this replica, never from a peer's report.
+    pub fn submission_context(&self, list:u8, raw:&[u8]) -> Result<(FinalizedAnchor,State,crate::evidence_history_v2::History)> {
+        crate::submission_v1::Submission::decode(list,raw).map_err(|e|StoreError::SubmissionPool(crate::submission_pool_v1::PoolError::Invalid(e)))?;
+        self.read_snapshot(|s| {
+            if s.halted()? {return Err(StoreError::Halted);}
+            let(tip,state)=s.load_snapshot()?;
+            let anchor=FinalizedAnchor{height:tip.height,block:tip.block,..s.genesis.clone()};
+            let items=[raw.to_vec()];
+            let referenced=crate::op_envelope_v1::referenced_heights_in(if list==0 {&items} else {&[]},if list==1 {&items} else {&[]});
+            let history=s.reference_history(tip.height.checked_add(1).ok_or(StoreError::Integrity)?,&[],&referenced)?;
+            Ok((anchor,state,history))
+        })
+    }
+    /// Reconcile the current complete-object pool under one read snapshot. Index
+    /// rows are authenticated by replay before they can make anything final.
+    pub fn reconcile_submission_pool(&self, pool:&mut crate::submission_pool_v1::SubmissionPool, epoch:u64) -> Result<()> {
+        self.read_snapshot(|s| {
+            if s.halted()? {return Err(StoreError::Halted);}
+            let(tip,state)=s.load_snapshot()?;
+            let genesis_head=head(&s.evidence.db,Some(0))?;
+            if genesis_head.root!=s.genesis_root {return Err(StoreError::Integrity);}
+            let genesis_state=historical_state(&s.evidence.db,&genesis_head,&s.genesis)?;
+            if genesis_state.root()?!=s.genesis_root {return Err(StoreError::Integrity);}
+            s.verify_replay_inner(&genesis_state,false)?;
+            if let Some((basis,root))=pool.basis().map_err(StoreError::SubmissionPool)? {
+                if basis.height>tip.height || basis.genesis!=s.genesis.genesis || basis.fingerprint!=s.genesis.fingerprint {return Err(StoreError::Integrity);}
+                let old=head(&s.evidence.db,Some(basis.height))?;
+                if old.block!=basis.block || old.root!=root {return Err(StoreError::Integrity);}
+            }
+            let anchor=FinalizedAnchor{height:tip.height,block:tip.block,..s.genesis.clone()};
+            let refs=pool.reference_heights().map_err(StoreError::SubmissionPool)?;
+            let history=s.reference_history(tip.height.checked_add(1).ok_or(StoreError::Integrity)?,&[],&refs)?;
+            let mut records=BTreeMap::new();
+            for id in pool.tracked_ids().map_err(StoreError::SubmissionPool)? {
+                records.insert(id,operation_rows(&s.evidence.db,"WHERE id=?1 ORDER BY height,list,position",id.as_slice())?);
+            }
+            pool.reconcile(&anchor,&state,&history,epoch,&records).map_err(StoreError::SubmissionPool)
+        })
+    }
+    fn reconcile_pool_snapshot(&self, pool: &mut crate::mempool_v2::Mempool) -> Result<()> {
+        if self.halted()? {
+            return Err(StoreError::Halted);
+        }
+        let (tip, _) = self.load()?;
+        let start = if let Some((basis, root)) = pool.basis().map_err(StoreError::Pool)? {
+            let trusted = head(&self.evidence.db, Some(basis.height))?;
+            if basis.genesis != self.genesis.genesis
+                || basis.fingerprint != self.genesis.fingerprint
+                || basis.block != trusted.block
+                || root != trusted.root
+                || basis.height > tip.height
+            {
+                return Err(StoreError::Integrity);
+            }
+            basis.height.checked_add(1).ok_or(StoreError::Integrity)?
+        } else {
+            0
+        };
+        for height in start..=tip.height {
+            let (parent, state, _) = self.execution_parent(height)?;
+            let anchor = FinalizedAnchor {
+                height,
+                block: parent.block,
+                ..self.genesis.clone()
+            };
+            let mut q = self.evidence.db.prepare(
+                "SELECT id FROM confirmations_v2 WHERE height=?1 ORDER BY id LIMIT 4097",
+            )?;
+            let mut confirmed = BTreeSet::new();
+            for row in q.query_map([height.to_be_bytes().as_slice()], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })? {
+                if confirmed.len() >= 4096 {
+                    return Err(StoreError::Integrity);
+                }
+                confirmed.insert(fixed(row?)?);
+            }
+            pool.reconcile(&anchor, &state, &confirmed)
+                .map_err(StoreError::Pool)?;
+        }
+        Ok(())
+    }
+    /// Current parent voter authority from one authenticated state snapshot.
+    /// Peer-provided key/weight maps are never accepted. This public authority
+    /// can become stale; the runtime must check its parent again before signing.
+    pub fn current_authority(&self, expected_parent: &FinalizedAnchor) -> Result<HeightAuthority> {
+        self.current_liveness(expected_parent).map(|(authority, _)| authority)
+    }
+    /// Owner-local private activation adapter context. Full own-Genesis replay,
+    /// current parent/authority and returned public State share one read snapshot.
+    /// This read-only result creates no activation capability or physical claim.
+    pub fn verified_activation_parent(&self, expected: &FinalizedAnchor) -> Result<(HeightAuthority, State)> {
+        self.read_snapshot(|store| {
+            if store.halted()? {return Err(StoreError::Halted);}
+            let genesis_head=head(&store.evidence.db,Some(0))?;
+            if genesis_head.root!=store.genesis_root{return Err(StoreError::Integrity);}
+            let initial=historical_state(&store.evidence.db,&genesis_head,&store.genesis)?;
+            if initial.root()?!=store.genesis_root{return Err(StoreError::Integrity);}
+            store.verify_replay_inner(&initial,false)?;
+            let (tip,state)=store.load_snapshot()?;
+            let anchor=FinalizedAnchor{height:tip.height,block:tip.block,..store.genesis.clone()};
+            if &anchor!=expected{return Err(StoreError::WrongParent);}
+            let authority=match crate::recovery_store_v2::prepared(&store.evidence.db,&state,&anchor,tip.root,store.t0)? {
+                Some(recovery)=>recovery.authority()?,
+                None=>HeightAuthority::from_state(&state,anchor,tip.root).map_err(StoreError::Verification)?,
+            };
+            Ok((authority,state))
+        })
+    }
+    /// Pure unsigned reservation check against this store's CURRENT canonical
+    /// parent. Caller cannot supply roots/registry/Genesis or historical authority.
+    /// This grants no signature/permit and does not validate BFT proposal/locks;
+    /// the native voter and custody-entry permit remain mandatory for signing.
+    pub fn validate_unsigned_vote_at_current_parent(&self,vote:&crate::continuity_v2::Vote)
+        ->Result<HeightAuthority>{
+        let height=vote.decision.height.checked_sub(1).ok_or(StoreError::WrongParent)?;
+        let parent=FinalizedAnchor{height,block:vote.decision.parent,..self.genesis.clone()};
+        let authority=self.current_authority(&parent)?;
+        vote.validate_authority(&authority.parent,authority.roots(),&authority.voters)
+            .map_err(StoreError::Invalid)?;
+        Ok(authority)
+    }
+    /// Fresh actor authority from one authenticated canonical read snapshot.
+    /// This is not a retained witness: every pre/post-custody caller acquires
+    /// its own snapshot. The historical/public authority methods are unchanged.
+    pub(crate) fn current_actor_authority(&self) -> Result<HeightAuthority> {
+        self.read_snapshot(|store| {
+            // Preserve the old actor helper's load-before-halted ordering.
+            let (tip, state) = store.load_snapshot()?;
+            if store.halted()? { return Err(StoreError::Halted); }
+            let anchor = FinalizedAnchor {
+                height: tip.height, block: tip.block, ..store.genesis.clone()
+            };
+            // voting_authority_at formerly performed this unique timestamp
+            // window check after authenticating the same current State/root.
+            let _parent = store.work_parent_from_head(&tip)?;
+            match crate::recovery_store_v2::prepared(
+                &store.evidence.db, &state, &anchor, tip.root, store.t0,
+            )? {
+                Some(r) => Ok(r.authority()?),
+                None => HeightAuthority::from_state(&state, anchor, tip.root)
+                    .map_err(StoreError::Verification),
+            }
+        })
+    }
+    /// Exact voting context for the successor of a locally authenticated parent.
+    /// Historical use does not confer permission to sign at an old height.
+    pub fn voting_authority_at(&self, parent_height: u64) -> Result<HeightAuthority> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (parent, state, root) = store.execution_parent_snapshot(parent_height)?;
+            let anchor = FinalizedAnchor { height: parent.height, block: parent.block, ..store.genesis.clone() };
+            match crate::recovery_store_v2::prepared(&store.evidence.db, &state, &anchor, root, store.t0)? {
+                Some(r) => Ok(r.authority()?),
+                None => HeightAuthority::from_state(&state, anchor, root).map_err(StoreError::Verification),
+            }
+        })
+    }
+    /// Public proof gate for an explicit host custody ceremony. Only the fresh
+    /// replacement named by the exact pending recovery can initialize here.
+    /// This does not reserve a journal, provision a counter or supply secrets.
+    pub fn recovery_initialization_authority(
+        &self, expected: &FinalizedAnchor, node: Hash, commitment: Hash,
+    ) -> Result<HeightAuthority> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let parent = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &parent != expected { return Err(StoreError::WrongParent); }
+            let recovery = crate::recovery_store_v2::prepared(&store.evidence.db, &state, &parent, tip.root, store.t0)?.ok_or(StoreError::WrongParent)?;
+            if recovery.commitment()? != commitment || recovery.record().material.binding.admission.node != node {
+                return Err(StoreError::Context);
+            }
+            Ok(recovery.authority()?)
+        })
+    }
+    /// Authenticate and execute a proposal from one read snapshot before it
+    /// enters the live reducer. An old reducer is never silently rebound to a
+    /// recovery context; custody must open the explicitly authorized context.
+    pub fn validate_round_proposal(
+        &self,
+        round: &mut crate::votes_v2::AuthenticatedRound,
+        header: &crate::pow::WorkHeader,
+        work: &crate::work_authority_v2::Authority,
+        body: &crate::blocks::BlockBody,
+    ) -> Result<crate::execution::Execution> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            work.encode()?;
+            let height = header.candidate.height;
+            let parent_height = height.checked_sub(1).ok_or(StoreError::WrongParent)?;
+            let (parent, state, root) = store.execution_parent_snapshot(parent_height)?;
+            let anchor = FinalizedAnchor { height: parent.height, block: parent.block, ..store.genesis.clone() };
+            crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,anchor.clone(),root)?.encode(body)?;
+            let recovery = crate::recovery_store_v2::prepared(&store.evidence.db, &state, &anchor, root, store.t0)?;
+            let authority = match &recovery {
+                Some(r) => r.authority()?,
+                None => HeightAuthority::from_state(&state, anchor, root).map_err(StoreError::Verification)?,
+            };
+            if round.authority() != &authority { return Err(StoreError::WrongParent); }
+            let history = store.operation_history(height, body)?;
+            round.validate_proposal_with_recovery(&state, &parent, header, work, body, &history, recovery.as_ref()).map_err(StoreError::Verification)
+        })
+    }
+    /// Voter authority and StateRoot from the SAME canonical read transaction.
+    /// A caller must still recheck the parent after slow verification/signing.
+    pub fn current_liveness(&self, expected_parent: &FinalizedAnchor) -> Result<(HeightAuthority, Hash)> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let anchor = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &anchor != expected_parent { return Err(StoreError::WrongParent); }
+            let authority = match crate::recovery_store_v2::prepared(&store.evidence.db, &state, &anchor, tip.root, store.t0)? {
+                Some(r) => r.authority()?,
+                None => HeightAuthority::from_state(&state, anchor, tip.root).map_err(StoreError::Verification)?,
+            };
+            Ok((authority, tip.root))
+        })
+    }
+    /// Authenticated pre-reservation ticket floor and coordinator assignment.
+    /// Tentatively activates assignments due in the requested MiningEpoch using
+    /// the ordinary execution rules, without changing canonical state.
+    pub fn current_work_context(
+        &self, expected_parent: &FinalizedAnchor, license: Hash, worker: Hash, timestamp: u64,
+    ) -> Result<(crate::pow::WorkContext, Vec<u8>)> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let anchor = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &anchor != expected_parent { return Err(StoreError::WrongParent); }
+            let (parent, _, root) = store.execution_parent_snapshot(tip.height)?;
+            if root != tip.root { return Err(StoreError::Integrity); }
+            let candidate = crate::pow::Candidate {
+                network: crate::NETWORK_ID, genesis: parent.genesis, fingerprint: parent.fingerprint,
+                parent: parent.block, height: parent.height.checked_add(1).ok_or(StoreError::Integrity)?,
+                timestamp, body_root: [0; 32], state_root: [0; 32], license, worker, target: parent.target,
+            };
+            let (context, _, descriptor) = state.work_context_v2(&parent, &candidate)?;
+            Ok((context, descriptor))
+        })
+    }
+    /// Worker handshake authority from the same authenticated read transaction.
+    /// Uses ordinary work timestamp/epoch and assignment validation; no transport
+    /// packet or cached descriptor can supply its own authority. The caller must
+    /// recheck after signing and before activating or using a session.
+    pub fn current_worker_session(
+        &self, expected: &FinalizedAnchor, license: Hash, worker: Hash, timestamp: u64,
+    ) -> Result<(crate::pow::WorkContext, mutiny_crypto_v2::enrollment::Binding, Vec<u8>, u64)> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let anchor = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &anchor != expected { return Err(StoreError::WrongParent); }
+            // load_snapshot already authenticated this exact head, finalized
+            // anchor, and complete state in the same read transaction. Do not
+            // reconstruct that same state a second time merely to read clocks.
+            let parent = store.work_parent_from_head(&tip)?;
+            let candidate = crate::pow::Candidate {
+                network: crate::NETWORK_ID, genesis: parent.genesis, fingerprint: parent.fingerprint,
+                parent: parent.block, height: parent.height.checked_add(1).ok_or(StoreError::Integrity)?,
+                timestamp, body_root: [0;32], state_root: [0;32], license, worker, target: parent.target,
+            };
+            let (context, _, descriptor) = state.work_context_v2(&parent, &candidate)?;
+            let epoch = crate::pow::mining_epoch(timestamp, parent.t0)?;
+            let mut book = state.licenses_v2.clone();
+            book.activate_due(epoch)?;
+            let (_, active) = book.active(license, worker, epoch)?;
+            let binding = active.assignment.enrollment.binding.clone();
+            if active.assignment.node_descriptor != descriptor { return Err(StoreError::Integrity); }
+            Ok((context, binding, descriptor, epoch))
+        })
+    }
+    /// Local software coordinator custody, restricted to an active owner-bound
+    /// Worker assignment. It grants NO physical membership or Continuity key.
+    pub fn current_software_coordinator(
+        &self, expected: &FinalizedAnchor, license: Hash, worker: Hash, timestamp: u64,
+    ) -> Result<(crate::pow::WorkContext, Vec<u8>)> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let anchor = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &anchor != expected { return Err(StoreError::WrongParent); }
+            let (parent, _, root) = store.execution_parent_snapshot(tip.height)?;
+            if root != tip.root { return Err(StoreError::Integrity); }
+            let candidate = crate::pow::Candidate {
+                network: crate::NETWORK_ID, genesis: parent.genesis, fingerprint: parent.fingerprint,
+                parent: parent.block, height: parent.height.checked_add(1).ok_or(StoreError::Integrity)?,
+                timestamp, body_root: [0;32], state_root: [0;32], license, worker, target: parent.target,
+            };
+            let (context, _, descriptor) = state.work_context_v2(&parent, &candidate)?;
+            software_coordinator_only(&state, &descriptor)?;
+            Ok((context, descriptor))
+        })
+    }
+    /// Exact current control from the same verified snapshot as its head.
+    /// Historical controls and caller-supplied descriptors cannot unlock custody.
+    pub fn current_node_authority(&self, expected: &FinalizedAnchor, node: Hash) -> Result<crate::node_authority_v2::Authority> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let parent = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &parent != expected { return Err(StoreError::WrongParent); }
+            let recovery = crate::recovery_store_v2::prepared(&store.evidence.db, &state, &parent, tip.root, store.t0)?;
+            let effective = recovery.as_ref().map(|r| r.components()).unwrap_or(&state);
+            crate::node_authority_v2::Authority::from_state(effective, parent, node).map_err(StoreError::from)
+        })
+    }
+    /// Validate all canonical, owner, TPM and replacement Continuity evidence
+    /// before the current Node key supplies its own binding possession proof.
+    pub fn validate_node_continuity_rotation(
+        &self, node: Hash, operation: &crate::continuity_key_rotate_v2::KeyRotate,
+    ) -> Result<()> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let parent = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if operation.parent != parent || operation.binding.admission.node != node {
+                return Err(StoreError::WrongParent);
+            }
+            operation.verify_for_node_possession(&state, &parent, tip.root).map_err(StoreError::from)
+        })
+    }
+    /// Preflight hardware replacement before Node possession. The new native
+    /// signature is necessarily added afterward and remains mandatory at execution.
+    pub fn validate_node_hardware_rotation(
+        &self, node: Hash, operation: &crate::hardware_rotate_v2::HardwareRotate,
+    ) -> Result<()> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let parent = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if operation.parent != parent || operation.binding.admission.node != node {
+                return Err(StoreError::WrongParent);
+            }
+            operation.verify_for_node_possession(&state, &parent, tip.root).map_err(StoreError::from)
+        })
+    }
+    /// Check an unsigned work offer against the exact current canonical state.
+    /// This neither reserves a durable coordinator ticket nor grants finality.
+    pub fn validate_node_work(
+        &self, expected: &FinalizedAnchor, node: Hash,
+        authority: &crate::work_authority_v2::Authority, body: &crate::blocks::BlockBody,
+    ) -> Result<()> {
+        self.validate_work_custody(expected, Some(node), authority, body)
+    }
+    pub fn validate_software_coordinator_work(
+        &self, expected: &FinalizedAnchor, authority: &crate::work_authority_v2::Authority,
+        body: &crate::blocks::BlockBody,
+    ) -> Result<()> { self.validate_work_custody(expected, None, authority, body) }
+    fn validate_work_custody(
+        &self, expected: &FinalizedAnchor, node: Option<Hash>,
+        authority: &crate::work_authority_v2::Authority, body: &crate::blocks::BlockBody,
+    ) -> Result<()> {
+        authority.encode()?;
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, state) = store.load_snapshot()?;
+            let anchor = FinalizedAnchor { height: tip.height, block: tip.block, ..store.genesis.clone() };
+            if &anchor != expected { return Err(StoreError::WrongParent); }
+            crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,anchor.clone(),tip.root)?.encode(body)?;
+            let expected_descriptor = if let Some(node) = node {
+                crate::node_authority_v2::Authority::from_state(&state, anchor, node)?.descriptor().to_vec()
+            } else {
+                software_coordinator_only(&state, &authority.node_descriptor)?;
+                authority.node_descriptor.clone()
+            };
+            let (parent, _, root) = store.execution_parent_snapshot(tip.height)?;
+            if root != tip.root { return Err(StoreError::Integrity); }
+            let (context, _, descriptor) = state.work_context_v2(&parent, &authority.work.candidate)?;
+            if authority.node_descriptor != expected_descriptor || descriptor != expected_descriptor {
+                return Err(crate::Error::UnknownSigner.into());
+            }
+            let header = crate::pow::WorkHeader {
+                candidate: authority.work.candidate.clone(), authority: authority.id()?,
+                nonce: authority.work.nonce_start,
+            };
+            crate::pow::validate_authority_fields(&header, &authority.work, authority.id()?, &context)?;
+            let history = store.operation_history(header.candidate.height, body)?;
+            let execution = state.prepare_candidate_with_history_v2(
+                crate::execution::CandidatePreparation {
+                    parent: &parent, candidate: &header.candidate,
+                    ticket_sequence: authority.work.ticket_sequence, body,
+                }, &history)?;
+            if execution.root != header.candidate.state_root {
+                return Err(crate::Error::WrongAnchor.into());
+            }
+            Ok(())
+        })
+    }
+    pub fn execution_parent(&self, height: u64) -> Result<(WorkParent, State, Hash)> {
+        self.read_snapshot(|s| s.execution_parent_snapshot(height))
+    }
+    /// Sealed capacity for the exact current canonical parent. No caller policy flag.
+    pub fn body_capacity(&self, expected: &FinalizedAnchor) -> Result<crate::body_capacity_v3::BodyCapacity> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip,state)=store.load_snapshot()?;
+            let parent=FinalizedAnchor { height:tip.height, block:tip.block, ..store.genesis.clone() };
+            if &parent!=expected { return Err(StoreError::WrongParent); }
+            crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,parent,tip.root)
+                .map_err(StoreError::from)
+        })
+    }
+    /// Historical proposal verification uses the exact retained canonical H-1 state.
+    /// This capability cannot authorize old-height issuance or signing.
+    pub fn proposal_body_capacity(&self, header: &crate::pow::WorkHeader) -> Result<crate::body_capacity_v3::BodyCapacity> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let c=&header.candidate;
+            if c.network!=store.genesis.network || c.genesis!=store.genesis.genesis
+                || c.fingerprint!=store.genesis.fingerprint {
+                return Err(StoreError::Context);
+            }
+            let height=c.height.checked_sub(1).ok_or(StoreError::WrongParent)?;
+            let (parent,state,root)=store.execution_parent_snapshot(height)?;
+            if c.parent!=parent.block || c.target!=parent.target { return Err(StoreError::WrongParent); }
+            let anchor=FinalizedAnchor { height:parent.height, block:parent.block, ..store.genesis.clone() };
+            crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,anchor,root)
+                .map_err(StoreError::from)
+        })
+    }
+    /// Full-replay-only decoder. Its State/Head are the previous iteration's
+    /// verified execution result (or independently trusted Genesis), not disk
+    /// undo reconstructions or a caller-issued public capacity capability.
+    /// Keep every ordinary retained-envelope binding while avoiding redundant
+    /// reconstruction of the same historical State from the current tip.
+    #[allow(dead_code)]
+    fn replay_parent_envelope(&self, height: u64, block: Hash, previous: &Head,
+        state: &State) -> Result<Option<BlockEnvelope>> {
+        self.replay_parent_envelope_with_capacity(height, block, previous, state)
+            .map(|item| item.map(|(envelope, _)| envelope))
+    }
+    fn replay_parent_envelope_with_capacity(&self, height: u64, block: Hash, previous: &Head,
+        state: &State) -> Result<Option<(BlockEnvelope, crate::body_capacity_v3::BodyCapacity)>> {
+        let Some(raw) = self.evidence.evidence_raw_a2(height, block)? else { return Ok(None); };
+        let header = BlockEnvelope::untrusted_header(&raw)?;
+        let candidate = &header.candidate;
+        if candidate.height != height || header.block_hash() != block {
+            return Err(StoreError::Integrity);
+        }
+        if self.halted()? { return Err(StoreError::Halted); }
+        if candidate.network != self.genesis.network || candidate.genesis != self.genesis.genesis
+            || candidate.fingerprint != self.genesis.fingerprint {
+            return Err(StoreError::Context);
+        }
+        if candidate.height.checked_sub(1) != Some(previous.height)
+            || candidate.parent != previous.block || candidate.target != previous.target {
+            return Err(StoreError::WrongParent);
+        }
+        let parent = FinalizedAnchor { height: previous.height, block: previous.block,
+            ..self.genesis.clone() };
+        let capacity = crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(
+            state, parent, previous.root)?;
+        Ok(Some((BlockEnvelope::decode_with_capacity(&raw, &capacity)?, capacity)))
+    }
+    fn retained_envelope(&self, height: u64, block: Hash) -> Result<Option<BlockEnvelope>> {
+        let Some(raw)=self.evidence.evidence_raw_a2(height,block)? else { return Ok(None); };
+        let header=BlockEnvelope::untrusted_header(&raw)?;
+        if header.candidate.height!=height || header.block_hash()!=block { return Err(StoreError::Integrity); }
+        let capacity=self.proposal_body_capacity(&header)?;
+        Ok(Some(BlockEnvelope::decode_with_capacity(&raw,&capacity)?))
+    }
+    /// Historical licensed PoW qualification for operational observations.
+    /// One authenticated read snapshot supplies all parent/key/execution and
+    /// recovery authority. This neither installs a block nor signs a receipt;
+    /// callers must separately enforce durable per-Worker accounting, retain
+    /// the candidate and check current receipt-signing authority.
+    pub fn validate_observation_v2(
+        &self, header: &crate::pow::WorkHeader,
+        work: &crate::work_authority_v2::Authority, body: &crate::blocks::BlockBody,
+    ) -> Result<()> {
+        work.encode()?;
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let height = header.candidate.height;
+            let parent_height = height.checked_sub(1).ok_or(StoreError::WrongParent)?;
+            let (parent, state, root) = store.execution_parent_snapshot(parent_height)?;
+            let anchor = FinalizedAnchor { height: parent.height, block: parent.block, ..store.genesis.clone() };
+            crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,anchor.clone(),root)?.encode(body)?;
+            let recovery = crate::recovery_store_v2::prepared(&store.evidence.db, &state, &anchor, root, store.t0)?;
+            let authority = match &recovery {
+                Some(r) => r.authority()?,
+                None => HeightAuthority::from_state(&state, anchor, root).map_err(StoreError::Verification)?,
+            };
+            let mut round = crate::votes_v2::AuthenticatedRound::new(authority).map_err(StoreError::Verification)?;
+            let history = store.operation_history(height, body)?;
+            round.validate_proposal_with_recovery(&state, &parent, header, work, body, &history, recovery.as_ref())
+                .map_err(StoreError::Verification)?;
+            Ok(())
+        })
+    }
+    /// Canonical evidence only; a conflicting retained evidence object is never
+    /// selected by a caller-supplied hash. Height zero has no certificate.
+    pub fn canonical_block(&self, height: u64) -> Result<Option<BlockEnvelope>> {
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            if height == 0 { return Ok(None); }
+            let Some(anchor) = store.evidence.anchor(height)? else { return Ok(None); };
+            let block = store.retained_envelope(height, anchor.block)?.ok_or(StoreError::Integrity)?;
+            if block.certificate.decision.anchor() != anchor { return Err(StoreError::Integrity); }
+            Ok(Some(block))
+        })
+    }
+    /// Exact complete certified envelope, available for recovery/replay without a locator
+    /// or a state-record/kind7 quota change. Read, parent-rule selection, native execution,
+    /// PoW and parent certificate verification share one authenticated snapshot.
+    pub fn certified_envelope_bytes(&self, height: u64, block: Hash) -> Result<Option<Vec<u8>>> {
+        self.read_snapshot(|store| store.certified_envelope_bytes_snapshot(height, block))
+    }
+    fn certified_envelope_bytes_snapshot(&self, height: u64, block: Hash) -> Result<Option<Vec<u8>>> {
+            let store = self;
+            if store.halted()? { return Err(StoreError::Halted); }
+            if height==0 { return Ok(None); }
+            let Some(anchor)=store.evidence.anchor(height)? else { return Ok(None); };
+            if anchor.block!=block { return Err(StoreError::WrongParent); }
+            let raw=store.evidence.evidence_raw_a2(height,block)?.ok_or(StoreError::Integrity)?;
+            let header=BlockEnvelope::untrusted_header(&raw)?;
+            let capacity=store.proposal_body_capacity(&header)?;
+            let envelope=BlockEnvelope::decode_with_capacity(&raw,&capacity)?;
+            if envelope.header.candidate.height!=height || envelope.block_hash()!=block
+                || envelope.certificate.decision.anchor()!=anchor { return Err(StoreError::Integrity); }
+            let (parent,state,root)=store.execution_parent_snapshot(height-1)?;
+            let history=store.operation_history(height,&envelope.body)?;
+            let recovery=crate::recovery_store_v2::prepared(&store.evidence.db,&state,capacity.parent(),root,store.t0)?;
+            match recovery {
+                Some(r) => r.verify_envelope(&state,&parent,&envelope,&history),
+                None => envelope.verify_execute_from_parent_state(&state,&parent,root,&history),
+            }.map_err(StoreError::Verification)?;
+            if envelope.encode_with_capacity(&capacity)?!=raw { return Err(StoreError::Integrity); }
+            Ok(Some(raw))
+    }
+    /// Prepare an ordered public history page while ONE SQLite snapshot holds
+    /// checkpoint, frozen tip, parent authority, recovery and complete envelopes.
+    /// Socket/channel work belongs to the caller after this method has returned.
+    /// The byte/entry arguments must already be the minimum of receiver limits
+    /// and the local queue's reserved available capacity, excluding controls.
+    pub fn prepare_history_page(&self, from: &FinalizedAnchor, max_blocks: u8,
+        max_candidate_bytes: usize, max_candidate_entries: u8) -> Result<HistoryPreparation> {
+        if !(1..=64).contains(&max_blocks) || max_candidate_bytes == 0
+            || max_candidate_bytes > 4 * 1024 * 1024
+            || !(1..=6).contains(&max_candidate_entries) {
+            return Err(crate::Error::Capacity.into());
+        }
+        self.read_snapshot(|store| store.prepare_history_page_snapshot(from, max_blocks,
+            max_candidate_bytes, max_candidate_entries))
+    }
+    fn prepare_history_page_snapshot(&self, from: &FinalizedAnchor, max_blocks: u8,
+        max_candidate_bytes: usize, max_candidate_entries: u8) -> Result<HistoryPreparation> {
+        if self.halted()? { return Err(StoreError::Halted); }
+        // Context equality includes network as well as Genesis/fingerprint; H0
+        // comes from the constructor pin, never canonical_block(0) or the peer.
+        if from.network != self.genesis.network || from.genesis != self.genesis.genesis
+            || from.fingerprint != self.genesis.fingerprint {
+            return Ok(HistoryPreparation::CheckpointRejected);
+        }
+        let first = head(&self.evidence.db, Some(0))?;
+        if first.block != self.genesis.block || first.root != self.genesis_root
+            || first.timestamp != self.t0
+            || self.evidence.anchor(0)?.as_ref() != Some(&self.genesis) {
+            return Err(StoreError::Integrity);
+        }
+        let snapshot_tip = head(&self.evidence.db, None)?;
+        if snapshot_tip.height > 0 && self.history_envelope_length_snapshot(
+            snapshot_tip.height, snapshot_tip.block)?.is_none() {
+            return Ok(HistoryPreparation::EvidenceUnavailable);
+        }
+        let (tip_head, _) = self.load_snapshot()?;
+        let tip = FinalizedAnchor { height: tip_head.height, block: tip_head.block,
+            ..self.genesis.clone() };
+        if self.evidence.anchor(tip.height)?.as_ref() != Some(&tip) {
+            return Err(StoreError::Integrity);
+        }
+        if from.height > tip.height { return Ok(HistoryPreparation::CheckpointRejected); }
+        if from.height == 0 {
+            if from != &self.genesis { return Ok(HistoryPreparation::CheckpointRejected); }
+        } else {
+            if self.evidence.anchor(from.height)?.as_ref() != Some(from) {
+                return Ok(HistoryPreparation::CheckpointRejected);
+            }
+            if self.history_envelope_length_snapshot(from.height, from.block)?.is_none() {
+                return Ok(HistoryPreparation::EvidenceUnavailable);
+            }
+            // A matching stored hash is insufficient: reauthenticate its native
+            // execution/PoW/certificate against its actual historical parent.
+            if self.certified_envelope_bytes_snapshot(from.height, from.block)?.is_none() {
+                return Ok(HistoryPreparation::EvidenceUnavailable);
+            }
+        }
+        // Even an empty page reports only a locally verified frozen tip.
+        if tip.height > 0 && from.height != tip.height
+            && self.certified_envelope_bytes_snapshot(tip.height, tip.block)?.is_none() {
+            return Ok(HistoryPreparation::EvidenceUnavailable);
+        }
+        let mut prepared = PreparedCanonicalHistory { from: from.clone(),
+            through: from.clone(), tip, objects: Vec::new() };
+        let mut used = 0usize;
+        for _ in 0..max_blocks {
+            if prepared.through.height == prepared.tip.height { break; }
+            let height = prepared.through.height.checked_add(1).ok_or(StoreError::Integrity)?;
+            let Some(anchor) = self.evidence.anchor(height)? else {
+                return Ok(HistoryPreparation::EvidenceUnavailable);
+            };
+            if anchor.network != self.genesis.network || anchor.genesis != self.genesis.genesis
+                || anchor.fingerprint != self.genesis.fingerprint || anchor.height != height {
+                return Err(StoreError::Integrity);
+            }
+            // Query lengths BEFORE allocating a body-sized public export.
+            // Independently retain kind3's existing 2-MiB transport ceiling;
+            // historical parent capacity is authenticated during verification.
+            let block_len: Option<i64> = self.evidence.db.query_row(
+                "SELECT length(envelope) FROM evidence_v2 WHERE height=?1 AND block=?2",
+                params![height.to_be_bytes().as_slice(), anchor.block.as_slice()], |r| r.get(0))
+                .optional()?;
+            let Some(block_len) = block_len else { return Ok(HistoryPreparation::EvidenceUnavailable); };
+            if block_len <= 0 || block_len as u64 > 2 * 1024 * 1024 {
+                return Ok(HistoryPreparation::EvidenceUnavailable);
+            }
+            let recovery_len: Option<i64> = self.evidence.db.query_row(
+                "SELECT length(record) FROM accepted_recovery_v2 WHERE height=?1",
+                [prepared.through.height.to_be_bytes().as_slice()], |r| r.get(0)).optional()?;
+            if recovery_len.is_some_and(|n| n <= 0 || n > 256 * 1024) {
+                return Err(StoreError::Integrity);
+            }
+            let group_entries = 1 + usize::from(recovery_len.is_some());
+            let group_bytes = (block_len as usize).checked_add(recovery_len.unwrap_or(0) as usize)
+                .ok_or(StoreError::Integrity)?;
+            if prepared.objects.len() + group_entries > usize::from(max_candidate_entries)
+                || group_bytes > max_candidate_bytes.saturating_sub(used) {
+                if prepared.objects.is_empty() { return Ok(HistoryPreparation::Busy); }
+                break;
+            }
+            let recovery = self.recovery_record_snapshot(prepared.through.height)?;
+            if recovery.as_ref().map(Vec::len) != recovery_len.map(|n| n as usize) {
+                return Err(StoreError::Integrity);
+            }
+            let Some(bytes) = self.certified_envelope_bytes_snapshot(height, anchor.block)? else {
+                return Ok(HistoryPreparation::EvidenceUnavailable);
+            };
+            if bytes.len() != block_len as usize { return Err(StoreError::Integrity); }
+            // Publish whole verified groups only. In particular a tight budget
+            // never exposes recovery alone without its certified successor.
+            if let Some(bytes) = recovery { prepared.objects.push(CanonicalHistoryObject {
+                kind: 7, height: prepared.through.height, bytes }); }
+            prepared.objects.push(CanonicalHistoryObject { kind: 3, height, bytes });
+            used += group_bytes;
+            prepared.through = anchor;
+        }
+        Ok(HistoryPreparation::Page(prepared))
+    }
+    /// Only scalar metadata crosses SQLite before bounded envelope allocation.
+    fn history_envelope_length_snapshot(&self, height: u64, block: Hash) -> Result<Option<usize>> {
+        let n: Option<i64> = self.evidence.db.query_row(
+            "SELECT length(envelope) FROM evidence_v2 WHERE height=?1 AND block=?2",
+            params![height.to_be_bytes().as_slice(), block.as_slice()], |r| r.get(0)).optional()?;
+        n.map(|n| {
+            if n <= 0 || n as u64 > crate::body_capacity_v3::MAX_ENVELOPE_BYTES as u64 {
+                return Err(StoreError::Integrity);
+            }
+            usize::try_from(n).map_err(|_| StoreError::Integrity)
+        }).transpose()
+    }
+    /// Bounded historical E-1 authority for proposal execution/reconciliation, and the
+    /// canonical block hash of every height an envelope of `body` references: exactly the
+    /// History that `commit` builds for that block (design 1.a.3; amendment AM-4 gives this
+    /// public entry point the WHOLE body, so transaction-carried references are covered).
+    /// No caller-supplied voter map or anchor is accepted.
+    pub fn evidence_history(&self, height: u64, body: &crate::blocks::BlockBody) -> Result<crate::evidence_history_v2::History> {
+        // Borrowed conservative bounds before snapshot replay or any body clone.
+        // Exact authenticated-parent capacity and typed/native checks follow below.
+        if body.transactions.len().checked_add(body.operations.len()).is_none_or(|n| n > crate::body_capacity_v3::MAX_ITEMS)
+            || body.transactions.iter().any(|r| r.len() > crate::body_capacity_v3::MAX_ORDINARY_ITEM_BYTES)
+            || body.operations.iter().any(|r| r.len() > crate::body_capacity_v3::MAX_A2_OPERATION_BYTES)
+            || body.transactions.iter().chain(body.operations.iter())
+                .try_fold(0usize, |n, r| n.checked_add(r.len()))
+                .is_none_or(|n| n > crate::body_capacity_v3::MAX_LEGACY_BODY_BYTES + crate::body_capacity_v3::MAX_A2_OPERATION_BYTES)
+        { return Err(crate::Error::Capacity.into()); }
+        if body.height != height {
+            return Err(StoreError::WrongParent);
+        }
+        self.read_snapshot(|store| {
+            if store.halted()? { return Err(StoreError::Halted); }
+            let (tip, _) = store.load_snapshot()?;
+            if height == 0 || height > tip.height.checked_add(1).ok_or(StoreError::Integrity)? {
+                return Err(StoreError::WrongParent);
+            }
+            let (parent,state,root)=store.execution_parent_snapshot(height.checked_sub(1).ok_or(StoreError::WrongParent)?)?;
+            let anchor=FinalizedAnchor {height:parent.height,block:parent.block,..store.genesis.clone()};
+            crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,anchor,root)?.encode(body)?;
+            store.operation_history(height, body)
+        })
+    }
+    fn execution_parent_snapshot(&self, height: u64) -> Result<(WorkParent, State, Hash)> {
+        let wanted = head(&self.evidence.db, Some(height))?;
+        let anchor = self.evidence.anchor(height)?.ok_or(StoreError::Integrity)?;
+        if anchor.block != wanted.block {
+            return Err(StoreError::Integrity);
+        }
+        let state = historical_state(&self.evidence.db, &wanted, &self.genesis)?;
+        let parent = self.work_parent_from_head(&wanted)?;
+        Ok((parent, state, wanted.root))
+    }
+    /// Caller has already validated the head and its state in this transaction.
+    fn work_parent_from_head(&self, wanted: &Head) -> Result<WorkParent> {
+        let mut q = self.evidence.db.prepare(
+            "SELECT timestamp FROM canonical_v2 WHERE height<=?1 ORDER BY height DESC LIMIT 11",
+        )?;
+        let timestamps = q
+            .query_map([wanted.height.to_be_bytes().as_slice()], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })?
+            .map(|r| counter(r?))
+            .collect::<Result<Vec<_>>>()?;
+        if !crate::pow::window_ends_at_parent(&timestamps, wanted.timestamp) {
+            return Err(StoreError::Integrity);
+        }
+        Ok(WorkParent {
+                genesis: self.genesis.genesis,
+                fingerprint: self.genesis.fingerprint,
+                block: wanted.block,
+                height: wanted.height,
+                t0: self.t0,
+                target: wanted.target,
+                ancestor_timestamps: timestamps,
+            })
+    }
+    /// Prepare unsigned work against one consistent canonical read snapshot.
+    /// This does not sign, install state, or reserve a Worker ticket. A returned
+    /// candidate can become stale; signing/commit must recheck current authority.
+    pub fn prepare_pending(
+        &self,
+        request: Preparation<'_>,
+    ) -> Result<crate::assembler_v2::Prepared> {
+        // Bound untrusted operations before decoding or replaying any history.
+        if request.operations.len() > 4096
+            || request.operations.iter().any(|r| r.len() > crate::body_capacity_v3::MAX_A2_OPERATION_BYTES)
+            || request
+                .operations
+                .iter()
+                .try_fold(0usize, |n, r| n.checked_add(r.len()))
+                .is_none_or(|n| n > crate::body_capacity_v3::MAX_LEGACY_BODY_BYTES + crate::body_capacity_v3::MAX_A2_OPERATION_BYTES)
+        {
+            return Err(crate::Error::Capacity.into());
+        }
+        self.read_snapshot(|store| {
+            if store.halted()? {
+                return Err(StoreError::Halted);
+            }
+            let (tip, state) = store.load_snapshot()?;
+            let anchor = FinalizedAnchor {
+                height: tip.height,
+                block: tip.block,
+                ..store.genesis.clone()
+            };
+            if &anchor != request.expected_parent {
+                return Err(StoreError::WrongParent);
+            }
+            let (parent, _, root) = store.execution_parent_snapshot(tip.height)?;
+            if root != tip.root {
+                return Err(StoreError::Integrity);
+            }
+            let height = tip.height.checked_add(1).ok_or(StoreError::Integrity)?;
+            let capacity=crate::body_capacity_v3::BodyCapacity::from_authenticated_parent(&state,anchor.clone(),root)?;
+            capacity.encode(&crate::blocks::BlockBody {height,reward_owner:[0;32],fees:0,transactions:vec![],operations:request.operations.to_vec()})?;
+            // The assembler trial-adds pool candidates: their reference anchors are needed too.
+            let mut referenced = crate::op_envelope_v1::referenced_heights_in(&[], request.operations);
+            referenced.extend(crate::op_envelope_v1::PendingReferences::reference_heights(request.pool));
+            let history = store.reference_history(height, request.operations, &referenced)?;
+            let recovery = crate::recovery_store_v2::prepared(&store.evidence.db, &state, &anchor, root, store.t0)?;
+            crate::assembler_v2::prepare_with_recovery(
+                crate::assembler_v2::Request {
+                    parent: &parent,
+                    state: &state,
+                    pool: request.pool,
+                    license: request.license,
+                    worker: request.worker,
+                    timestamp: request.timestamp,
+                    ticket: request.ticket,
+                    operations: request.operations,
+                },
+                &history,
+                recovery.as_ref(),
+            )
+            .map_err(StoreError::Assembly)
+        })
+    }
+    /// The History of every store path that executes a block (design 1.a.3): the authenticated
+    /// E-1 authorities of its evidence items and the canonical block hash of every height its
+    /// operation envelopes reference.
+    fn operation_history(
+        &self,
+        height: u64,
+        body: &crate::blocks::BlockBody,
+    ) -> Result<crate::evidence_history_v2::History> {
+        let referenced = crate::op_envelope_v1::referenced_heights(body);
+        self.reference_history(height, &body.operations, &referenced)
+    }
+    /// `operation_history` for item lists that are not a complete block body.
+    fn reference_history(
+        &self,
+        height: u64,
+        operations: &[Vec<u8>],
+        referenced: &BTreeSet<u64>,
+    ) -> Result<crate::evidence_history_v2::History> {
+        let mut history = crate::evidence_history_v2::History::default();
+        for raw in operations {
+            if crate::trading_host_v1::operation(raw)? { continue; }
+            if crate::blocks::operation_kind(raw)? != 17 {
+                continue;
+            }
+            let proof = crate::equivocation_v2::Evidence::decode(raw)?;
+            let e = proof.a.decision.height;
+            if !crate::bonds::actionable(e, height) {
+                return Err(crate::Error::InvalidCounter.into());
+            }
+            if history.contains_key(&e) {
+                continue;
+            }
+            let (past, state, root) =
+                self.execution_parent(e.checked_sub(1).ok_or(StoreError::WrongParent)?)?;
+            let anchor = FinalizedAnchor {
+                height: past.height,
+                block: past.block,
+                ..self.genesis.clone()
+            };
+            let recovery = crate::recovery_store_v2::prepared(&self.evidence.db, &state, &anchor, root, self.t0)?;
+            history.insert(
+                e,
+                HeightAuthority::from_state(&state, anchor, root)
+                    .map_err(StoreError::Verification)?,
+            );
+            if let Some(r) = recovery { history.attach_recovery(e, &r)?; }
+        }
+        self.insert_reference_anchors(&self.evidence.db, height, referenced, &mut history)?;
+        Ok(history)
+    }
+    /// Design 1.a.3: insert the canonical block hash of every referenced height below `height`
+    /// (a reference at or above `height` cannot be finalized history of that block and is left
+    /// to fail rule R). The canonical row must agree with that height's finalized anchor.
+    fn insert_reference_anchors(
+        &self,
+        db: &Connection,
+        height: u64,
+        referenced: &BTreeSet<u64>,
+        history: &mut crate::evidence_history_v2::History,
+    ) -> Result<()> {
+        let Some(below) = height.checked_sub(1) else {
+            return Ok(());
+        };
+        for &reference in referenced.range(..=below) {
+            let row = head(db, Some(reference))?;
+            let finalized = self.evidence.anchor(reference)?.ok_or(StoreError::Integrity)?;
+            if finalized.block != row.block {
+                return Err(StoreError::Integrity);
+            }
+            history.insert_anchor(reference, row.block)?;
+        }
+        Ok(())
+    }
+    /// Derives current and historical voting authority exclusively from local
+    /// root-authenticated state. Caller supplies only the untrusted envelope.
+    pub fn commit(&mut self, envelope: &BlockEnvelope) -> Result<bool> {
+        if self.halted()? {
+            return Err(StoreError::Halted);
+        }
+        self.load()?;
+        let capacity=self.proposal_body_capacity(&envelope.header)?;
+        envelope.encode_with_capacity(&capacity)?;
+        let height = envelope.header.candidate.height;
+        let parent_height = height.checked_sub(1).ok_or(StoreError::WrongParent)?;
+        let (parent, state, parent_root) = self.execution_parent(parent_height)?;
+        let anchor = FinalizedAnchor {
+            height: parent.height,
+            block: parent.block,
+            ..self.genesis.clone()
+        };
+        let recovery = crate::recovery_store_v2::prepared(&self.evidence.db, &state, &anchor, parent_root, self.t0)?;
+        let authority = match &recovery {
+            Some(r) => r.authority()?,
+            None => HeightAuthority::from_state(&state, anchor, parent_root).map_err(StoreError::Verification)?,
+        };
+        let history = self.operation_history(height, &envelope.body)?;
+        let previous: BTreeMap<_, _> = state.records()?.into_iter().collect();
+        let timestamp = envelope.header.candidate.timestamp;
+        self.evidence.record_with_recovery(envelope,&state,&parent,&authority,&history,recovery.as_ref(),|t,executed|{
+            let tip=head(t,None)?;
+            if tip.height!=parent.height || tip.block!=parent.block || tip.root!=parent_root{return Err(StoreError::WrongParent);}
+            crate::trading_host_v1::records(&executed.state, Some(&envelope.certificate.decision.anchor()))?;
+            let start=if height.is_multiple_of(60){head(t,Some(height-60))?.timestamp}else{timestamp};
+            let target=crate::pow::target_after_height(height,tip.target,start,timestamp)?;
+            let next:BTreeMap<_,_>=executed.state.records()?.into_iter().collect();
+            let keys:BTreeSet<_>=previous.keys().chain(next.keys()).copied().collect();
+            for k in keys {
+                if previous.get(&k)==next.get(&k){continue;}
+                t.execute("INSERT INTO undo_v2 VALUES(?1,?2,?3)",params![height.to_be_bytes().as_slice(),k.as_slice(),previous.get(&k)])?;
+                if let Some(v)=next.get(&k) {t.execute("INSERT INTO state_v2 VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![k.as_slice(),v])?;}
+                else {t.execute("DELETE FROM state_v2 WHERE key=?1",[k.as_slice()])?;}
+            }
+            for raw in &envelope.body.transactions {
+                let id=crate::hybrid_transaction_v2::Transaction::decode(raw).map_err(|_|StoreError::Integrity)?.id().map_err(|_|StoreError::Integrity)?;
+                t.execute("INSERT INTO confirmations_v2 VALUES(?1,?2)",params![id.as_slice(),height.to_be_bytes().as_slice()])?;
+            }
+            let records=crate::operation_index_v2::records_with_capacity(&envelope.body,envelope.block_hash(),&executed.bond_command_outcomes,&capacity).map_err(|_|StoreError::Integrity)?;
+            insert_operation_records(t,&records)?;
+            let removed:Vec<_>=previous.keys().filter(|k|!next.contains_key(*k)).copied().collect();
+            crate::state_tree::index::publish(t,&executed.state.records()?,&envelope.certificate.decision.anchor(),executed.root,&removed,false).map_err(index_error)?;
+            t.execute("INSERT INTO canonical_v2 VALUES(?1,?2,?3,?4,?5)",params![height.to_be_bytes().as_slice(),envelope.block_hash().as_slice(),executed.root.as_slice(),target.as_slice(),timestamp.to_be_bytes().as_slice()])?;
+            Ok(())
+        })
+    }
+}
+
+/// Local custody separation, not a new consensus admission or weight rule.
+fn software_coordinator_only(state: &State, descriptor: &[u8]) -> Result<()> {
+    let (public, _) = mutiny_crypto_v2::PublicKey::decode_descriptor(descriptor).map_err(|_| crate::Error::Codec)?;
+    if public.role != mutiny_crypto_v2::Role::Node { return Err(crate::Error::WrongOperation.into()); }
+    let reject_alias = |raw: &[u8]| -> Result<()> {
+        let (other, _) = mutiny_crypto_v2::PublicKey::decode_descriptor(raw).map_err(|_| crate::Error::Codec)?;
+        if public.ed448 == other.ed448 || public.fndsa == other.fndsa { return Err(crate::Error::Duplicate.into()); }
+        Ok(())
+    };
+    for raw in state.wallets.public_descriptors() { reject_alias(raw)?; }
+    for control in state.membership_v2.controls() {
+        reject_alias(&control.binding().node_descriptor)?;
+        reject_alias(control.current_node_descriptor())?;
+        reject_alias(&control.binding().admission.continuity_descriptor)?;
+    }
+    for binding in state.continuity_keys_v2.bindings() {
+        reject_alias(&binding.admission().continuity_descriptor)?;
+    }
+    for assignment in state.licenses_v2.assignments() {
+        if public.ed448 == assignment.enrollment.binding.worker_public { return Err(crate::Error::Duplicate.into()); }
+        if assignment.node_descriptor != descriptor { reject_alias(&assignment.node_descriptor)?; }
+    }
+    state.retired_continuity_v2.reject_reused(&public)?;
+    state.node_key_history_v2.reject_reused(&public)?;
+    Ok(())
+}

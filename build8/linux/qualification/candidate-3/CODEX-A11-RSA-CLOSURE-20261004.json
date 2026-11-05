@@ -1,0 +1,119 @@
+[
+  {
+    "name": "rsa-0.9.10",
+    "archiveSha256": "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d",
+    "registryPackageSha256": "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d",
+    "archiveMatches": true,
+    "archiveFiles": 64,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "num-bigint-dig-0.8.6",
+    "archiveSha256": "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7",
+    "registryPackageSha256": "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7",
+    "archiveMatches": true,
+    "archiveFiles": 47,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {
+      "build.rs": "bf1b914225d60b380be17ef123c023549e0a4924a85852e8830fb0d1c7bcbb36"
+    },
+    "licenses": "MIT/Apache-2.0"
+  },
+  {
+    "name": "num-traits-0.2.19",
+    "archiveSha256": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
+    "registryPackageSha256": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
+    "archiveMatches": true,
+    "archiveFiles": 29,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {
+      "build.rs": "d3969209fc1c9d201c66ed11820d0b328600d75b3971f8ceebeab04900bc0587"
+    },
+    "licenses": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "num-integer-0.1.47",
+    "archiveSha256": "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b",
+    "registryPackageSha256": "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b",
+    "archiveMatches": true,
+    "archiveFiles": 17,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "num-iter-0.1.46",
+    "archiveSha256": "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b",
+    "registryPackageSha256": "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b",
+    "archiveMatches": true,
+    "archiveFiles": 10,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "libm-0.2.16",
+    "archiveSha256": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
+    "registryPackageSha256": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
+    "archiveMatches": true,
+    "archiveFiles": 155,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {
+      "build.rs": "85dfa93693f40e282ecf2d9a3115280d8f508f056063862add9e529b8143b71b",
+      "configure.rs": "884fa9c05c600d03450b15651665848e88b09cf602f86c843e55e5e1ee0a4772"
+    },
+    "licenses": "MIT"
+  },
+  {
+    "name": "lazy_static-1.5.1",
+    "archiveSha256": "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb",
+    "registryPackageSha256": "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb",
+    "archiveMatches": true,
+    "archiveFiles": 21,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "spin-0.9.9",
+    "archiveSha256": "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e",
+    "registryPackageSha256": "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e",
+    "archiveMatches": true,
+    "archiveFiles": 23,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "MIT"
+  },
+  {
+    "name": "autocfg-1.5.1",
+    "archiveSha256": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+    "registryPackageSha256": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+    "archiveMatches": true,
+    "archiveFiles": 23,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "Apache-2.0 OR MIT"
+  },
+  {
+    "name": "pkcs1-0.7.5",
+    "archiveSha256": "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f",
+    "registryPackageSha256": "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f",
+    "archiveMatches": true,
+    "archiveFiles": 29,
+    "extractedSourceChecked": true,
+    "fileFailures": [],
+    "buildSources": {},
+    "licenses": "Apache-2.0 OR MIT"
+  }
+]

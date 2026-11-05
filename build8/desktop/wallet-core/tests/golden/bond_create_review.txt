@@ -1,0 +1,75 @@
+== Summary ==
+* Action: Create an atomic bond
+  Summary: Lock 15000000000 STRIKES for node 169a7d7a3a73a72664e83bb93e7767c96a131d1503451a79aea4ea84247d396f; fee 5031 STRIKES. Funding and creation execute together.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: e5d5ebc44d714e608f82a2d1da0604311acc2106bd2c4da67421152820fa7f5a
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  The bond owner signature: this wallet signs; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Input 0: this wallet signs; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Node owner: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Money ==
+  Returns to this wallet: 149.99994969 MUT (14999994969 STRIKES) to umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+* Amount: 150.00000000 MUT (15000000000 STRIKES)
+* Network fee: 0.00005031 MUT (5031 STRIKES); at least one atom per byte of the signed encoding; paid by this wallet, signed size 5031 bytes
+* Total leaving this wallet: 150.00005031 MUT
+  Inputs: 1 coin(s) worth 300.00000000 MUT
+  Input 0: 3131313131313131313131313131313131313131313131313131313131313131:0 worth 300.00000000 MUT (this wallet)
+
+== Conditions ==
+  Atomic funding: The owner and funding signatures bind the same complete kind-24 body: context, reference, finite window, node, owner, nonce, principal, fee, inputs and change. Neither signature or a standalone transfer can create this lot independently.
+  Lot: Lot e999bd550412a5e2e416296f8b80b723183fb7fb29458f46dbcc65b03090beea; fresh nonce 4242424242424242424242424242424242424242424242424242424242424242; the immutable owner is 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c. This same lot identifier cannot be created twice.
+  Node: Node 169a7d7a3a73a72664e83bb93e7767c96a131d1503451a79aea4ea84247d396f; lineage 1212121212121212121212121212121212121212121212121212121212121212; hardware generation 1; physical and currently eligible in own verified state.
+  Bond authority: Immutable owner 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c; current descriptor fingerprint 5afd1dd4efab0cc31a50e63a08ed0b80292960fc9754701d336d350084842fb0; retired keys cannot authorize this body; a future payout remains owned by this same authority.
+  Minimum: Principal 150.00000000 MUT (15000000000 STRIKES) must be at least 100.00000000 MUT (10000000000 STRIKES).
+  Canonical reference: Reference 100 0303030303030303030303030303030303030303030303030303030303030303. Retry never changes this signed canonical reference or extends its inclusion heights.
+  Inclusion window: Signed heights 101 through 245 (145 blocks after this verified head; about 2 h 25 min, approximate at the 60 s target interval). The lock-start height B is the actual certified inclusion height, not the review height or first allowed height.
+  Withdrawal rule: Withdrawal W requires W >= B + 259200 AND W >= U + 43200 certified blocks: max(B + 259200, U + 43200). U is the actual finalized unbond height; both clocks must finish.
+  Earliest withdrawal: Block 259301 at the earliest if inclusion is B = 101; a later inclusion shifts the floor later. No withdrawal is available until an unbond is finalized and both clocks finish (about 180 days for the minimum hold, approximate at the 60 s target interval).
+  Burn exposure: Equivocation can burn an Active lot, and an Unbonding lot remains exposed through its actual unbond height U + 43200. A burned lot has no withdrawal payout.
+  Weight: The lot first supports its node from actual B + 1; from actual U + 1 it no longer counts. Reputation and quorum effects follow consensus; this wallet does not promise a weight.
+  Inputs: 1 coin(s) worth 300.00000000 MUT are consumed atomically. Input value equals principal + fee + change; every input must remain unspent and mature at inclusion.
+  Fee rule: The complete signed kind-24 encoding is 5031 bytes, so the fee must be at least 5031 STRIKES. The principal pays no additional or separate creation fee.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+* Earliest height: 259301 (259201 blocks after the verified block; about 180 days, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Locks 150.00000000 MUT into the immutable owner's bond lot at actual certified inclusion B. There is no cancel of a created lot; withdrawal needs finalized notice and both clocks.
+# Irreversible: Spends 1 funding coin(s) worth 300.00000000 MUT; spent coins cannot be recovered.
+# Irreversible: Pays a network fee of 0.00005031 MUT to the producer; this fee cannot be recovered.
+# Irreversible: The principal is exposed to burning by timely equivocation evidence, including the notice period; a burn permanently removes its payout.
+# Irreversible: Once signed this exact body cannot be revoked. It remains valid through signed height 245 if its canonical inputs and authority still match.
+  Effect: Returns 149.99994969 MUT to 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c (this wallet).
+
+== Warnings ==
+! Notice: The principal and its funding are one native atomic body; no independent escrow payment is needed.
+! Danger: Equivocation can burn the entire principal. Starting an unbond does not immediately end this exposure.
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Type to confirm: CONFIRM 1D0B71C6
+
+== Binding ==
+  Review digest: 1d0b71c643538e139cd0df3559d1a6b66066533ffcd12418eef148acf7dda7c3

@@ -1,0 +1,1247 @@
+{
+  "schema": "MUTINY-BUILD8-PAIRED-PUBLICATION-PROJECTION-V1",
+  "status": "EXACT_APPROVED_RESTORATION_APPLIED_LOCALLY_PUBLICATION_CONDITIONAL",
+  "source_files": {
+    "linux": 2230,
+    "desktop": 2539
+  },
+  "bytes": 142296715,
+  "roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
+  "roster_encoding": "sorted SHA256 + TAB + candidate-relative-path + LF",
+  "exact_frozen_inputs_unchanged": true,
+  "platforms_merged": false,
+  "source_guards_changed": false,
+  "source_payload_committed": true,
+  "exclusions": [
+    {
+      "path": "build8/linux/qualification/candidate-3/A-ADMISSION-DEPS-REVIEW.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 20102,
+      "source_sha256": "49b80fad81810c26520f4ffad509d64f8eef33c5fdb4f44633d40ec9c3899f6a"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 75215,
+      "source_sha256": "6af0e637d1e2001f6e6fcabe726e4ef44220fbf59dad6ba7227b16d7cf4bef05"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/A-GENESIS-V2-DESIGN.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 26744,
+      "source_sha256": "3e7001a19ad30dc91bb8be4e455305ce123085530a76312a18d1a651b82c3b01"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/CODEX-COMBINED-MATRIX-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1391,
+      "source_sha256": "4c256f7ea4b1192133ea938383f420c1b9599d18538dbc0e08fe1ba1b2b0dfb2"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/CODEX-INDEPENDENT-RULEM-TREASURY-REVIEW-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 5305,
+      "source_sha256": "ce70e49ae6d60a6eee47fa4ce4039c8cb331bf85711e424f5351d10e683f6946"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/CODEX-PROJECTION-COVERAGE-TESTS-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 2659,
+      "source_sha256": "49e790e1ed4761fa8ea2058f760506e52059bb8e8cd79fff55acb698bc89f0b0"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/DECISION-LEDGER-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16122,
+      "source_sha256": "ad1e2fa77fa95085f62e3d21056e152b809df47bccb2ded110bf454bbd646963"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/FINGERPRINT-REGENERATION-NOTE.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 6433,
+      "source_sha256": "391e9a6d92f487bebe6bd9a58a01967ea5f8373a2f76d81654d4725e88e148d3"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/HYGIENE-TAKEOVER-NOTES-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 11293,
+      "source_sha256": "940c05624162e0101b6614675c8212dca5c0cd85906f30603566c5e57ac426fa"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 183038,
+      "source_sha256": "5b44a8b6e0705ecec184a15b5863c61cc55da204ee950b4776d70d7e882dba97"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-B-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 18950,
+      "source_sha256": "68ff0d64c4244b3bf214726d5ec65dce06424603ff0109f016714a0603025532"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-IDX-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 8302,
+      "source_sha256": "2e0e7f242c644d957afadc3c528da50abf4c6641008f3895e908e3fda0f25a6f"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-NODE-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 6110,
+      "source_sha256": "cbb1701540282e4832c8cd5c14411d01449ce83fd06cc08fbef4fe73f9ea84be"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-P0-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 24607,
+      "source_sha256": "7dc427ceb0ebb70bcc2a82903ccd83f1e207a7cdec49a33629e5d4b727e0f465"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-POOL-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 17704,
+      "source_sha256": "a78c03c88216948f7cdebc67051985455c5528433e606be205855ec241ca5aed"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-Q17-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 18902,
+      "source_sha256": "6a65251dca2e54d14b13490386867b9d6b76941043b7569816d3abe199eb47b1"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-R-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 21416,
+      "source_sha256": "a00f914506ccd2f0f29c46a68233b05c0e42821b2f05a365b05d00a6e2da3470"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-T1-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 19308,
+      "source_sha256": "a05ff34c969df375445a3c5c39a63678c1c421872be0e9b1a83ffeb0ef82e785"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-T2-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16179,
+      "source_sha256": "c2d04e5b15bcc48f39ca26855647d28da32e27a9254db8fb39b57f358992d072"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-T3-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 13463,
+      "source_sha256": "31b405faf7b22c227637e975c20c4f64aa91f47daffe553590a7f09feab6bc03"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/P-WP-T4-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 10880,
+      "source_sha256": "187fe57cf97b0a0bdf80e80b730973a5fb20a85781e21c2dfcf5492443005f54"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/W15-MOUNTED-TESTVALUE-DESIGN.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16482,
+      "source_sha256": "234c6940a709f7c383634726f304bee888240a75f94e7512f21fa0863ae950ae"
+    },
+    {
+      "path": "build8/linux/qualification/candidate-3/WALLET-STAGE2-CODEX-NOTES-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 18488,
+      "source_sha256": "d4a34cb6f8ae795f3c051fa125f6e9ab84b7aa634285a1e6cd19dec86d229428"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/CANDIDATE-2-ARCHITECT-BRIEFING-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 42035,
+      "source_sha256": "aaadf43e239e08d0d6a48dd73eab7a87bec30d7bde5e213464dd5651f3ebb28f"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/D3-TIMESTAMP-ADMISSION-AMENDMENT-AND-EVIDENCE-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 11159,
+      "source_sha256": "55863e1ff21906bf641d1b032f9eb9934b32b5b34fc98b1629c33f87436cf35f"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/DELIVERY-1-HANDOFF-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16204,
+      "source_sha256": "1e6c6e2152f8bbb21f2c7bf6ff84a4b5373ce3349a5dfea3df3fa0ca7c8e346e"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/EVIDENCE-RECORD-DELIVERY-1-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 10447,
+      "source_sha256": "ea5f1a69e860fecf4af2e1a8b52a607f3e9b93166f3fb148733502404ec66953"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/LINUX-EXECUTION-HANDOFF-2-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16605,
+      "source_sha256": "43256d3711b178fc3aebbccf1626a9d0962e0d4b56fd5aef61a3f8df05d9ff2b"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/LINUX-EXECUTION-HANDOFF-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 8911,
+      "source_sha256": "1248751aeaac8efddf7354585bed27cb1693ae28cd6c532a4f0ba0455ee1512e"
+    },
+    {
+      "path": "build8/linux/qualification/nonce-20261002/SELF-CONTAINED-CANDIDATE-RECORD-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 17362,
+      "source_sha256": "1fd6aabf236db2ad033b89d1c826a9cbda29685bf74552d5e0ce0c72cab151df"
+    },
+    {
+      "path": "build8/linux/qualification/read-node-a-tpm.ps1",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 2138,
+      "source_sha256": "0377910ff129a2cf84c7495215ddcd413ccc85e5b8683b43533434507801ebd7"
+    },
+    {
+      "path": "build8/linux/qualification/run-node-a-tpm-proof.ps1",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1595,
+      "source_sha256": "08ec0c866a9748564278efa10f2afef10dce99756103d46ddcf4d7922997fdb8"
+    },
+    {
+      "path": "build8/linux/spec/imports/BUILD8-TRADING-D1-LOCK-PACKET-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1747,
+      "source_sha256": "36079ff33e249bd5f19aab47b61cd21aea1a93b6b65f5d8f36484b0bea595751"
+    },
+    {
+      "path": "build8/linux/spec/imports/BUILD8-TRADING-SYSTEM-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1157,
+      "source_sha256": "9900d5a40297f15ff33b75a3c441f326cf1d39081f4f72dfdaa52ccf14dbfd3f"
+    },
+    {
+      "path": "build8/linux/spec/imports/CANONICAL-RETENTION-AND-CAPACITY-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 799,
+      "source_sha256": "84b28a97879b3ae152269d8ad51573c0cbb445ed0f35464484f2f0a5c23ccd0d"
+    },
+    {
+      "path": "build8/linux/spec/imports/FUNDED-WALLET-ROTATION-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 767,
+      "source_sha256": "d8b3c6fccab92d5debc5b2e864632712b5771682028ff89d655d5538fa7ff146"
+    },
+    {
+      "path": "build8/linux/spec/imports/HYBRID-BOND-SETTLEMENT-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 937,
+      "source_sha256": "21db1ccf5e8becfd97e4875316cd125366d3deecbdffac607dd7f27fbaf2bbc0"
+    },
+    {
+      "path": "build8/linux/spec/imports/HYBRID-TRANSACTION-ADMISSION-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 779,
+      "source_sha256": "90f6b9d3e4faac7f49b143c177c1f2403160713f32741c02f7273fe3bab4e46e"
+    },
+    {
+      "path": "build8/linux/spec/imports/LICENSE-ASSIGNMENT-STATE-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 898,
+      "source_sha256": "933a296f337e071733386e82b5e788940d1411d0c0c903fa8609575ad6d288b6"
+    },
+    {
+      "path": "build8/linux/spec/imports/RUNTIME-PROCESS-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 768,
+      "source_sha256": "b8a481edf7ee10abde010cb79c282a25a4df46ab3a2888112f8fd3c911b074db"
+    },
+    {
+      "path": "build8/linux/spec/imports/WALLET-HYBRID-TRANSACTION-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 768,
+      "source_sha256": "aaca08883af6e3ecc31e2771a79550008f575d59239cbdd3dbfc3bc92f0a7674"
+    },
+    {
+      "path": "build8/linux/spec/imports/WALLET-KEY-ROTATION-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 761,
+      "source_sha256": "7a81c6d762f40a300cef46054c7185b69f39163c2967a2487488d582bce52851"
+    },
+    {
+      "path": "build8/linux/spec/imports/WORKER-SESSION-CONTEXT-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 974,
+      "source_sha256": "3a97b4d46bea557749198e4025125ee6c272fdf61d4ecc0ff0266f311d33d322"
+    },
+    {
+      "path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 77956,
+      "source_sha256": "52234dd5248ef788d2c87896512996ca252f81b8c9c80ab28c72958707ef33ee"
+    },
+    {
+      "path": "build8/desktop/docs/d1-clock-profile/CLOCK-PROFILE-PREPARATION-D1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 29512,
+      "source_sha256": "67d2a3fc1dbc28969d151dbfc645ef0dd52d0e0e689855e1ad7db9e3439aaf7d"
+    },
+    {
+      "path": "build8/desktop/docs/d2-treasury-ceremony/D2-OPEN-QUESTIONS-PROPOSED-ANSWERS.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 37085,
+      "source_sha256": "93f31db326cfe1045d4e64b9328ec3da20d3f423c584f8dbf3c0031a64d53163"
+    },
+    {
+      "path": "build8/desktop/docs/d2-treasury-ceremony/TREASURY-OFFLINE-CEREMONY-PROCEDURE-D2.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 61377,
+      "source_sha256": "7cbf91777b6fcf52126f10c890598fc9e5706ac4ac622aad568d16c8465c3b14"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DEPS-REVIEW.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 20102,
+      "source_sha256": "49b80fad81810c26520f4ffad509d64f8eef33c5fdb4f44633d40ec9c3899f6a"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 75215,
+      "source_sha256": "6af0e637d1e2001f6e6fcabe726e4ef44220fbf59dad6ba7227b16d7cf4bef05"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/A-GENESIS-V2-DESIGN.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 26744,
+      "source_sha256": "3e7001a19ad30dc91bb8be4e455305ce123085530a76312a18d1a651b82c3b01"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/CODEX-COMBINED-MATRIX-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1391,
+      "source_sha256": "4c256f7ea4b1192133ea938383f420c1b9599d18538dbc0e08fe1ba1b2b0dfb2"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/CODEX-INDEPENDENT-RULEM-TREASURY-REVIEW-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 5305,
+      "source_sha256": "ce70e49ae6d60a6eee47fa4ce4039c8cb331bf85711e424f5351d10e683f6946"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/CODEX-PROJECTION-COVERAGE-TESTS-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 2659,
+      "source_sha256": "49e790e1ed4761fa8ea2058f760506e52059bb8e8cd79fff55acb698bc89f0b0"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/DECISION-LEDGER-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16122,
+      "source_sha256": "ad1e2fa77fa95085f62e3d21056e152b809df47bccb2ded110bf454bbd646963"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/FINGERPRINT-REGENERATION-NOTE.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 6433,
+      "source_sha256": "391e9a6d92f487bebe6bd9a58a01967ea5f8373a2f76d81654d4725e88e148d3"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/HYGIENE-TAKEOVER-NOTES-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 11293,
+      "source_sha256": "940c05624162e0101b6614675c8212dca5c0cd85906f30603566c5e57ac426fa"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 183038,
+      "source_sha256": "5b44a8b6e0705ecec184a15b5863c61cc55da204ee950b4776d70d7e882dba97"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-B-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 18950,
+      "source_sha256": "68ff0d64c4244b3bf214726d5ec65dce06424603ff0109f016714a0603025532"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-IDX-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 8302,
+      "source_sha256": "2e0e7f242c644d957afadc3c528da50abf4c6641008f3895e908e3fda0f25a6f"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-NODE-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 6110,
+      "source_sha256": "cbb1701540282e4832c8cd5c14411d01449ce83fd06cc08fbef4fe73f9ea84be"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-P0-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 24607,
+      "source_sha256": "7dc427ceb0ebb70bcc2a82903ccd83f1e207a7cdec49a33629e5d4b727e0f465"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-POOL-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 17704,
+      "source_sha256": "a78c03c88216948f7cdebc67051985455c5528433e606be205855ec241ca5aed"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-Q17-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 18902,
+      "source_sha256": "6a65251dca2e54d14b13490386867b9d6b76941043b7569816d3abe199eb47b1"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-R-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 21416,
+      "source_sha256": "a00f914506ccd2f0f29c46a68233b05c0e42821b2f05a365b05d00a6e2da3470"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-T1-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 19308,
+      "source_sha256": "a05ff34c969df375445a3c5c39a63678c1c421872be0e9b1a83ffeb0ef82e785"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-T2-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16179,
+      "source_sha256": "c2d04e5b15bcc48f39ca26855647d28da32e27a9254db8fb39b57f358992d072"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-T3-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 13463,
+      "source_sha256": "31b405faf7b22c227637e975c20c4f64aa91f47daffe553590a7f09feab6bc03"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/P-WP-T4-NOTES.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 10880,
+      "source_sha256": "187fe57cf97b0a0bdf80e80b730973a5fb20a85781e21c2dfcf5492443005f54"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/W15-MOUNTED-TESTVALUE-DESIGN.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16482,
+      "source_sha256": "234c6940a709f7c383634726f304bee888240a75f94e7512f21fa0863ae950ae"
+    },
+    {
+      "path": "build8/desktop/qualification/candidate-3/WALLET-STAGE2-CODEX-NOTES-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 18488,
+      "source_sha256": "d4a34cb6f8ae795f3c051fa125f6e9ab84b7aa634285a1e6cd19dec86d229428"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/CANDIDATE-2-ARCHITECT-BRIEFING-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 42035,
+      "source_sha256": "aaadf43e239e08d0d6a48dd73eab7a87bec30d7bde5e213464dd5651f3ebb28f"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/D3-TIMESTAMP-ADMISSION-AMENDMENT-AND-EVIDENCE-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 11159,
+      "source_sha256": "55863e1ff21906bf641d1b032f9eb9934b32b5b34fc98b1629c33f87436cf35f"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/DELIVERY-1-HANDOFF-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16204,
+      "source_sha256": "1e6c6e2152f8bbb21f2c7bf6ff84a4b5373ce3349a5dfea3df3fa0ca7c8e346e"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/EVIDENCE-RECORD-DELIVERY-1-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 10447,
+      "source_sha256": "ea5f1a69e860fecf4af2e1a8b52a607f3e9b93166f3fb148733502404ec66953"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/LINUX-EXECUTION-HANDOFF-2-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 16605,
+      "source_sha256": "43256d3711b178fc3aebbccf1626a9d0962e0d4b56fd5aef61a3f8df05d9ff2b"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/LINUX-EXECUTION-HANDOFF-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 8911,
+      "source_sha256": "1248751aeaac8efddf7354585bed27cb1693ae28cd6c532a4f0ba0455ee1512e"
+    },
+    {
+      "path": "build8/desktop/qualification/nonce-20261002/SELF-CONTAINED-CANDIDATE-RECORD-20261003.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 17362,
+      "source_sha256": "1fd6aabf236db2ad033b89d1c826a9cbda29685bf74552d5e0ce0c72cab151df"
+    },
+    {
+      "path": "build8/desktop/qualification/read-node-a-tpm.ps1",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 2138,
+      "source_sha256": "0377910ff129a2cf84c7495215ddcd413ccc85e5b8683b43533434507801ebd7"
+    },
+    {
+      "path": "build8/desktop/qualification/run-node-a-tpm-proof.ps1",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1595,
+      "source_sha256": "08ec0c866a9748564278efa10f2afef10dce99756103d46ddcf4d7922997fdb8"
+    },
+    {
+      "path": "build8/desktop/spec/imports/BUILD8-TRADING-D1-LOCK-PACKET-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1747,
+      "source_sha256": "36079ff33e249bd5f19aab47b61cd21aea1a93b6b65f5d8f36484b0bea595751"
+    },
+    {
+      "path": "build8/desktop/spec/imports/BUILD8-TRADING-SYSTEM-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 1157,
+      "source_sha256": "9900d5a40297f15ff33b75a3c441f326cf1d39081f4f72dfdaa52ccf14dbfd3f"
+    },
+    {
+      "path": "build8/desktop/spec/imports/CANONICAL-RETENTION-AND-CAPACITY-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 799,
+      "source_sha256": "84b28a97879b3ae152269d8ad51573c0cbb445ed0f35464484f2f0a5c23ccd0d"
+    },
+    {
+      "path": "build8/desktop/spec/imports/FUNDED-WALLET-ROTATION-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 767,
+      "source_sha256": "d8b3c6fccab92d5debc5b2e864632712b5771682028ff89d655d5538fa7ff146"
+    },
+    {
+      "path": "build8/desktop/spec/imports/HYBRID-BOND-SETTLEMENT-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 937,
+      "source_sha256": "21db1ccf5e8becfd97e4875316cd125366d3deecbdffac607dd7f27fbaf2bbc0"
+    },
+    {
+      "path": "build8/desktop/spec/imports/HYBRID-TRANSACTION-ADMISSION-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 779,
+      "source_sha256": "90f6b9d3e4faac7f49b143c177c1f2403160713f32741c02f7273fe3bab4e46e"
+    },
+    {
+      "path": "build8/desktop/spec/imports/LICENSE-ASSIGNMENT-STATE-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 898,
+      "source_sha256": "933a296f337e071733386e82b5e788940d1411d0c0c903fa8609575ad6d288b6"
+    },
+    {
+      "path": "build8/desktop/spec/imports/RUNTIME-PROCESS-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 768,
+      "source_sha256": "b8a481edf7ee10abde010cb79c282a25a4df46ab3a2888112f8fd3c911b074db"
+    },
+    {
+      "path": "build8/desktop/spec/imports/WALLET-HYBRID-TRANSACTION-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 768,
+      "source_sha256": "aaca08883af6e3ecc31e2771a79550008f575d59239cbdd3dbfc3bc92f0a7674"
+    },
+    {
+      "path": "build8/desktop/spec/imports/WALLET-KEY-ROTATION-V1.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 761,
+      "source_sha256": "7a81c6d762f40a300cef46054c7185b69f39163c2967a2487488d582bce52851"
+    },
+    {
+      "path": "build8/desktop/spec/imports/WORKER-SESSION-CONTEXT-V2.md.identity.txt",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 974,
+      "source_sha256": "3a97b4d46bea557749198e4025125ee6c272fdf61d4ecc0ff0266f311d33d322"
+    },
+    {
+      "path": "build8/desktop/wallet-core/docs/CODEX-Q17-STAGE2-20261004.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 10402,
+      "source_sha256": "1c8ef7372aaf41ac4ba44caede84718c0dfdb98b31fd651b95bfabbd67a7efb2"
+    },
+    {
+      "path": "build8/desktop/wallet-core/docs/PHASE-3-DIVIDEND.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 20035,
+      "source_sha256": "76cd316d6de38cea172e4cdb14581f4e7dcc41b7624139a8bcdb4b0b266ad989"
+    },
+    {
+      "path": "build8/desktop/wallet-core/docs/PHASE-6-TREASURY.md",
+      "action": "excluded",
+      "reason": "machine-path-bearing historical/provenance/operator record withheld",
+      "source_bytes": 31742,
+      "source_sha256": "21de767d4741c1b5ac8e36b74c9c6732f4fb29d5a72a6f8497ad497905155cd7"
+    }
+  ],
+  "comment_changes": [
+    {
+      "path": "build8/linux/deploy/chrony/mutiny-nts-sources.conf",
+      "action": "comment-only-public-provenance-path",
+      "source_sha256": "3ec93cfb7d2197073fe0658de12addaa96cafd0f75a2c0c74d665a3ed596d2d3",
+      "public_sha256": "29d197a12462e0b8a68bcc437d67a7dbf60fd2c7ebd7e36fdc61181eb63e7326",
+      "operational_configuration_changed": false
+    },
+    {
+      "path": "build8/desktop/deploy/chrony/mutiny-nts-sources.conf",
+      "action": "comment-only-public-provenance-path",
+      "source_sha256": "3ec93cfb7d2197073fe0658de12addaa96cafd0f75a2c0c74d665a3ed596d2d3",
+      "public_sha256": "29d197a12462e0b8a68bcc437d67a7dbf60fd2c7ebd7e36fdc61181eb63e7326",
+      "operational_configuration_changed": false
+    }
+  ],
+  "retained_license_notice_files": 88,
+  "literal_include_paths_missing": [
+    {
+      "path": "build8/linux/node/src/body_assembler_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 25
+    },
+    {
+      "path": "build8/linux/node/src/main.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 148
+    },
+    {
+      "path": "build8/linux/node/src/main.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 355
+    },
+    {
+      "path": "build8/linux/node/src/main.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 523
+    },
+    {
+      "path": "build8/linux/node/src/os_clock_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 135
+    },
+    {
+      "path": "build8/linux/node/src/participation_producer_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 49
+    },
+    {
+      "path": "build8/linux/node/src/worker_coordinator_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 188
+    },
+    {
+      "path": "build8/linux/node/src/worker_coordinator_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 1161
+    },
+    {
+      "path": "build8/linux/node/tests/forge_live_fixture/support/dividend_rig.rs",
+      "literal": "../../../qualification/hybrid-canonical-store-public-v1.json",
+      "line": 45
+    },
+    {
+      "path": "build8/linux/consensus/tests/actor_halt_latch_v1.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 131
+    },
+    {
+      "path": "build8/linux/consensus/tests/coordinator_pipeline.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 31
+    },
+    {
+      "path": "build8/linux/consensus/tests/storage_budget.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 13
+    },
+    {
+      "path": "build8/linux/consensus/tests/treasury_schema_conformance_v1.rs",
+      "literal": "../../docs/TREASURY-PROOF-OF-CONTROL-SCHEMA-V1.md",
+      "line": 35
+    },
+    {
+      "path": "build8/linux/consensus/tests/treasury_schema_conformance_v1.rs",
+      "literal": "../../docs/TREASURY-REHEARSAL-TOOLING-V1.md",
+      "line": 39
+    },
+    {
+      "path": "build8/linux/consensus/tests/voter_actor.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 57
+    },
+    {
+      "path": "build8/desktop/node/src/body_assembler_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 25
+    },
+    {
+      "path": "build8/desktop/node/src/main.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 148
+    },
+    {
+      "path": "build8/desktop/node/src/main.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 355
+    },
+    {
+      "path": "build8/desktop/node/src/main.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 523
+    },
+    {
+      "path": "build8/desktop/node/src/os_clock_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 135
+    },
+    {
+      "path": "build8/desktop/node/src/participation_producer_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 49
+    },
+    {
+      "path": "build8/desktop/node/src/worker_coordinator_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 188
+    },
+    {
+      "path": "build8/desktop/node/src/worker_coordinator_tests.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 1161
+    },
+    {
+      "path": "build8/desktop/consensus/tests/actor_halt_latch_v1.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 131
+    },
+    {
+      "path": "build8/desktop/consensus/tests/coordinator_pipeline.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 31
+    },
+    {
+      "path": "build8/desktop/consensus/tests/storage_budget.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 13
+    },
+    {
+      "path": "build8/desktop/consensus/tests/voter_actor.rs",
+      "literal": "../../qualification/integration-state-v2-1/chain.jsonl",
+      "line": 57
+    }
+  ],
+  "excluded_record_source_references": [
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DEPS-REVIEW.md",
+      "source_reference": "build8/linux/consensus/tests/endorsement_x509.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/admission_scope.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/attestation_witness.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/ek_chain.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/endorsement_identity.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/pcr_profiles.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/provenance.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/endorsement_admission.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/endorsement_evidence.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/endorsement_x509.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/A-GENESIS-V2-DESIGN.md",
+      "source_reference": "build8/linux/consensus/src/genesis_v2.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/bond_create_v3.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/bond_ops_v2.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/funded_rotation_v2.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/op_envelope_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/src/op_envelope_v1_tests.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/funded_bond_create_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/funded_rotation_v2.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/lineage_funding_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/maker_offer_v2.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/operation_envelope_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/treasury_authority_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/wallet_rotation_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/linux/consensus/tests/zero_destinations_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/node/src/body_assembler_tests.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/node/src/main.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/node/src/os_clock_tests.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/node/src/participation_producer_tests.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/node/src/worker_coordinator_tests.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/consensus/examples/qualification_replay.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/consensus/tests/actor_halt_latch_v1.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/consensus/tests/coordinator_pipeline.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/consensus/tests/integrated_chain.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/consensus/tests/storage_budget.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/linux/consensus/tests/voter_actor.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/read-node-a-tpm.ps1",
+      "source_reference": "build8/linux/consensus/tests/private_evidence_guard.rs"
+    },
+    {
+      "excluded_path": "build8/linux/qualification/run-node-a-tpm-proof.ps1",
+      "source_reference": "build8/linux/consensus/tests/private_evidence_guard.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/node/src/host_clock.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/node/src/host_clock/anchor_store.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/node/src/host_clock/leap_policy.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/node/src/host_clock/nts_sources.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/node/src/host_clock/state_dir.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/consensus/src/holdover_clock_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/docs/CLOCK-PROFILE-V1.md",
+      "source_reference": "build8/desktop/consensus/src/holdover_clock_v1/anchor_v2.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DEPS-REVIEW.md",
+      "source_reference": "build8/desktop/consensus/tests/endorsement_x509.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/admission_scope.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/attestation_witness.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/ek_chain.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/endorsement_identity.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/pcr_profiles.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/provenance.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/endorsement_admission.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/endorsement_evidence.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-ADMISSION-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/endorsement_x509.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/A-GENESIS-V2-DESIGN.md",
+      "source_reference": "build8/desktop/consensus/src/genesis_v2.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/bond_create_v3.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/bond_ops_v2.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/funded_rotation_v2.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/op_envelope_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/src/op_envelope_v1_tests.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/funded_bond_create_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/funded_rotation_v2.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/lineage_funding_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/maker_offer_v2.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/operation_envelope_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/treasury_authority_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/wallet_rotation_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/candidate-3/P-LANE-DESIGN-V1.md",
+      "source_reference": "build8/desktop/consensus/tests/zero_destinations_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/node/src/body_assembler_tests.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/node/src/main.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/node/src/os_clock_tests.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/node/src/participation_producer_tests.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/node/src/worker_coordinator_tests.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/consensus/examples/qualification_replay.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/consensus/tests/actor_halt_latch_v1.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/consensus/tests/coordinator_pipeline.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/consensus/tests/integrated_chain.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/consensus/tests/storage_budget.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+      "source_reference": "build8/desktop/consensus/tests/voter_actor.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/read-node-a-tpm.ps1",
+      "source_reference": "build8/desktop/consensus/tests/private_evidence_guard.rs"
+    },
+    {
+      "excluded_path": "build8/desktop/qualification/run-node-a-tpm-proof.ps1",
+      "source_reference": "build8/desktop/consensus/tests/private_evidence_guard.rs"
+    }
+  ],
+  "checks": {
+    "all_candidate_paths_lengths_hashes_verified": true,
+    "binary_or_archive_headers": 0,
+    "credential_shape_findings": 0,
+    "native_build_or_test_run": false,
+    "edited_documentation_whitespace_check_passed": true,
+    "approved_worktree_index_and_git_blob_bytes_verified": true,
+    "approved_source_files": 4769,
+    "source_whitespace_findings_with_cr_at_eol": 201,
+    "source_whitespace_retained_for_exact_identity": true
+  },
+  "open_gates": [
+    "Vercel production/custom tracking exclusion for exact branch/PR before conditionally authorized Preview publication",
+    "Fresh compilation and qualification under campaign-safe scheduling; existing gates are not a pass for restored package"
+  ],
+  "reproducibility_review": "reproducibility-review.md",
+  "original_literal_include_report_is_raw_not_reachability": "Raw findings include Linux documents absent in frozen input and an unused nested support copy; consult reviewed classification.",
+  "proposed_restoration_overlay": {
+    "status": "EXACT_INPUT_SCOPE_APPROVED_APPLIED_LOCALLY_FRESH_QUALIFICATION_REQUIRED",
+    "base_candidate_roster": "4c4fb4e16a539600c9ad81286a591534600fd0db8f91297300fbbc6ca3515dfa",
+    "proposed_roster_sha256": "b3127cc29b2676fb99b454851122837577ca51385fa6df9a445852f644c17258",
+    "roster_encoding": "sorted SHA256 + TAB + candidate-relative-path + LF",
+    "proposed_files": 4769,
+    "proposed_bytes": 142296715,
+    "proposed_platform_counts": {
+      "linux": 2230,
+      "desktop": 2539
+    },
+    "source_security_guards_changed": false,
+    "additions": [
+      {
+        "path": "build8/linux/qualification/integration-state-v2-1/chain.jsonl",
+        "bytes": 583549,
+        "sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "source_sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "reason": "restore exact existing synthetic embedded test fixture; public classification pending",
+        "source_platform": "linux"
+      },
+      {
+        "path": "build8/desktop/qualification/integration-state-v2-1/chain.jsonl",
+        "bytes": 583549,
+        "sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "source_sha256": "ed31851c880bf415670da3b6c446bd2f2a3609f9f5c60e35163272e8c61b55fa",
+        "reason": "restore exact existing synthetic embedded test fixture; public classification pending",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/docs/TREASURY-PROOF-OF-CONTROL-SCHEMA-V1.md",
+        "bytes": 70557,
+        "sha256": "4ca7401ebb0248dec3600b599cc2a9deeb64a4c35308bc1f3d12607400992b9f",
+        "source_sha256": "4ca7401ebb0248dec3600b599cc2a9deeb64a4c35308bc1f3d12607400992b9f",
+        "reason": "supplement missing Linux test input from exact Desktop file matching reproduction-inputs hash",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/docs/TREASURY-REHEARSAL-TOOLING-V1.md",
+        "bytes": 29108,
+        "sha256": "f271622f11779e9aa06ee4d9a2c196d0f9020d65af180759dbf42b2ede29ec7a",
+        "source_sha256": "f271622f11779e9aa06ee4d9a2c196d0f9020d65af180759dbf42b2ede29ec7a",
+        "reason": "supplement missing Linux test input from exact Desktop source, no code or document transformation",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/desktop/src/wallet_host_fixture_licenses.rs",
+        "bytes": 3980,
+        "sha256": "7362ae8efd652c164a01172a3c0e71ebd01263726638434892e51df227df2d67",
+        "source_sha256": "7362ae8efd652c164a01172a3c0e71ebd01263726638434892e51df227df2d67",
+        "reason": "restore exact synthetic license helper referenced only by trading-service TEST modules",
+        "source_platform": "desktop"
+      },
+      {
+        "path": "build8/linux/desktop/src/wallet_host_fixture_tpm.rs",
+        "bytes": 2686,
+        "sha256": "b11dfffcbdaa502d63039786452d48d98089aa8fa8026d1e5dc9404b1df76c94",
+        "source_sha256": "b11dfffcbdaa502d63039786452d48d98089aa8fa8026d1e5dc9404b1df76c94",
+        "reason": "restore exact software TPM helper referenced only by trading-service TEST modules",
+        "source_platform": "desktop"
+      }
+    ],
+    "static_include_checks": 523,
+    "unresolved_literal_includes": [
+      {
+        "path": "build8/linux/node/tests/forge_live_fixture/support/dividend_rig.rs",
+        "line": 45,
+        "target": "build8/linux/node/qualification/hybrid-canonical-store-public-v1.json",
+        "exists": false
+      }
+    ],
+    "qualification_required": [
+      "Owner confirms exact chain fixture and added documents are intentionally public TEST inputs",
+      "Compile node lib/bin unit-test and consensus integration-test targets separately for both publication projections",
+      "Run chain-dependent tests, treasury_schema_conformance_v1, source-path/private-evidence guards after source overlay; no borrowed gate claims"
+    ],
+    "executed_source_payloads": false,
+    "built": false,
+    "pushed": false
+  },
+  "original_projection_preserved_as_review_evidence": true,
+  "approved_roster": "source-roster.json"
+}

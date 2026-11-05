@@ -1,0 +1,62 @@
+== Summary ==
+* Action: Start a bond's notice (unbond)
+  Summary: Start the 43200-block notice of lot 51515151..51515151 (150.00000000 MUT); the earliest withdrawal becomes block 259210.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: c330bf28fe845802a7e97ac613b2a2f945a9a872f6e029e5a533dc745d468dee
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  The bond owner signature: this wallet signs; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Owner: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Money ==
+* Network fee: 0.00000000 MUT (0 STRIKES); the protocol defines no fee for this operation; not applicable
+* Total leaving this wallet: 0.00000000 MUT
+
+== Conditions ==
+  Lot: Lot 5151515151515151515151515151515151515151515151515151515151515151 of node 169a7d7a3a73a72664e83bb93e7767c96a131d1503451a79aea4ea84247d396f (lineage 1212121212121212121212121212121212121212121212121212121212121212, generation 1): 150.00000000 MUT (15000000000 STRIKES), Active since block 10, confirmed sequence 0.
+  Sequence: This operation carries sequence 1: the lot's confirmed sequence 0 plus one, read from verified state.
+  Signed inclusion window: Valid from block 101 through 245 inclusive. The signed reference is canonical block 100 (0303030303030303030303030303030303030303030303030303030303030303); retained history must prove it at inclusion. Timing eligibility is evaluated at actual inclusion.
+  Notice: The notice is 43200 certified blocks from U; the minimum hold is 259200 certified blocks from B = 10. Both apply; heights count certified blocks, never wall time.
+  Earliest withdrawal: Block 259210 = max(10 + 259200, 101 + 43200) if inclusion is U = 101; 259110 blocks after the verified block; about 179 days 22 h, approximate at the 60 s target interval. U is the actual finalized inclusion height; later inclusion moves the notice floor later.
+  Burn exposure: If inclusion is U = 101, the lot stays exposed until block 43301; actual exposure lasts through finalized U + 43200. A burned lot can never be withdrawn.
+  Weight: Reputation and quorum weight effects follow the reviewed canonical rules (consensus bonds.rs): an Active lot first supports its node from block B + 1, and from block U + 1 an unbonding lot no longer counts. This wallet does not compute or promise any weight.
+  Bond authority: The owner umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f signs with its current key, resolved through the wallet book as consensus resolves it: key generation 1, address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f. A key that was rotated away cannot sign.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Moves lot 5151515151515151515151515151515151515151515151515151515151515151 from Active to Unbonding at actual finalized inclusion U (next eligible block 101). There is no way back: an unbond cannot be cancelled.
+# Irreversible: Starts the 43200-block notice at actual U; if included next, the earliest withdrawal becomes block 259210.
+# Irreversible: The lot no longer counts toward the node's weight from actual U + 1 (block 102 if included next).
+# Irreversible: Once signed, the unbond cannot be revoked; its signed inclusion window is 101 through 245.
+  Effect: Moves no MUT now: the principal of 150.00000000 MUT stays in the lot until it is withdrawn.
+
+== Warnings ==
+! Danger: An unbond is final: Active to Unbonding is one-way and the protocol offers no cancellation.
+! Caution: The lot can still be burned through actual U + 43200 (block 43301 if included next).
+! Caution: These signatures expire after block 245. The wallet never rebases their reference or inclusion bounds; changed bytes require a new review and signatures.
+
+== You must acknowledge ==
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Type to confirm: CONFIRM D0A52AAB
+
+== Binding ==
+  Review digest: d0a52aab854c30f8240a365d1037f41f2f6e41270e9be8c0124758fdbc72b09c

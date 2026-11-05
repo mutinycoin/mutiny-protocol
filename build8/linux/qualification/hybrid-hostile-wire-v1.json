@@ -1,0 +1,9 @@
+{
+  "cases": 49686,
+  "cryptographic_authorization_asserted": false,
+  "decoders_per_case": 7,
+  "production_qualified": false,
+  "result": "PASS",
+  "schema": "BUILD8-HYBRID-HOSTILE-WIRE-V1",
+  "scope": "Deterministic truncation, mutation, random bytes, nesting and claimed-length bounds; no exhaustive fuzzing claim."
+}

@@ -1,0 +1,18 @@
+{
+  "airtime": "Not measured; retransmissions and radio-specific overhead are additional.",
+  "flights": [
+    10,
+    17,
+    8,
+    1
+  ],
+  "max_datagram_bytes": 255,
+  "production_qualified": false,
+  "radio_used": false,
+  "result": "BOUNDED_FRAGMENTS_HYBRID_AUTHENTICATION_PASS",
+  "schema": "BUILD8-HYBRID-HANDSHAKE-FRAGMENTS-V1",
+  "synthetic": true,
+  "tampered_signature_rejected": true,
+  "unique_datagrams": 36,
+  "unique_wire_bytes": 8782
+}

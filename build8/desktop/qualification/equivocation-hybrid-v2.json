@@ -1,0 +1,8 @@
+{
+  "evidence_bytes": 3681,
+  "penalty_state_mutated": false,
+  "result": "PASS",
+  "runtime_activated": false,
+  "schema": "BUILD8-HYBRID-EQUIVOCATION-V2",
+  "synthetic": true
+}

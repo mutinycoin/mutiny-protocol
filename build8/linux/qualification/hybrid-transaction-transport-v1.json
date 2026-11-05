@@ -1,0 +1,11 @@
+{
+  "encrypted_fragment_bytes": 6340,
+  "fragment_count": 25,
+  "hardware_qualified": false,
+  "radio_used": false,
+  "result": "EXACT_BYTES_LOCAL_HYBRID_VERIFY_PASS",
+  "schema": "BUILD8-HYBRID-TX-ENCRYPTED-TRANSPORT-V1",
+  "settlement_claimed": false,
+  "synthetic": true,
+  "transaction_bytes": 3465
+}

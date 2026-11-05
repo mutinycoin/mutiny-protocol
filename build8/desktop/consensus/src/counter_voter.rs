@@ -1,0 +1,643 @@
+//! One counter-protected snapshot owns every local signing safety decision.
+use crate::{
+    Error, Hash,
+    bft::{LockState, Step},
+    bft_store,
+    counter_store::{CounterError, CounterStore, MonotonicCounter},
+    votes::{AuthenticatedRound, HeightAuthority, IngressError, Vote},
+};
+use minicbor::{Decoder, Encoder};
+use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
+
+pub trait CounterSigningBackend: MonotonicCounter {
+    fn public_key(&self) -> [u8; 33];
+    /// Must use the pinned TPM key while retaining the exclusive host lock.
+    fn sign_digest(&mut self, digest: Hash) -> std::result::Result<[u8; 64], String>;
+}
+#[derive(Debug)]
+pub enum CounterVoterError {
+    Invalid(Error),
+    Ingress(IngressError),
+    Counter(CounterError),
+    Backend,
+    WrongHeight,
+    ConflictingVote,
+    Poisoned,
+    Capacity,
+    /// Pure local activation refusal is separate from a custody/backend fault.
+    Activation(crate::activation_attestation_v1::Failure),
+}
+impl From<Error> for CounterVoterError {
+    fn from(e: Error) -> Self {
+        Self::Invalid(e)
+    }
+}
+impl From<IngressError> for CounterVoterError {
+    fn from(e: IngressError) -> Self {
+        Self::Ingress(e)
+    }
+}
+impl From<CounterError> for CounterVoterError {
+    fn from(e: CounterError) -> Self {
+        Self::Counter(e)
+    }
+}
+type Result<T> = std::result::Result<T, CounterVoterError>;
+/// Durable decision record. Version 3 adds the per-slot `gated` marker: the reservation was created
+/// only after the fresh qualified-clock guard passed for exactly the stored decision. Version 1
+/// records are readable but carry no marker, so an unsigned legacy reservation gets no clock
+/// exemption (a signed one is only retransmitted).
+struct Snapshot {
+    height: u64,
+    state: LockState,
+    votes: BTreeMap<(u64, u8), (Vote, bool)>,
+    gated: BTreeSet<(u64, u8)>,
+    /// Decoded from a version-1 record; re-encoded byte-exactly as version 1 until rewritten.
+    legacy: bool,
+}
+impl Snapshot {
+    fn fresh(height: u64, state: LockState) -> Self {
+        Self {
+            height,
+            state,
+            votes: BTreeMap::new(),
+            gated: BTreeSet::new(),
+            legacy: false,
+        }
+    }
+    /// A slot may be completed or re-derived without consulting today's clock only if its
+    /// reservation passed the fresh guard (marker) or it already carries a complete signature.
+    fn clock_exempt(&self, slot: &(u64, u8)) -> bool {
+        match self.votes.get(slot) {
+            Some((_, signed)) => *signed || self.gated.contains(slot),
+            None => false,
+        }
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut e = Encoder::new(Vec::new());
+        e.array(4)
+            .unwrap()
+            .u8(if self.legacy { 1 } else { 3 })
+            .unwrap()
+            .u64(self.height)
+            .unwrap()
+            .bytes(&bft_store::encode(&self.state))
+            .unwrap()
+            .array(self.votes.len() as u64)
+            .unwrap();
+        for ((round, step), (vote, signed)) in &self.votes {
+            e.array(if self.legacy { 4 } else { 5 })
+                .unwrap()
+                .u64(*round)
+                .unwrap()
+                .u8(*step)
+                .unwrap()
+                .bytes(&vote.encode())
+                .unwrap()
+                .bool(*signed)
+                .unwrap();
+            if !self.legacy {
+                e.bool(self.gated.contains(&(*round, *step))).unwrap();
+            }
+        }
+        e.into_writer()
+    }
+    fn decode(raw: &[u8]) -> Result<Self> {
+        crate::blocks::canonical(raw, 4 * 1024 * 1024)?;
+        let mut d = Decoder::new(raw);
+        let s = (|| -> std::result::Result<Self, minicbor::decode::Error> {
+            let bad = || minicbor::decode::Error::message("voter snapshot");
+            if d.array()? != Some(4) {
+                return Err(bad());
+            }
+            let legacy = match d.u8()? {
+                1 => true,
+                3 => false,
+                _ => return Err(bad()),
+            };
+            let height = d.u64()?;
+            let state = bft_store::decode(d.bytes()?).map_err(|_| bad())?;
+            let count = d.array()?.ok_or_else(bad)?;
+            if count > 4096 {
+                return Err(bad());
+            }
+            let mut votes = BTreeMap::new();
+            let mut gated = BTreeSet::new();
+            for _ in 0..count {
+                if d.array()? != Some(if legacy { 4 } else { 5 }) {
+                    return Err(bad());
+                }
+                let round = d.u64()?;
+                let step = d.u8()?;
+                let vote = Vote::decode(d.bytes()?).map_err(|_| bad())?;
+                let signed = d.bool()?;
+                if !legacy && d.bool()? {
+                    gated.insert((round, step));
+                }
+                if !matches!(step, 2 | 3)
+                    || vote.decision.height != height
+                    || vote.decision.round != round
+                    || vote.decision.step != step
+                    || (!signed && vote.signature != [0; 64])
+                    || votes.insert((round, step), (vote, signed)).is_some()
+                {
+                    return Err(bad());
+                }
+            }
+            Ok(Self {
+                height,
+                state,
+                votes,
+                gated,
+                legacy,
+            })
+        })()
+        .map_err(|_| Error::Codec)?;
+        if s.encode() != raw {
+            return Err(Error::NonCanonical.into());
+        }
+        Ok(s)
+    }
+}
+fn slot_of(round: &AuthenticatedRound, step: Step) -> (u64, u8) {
+    (
+        round.machine().state().round,
+        match step {
+            Step::Prevote => 2,
+            Step::Precommit => 3,
+        },
+    )
+}
+pub struct CounterVoter {
+    round: AuthenticatedRound,
+    store: CounterStore,
+    snapshot: Snapshot,
+    node: Hash,
+    context: Hash,
+    poisoned: bool,
+    /// Qualified local clock for fresh block votes. Fail-closed until one is installed.
+    clock: std::sync::Arc<dyn crate::vote_clock_v1::VoteClock>,
+}
+impl CounterVoter {
+    /// Install the qualified local clock consulted before every FRESH block vote
+    /// (`block.timestamp <= qualified_local_UTC_now`; zero additional allowance).
+    pub fn set_vote_clock(&mut self, clock: std::sync::Arc<dyn crate::vote_clock_v1::VoteClock>) {
+        self.clock = clock;
+    }
+    /// Time gate for a FRESH block vote: changes no reducer, custody or counter state and does not
+    /// poison. A slot that already holds a durable reservation was gated when it was created and is
+    /// not a fresh vote. Nil votes are not time-dependent.
+    pub fn time_gate(
+        &self,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+    ) -> Result<()> {
+        let reading = self.clock_reading();
+        self.time_gate_with(&reading, step, proposal, pol_round)
+    }
+    /// One reading of this voter's clock. A signing or completion attempt reads the clock ONCE and
+    /// judges every gate of that attempt, including the owning actor's pre-latch check, with this
+    /// same reading, so a clock that changes between two reads can neither defer after custody was
+    /// touched nor admit what the pre-check refused.
+    pub(crate) fn clock_reading(&self) -> crate::vote_clock_v1::FixedClock {
+        crate::vote_clock_v1::FixedClock::of(&*self.clock)
+    }
+    /// Fail closed after a pure pre-check found a request conflict (a request that contradicts the
+    /// stored durable decision of its slot) or a halted reducer: the voter refuses every further
+    /// operation until it is reopened and revalidated. In memory only: nothing is written and no
+    /// counter value is used (Architect decision V1).
+    pub(crate) fn poison(&mut self) {
+        self.poisoned = true;
+    }
+    /// True while this voter refuses every operation (the in-memory poison). Read-only: only a
+    /// reopen, which revalidates the durable record, yields an unpoisoned voter.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+    /// The gate judges the block the reducer would actually vote (a held lock included), against
+    /// one fixed clock reading supplied by the caller. Pure: it never mutates the reducer or custody.
+    ///
+    /// A slot that already holds ANY reservation (guard-marked, signed, or an unmarked legacy
+    /// record) is first compared with the decision the reducer would now produce, BEFORE the clock
+    /// is consulted: a request that contradicts the stored decision is a request conflict under
+    /// every clock (the one durable decision stands and the request is refused; it is not evidence
+    /// of two durable decisions), never a time deferral and never an exemption. Only a request
+    /// that matches the stored decision reaches the time gate, and it is exempt from the clock ONLY
+    /// when the reservation carries the durable guard marker or is already signed; a matching
+    /// unmarked legacy block reservation still needs a qualified, eligible clock (nil needs none).
+    pub(crate) fn time_gate_with(
+        &self,
+        clock: &dyn crate::vote_clock_v1::VoteClock,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+    ) -> Result<()> {
+        let slot = slot_of(&self.round, step);
+        let exempt = if self.snapshot.votes.contains_key(&slot) {
+            let would = self.round.vote_block(step, proposal, pol_round)?;
+            if !self.bound_to(&slot, would) {
+                return Err(CounterVoterError::ConflictingVote);
+            }
+            self.snapshot.clock_exempt(&slot)
+        } else {
+            false
+        };
+        self.round.time_gate(
+            if exempt {
+                crate::vote_clock_v1::VoteGate::reserved()
+            } else {
+                crate::vote_clock_v1::VoteGate::Fresh(clock)
+            },
+            step,
+            proposal,
+            pol_round,
+        )?;
+        Ok(())
+    }
+    /// The stored decision names exactly this block (or nil).
+    fn bound_to(&self, slot: &(u64, u8), block: Option<Hash>) -> bool {
+        self.snapshot.votes.get(slot).is_some_and(|(v, _)| {
+            v.nil == block.is_none() && v.decision.block == block.unwrap_or([0; 32])
+        })
+    }
+    /// Pure local eligibility of voting for an executed proposal right now.
+    pub fn time_status(&self, block: Hash) -> crate::vote_clock_v1::TimeStatus {
+        self.round.time_status(&*self.clock, block)
+    }
+    /// The same comparison for a bare candidate timestamp (for a proposer choosing among stored
+    /// candidates that this round has not executed). Pure; reads this voter's own clock once.
+    pub fn timestamp_status(&self, timestamp: u64) -> crate::vote_clock_v1::TimeStatus {
+        crate::vote_clock_v1::evaluate(&*self.clock, timestamp)
+    }
+    /// Inspect only after validating the TPM counter and context. The caller
+    /// must retain its exclusive backend lock until subsequent open/sign calls.
+    pub fn stored_height(
+        path: &Path,
+        context: Hash,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<u64> {
+        let store = CounterStore::open(path, context, None, backend)?;
+        Ok(Snapshot::decode(store.snapshot())?.height)
+    }
+    pub fn node(&self) -> Hash {
+        self.node
+    }
+    pub fn height(&self) -> u64 {
+        self.snapshot.height
+    }
+    pub fn matches_authority(&self, current: &HeightAuthority) -> bool {
+        let old = self.round.authority();
+        old.parent == current.parent
+            && old.membership == current.membership
+            && old.reputation == current.reputation
+            && old.attestation == current.attestation
+    }
+    /// Read persisted scheduling intent, including an interrupted unsigned
+    /// reservation. Returned bytes are NOT publishable merely because they are
+    /// present: the caller must pass through sign(), which verifies custody and
+    /// finishes or reuses the exact signature. Reading never writes the counter.
+    pub fn progress(&self) -> Result<(LockState, Option<Vote>, Option<Vote>)> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        let round = self.snapshot.state.round;
+        Ok((
+            self.snapshot.state.clone(),
+            self.snapshot.votes.get(&(round, 2)).map(|(v, _)| v.clone()),
+            self.snapshot.votes.get(&(round, 3)).map(|(v, _)| v.clone()),
+        ))
+    }
+    /// Complete/retransmit the exact persisted slot without reevaluating its
+    /// selection under a lock acquired later in the same round. This API cannot
+    /// choose a new payload. Completed signatures require no counter write.
+    pub fn replay(
+        &mut self,
+        step: Step,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<Option<Vote>> {
+        let reading = self.clock_reading();
+        self.replay_at(&reading, step, backend)
+    }
+    fn replay_slot(&self, step: Step) -> (u64, u8) {
+        (
+            self.snapshot.state.round,
+            match step {
+                Step::Prevote => 2,
+                Step::Precommit => 3,
+            },
+        )
+    }
+    /// The PURE pre-check of `replay_at`, judged against one caller-supplied clock reading. It
+    /// changes no reducer, custody or counter state and does not poison, so the owning actor can
+    /// run it BEFORE its halting latch is set. A refusal for local time reasons, or for a proposal
+    /// not yet re-executed, is nonfatal and never a halt; a halted reducer (`IntegrityHalt`) is a
+    /// genuine halt, which the owning actor latches.
+    ///
+    /// Completing an interrupted reservation is allowed without today's clock only for a
+    /// reservation that passed the fresh guard (or one that is already signed). An unmarked unsigned
+    /// record needs the guard now.
+    pub(crate) fn replay_gate_at(
+        &self,
+        reading: &crate::vote_clock_v1::FixedClock,
+        step: Step,
+    ) -> Result<()> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        // A reducer integrity halt (the `LockState.halted` bit of the durable record, or the live
+        // reducer's) refuses completion and retransmission exactly as it refuses `sign`, whose
+        // reducer preview raises the same error: replay never signs, completes or retransmits under
+        // a halted record, whatever the slot holds and whatever the clock says.
+        if self.snapshot.state.halted || self.round.machine().state().halted {
+            return Err(IngressError::Bft(crate::bft::BftError::IntegrityHalt).into());
+        }
+        let slot = self.replay_slot(step);
+        let Some((vote, _)) = self.snapshot.votes.get(&slot) else {
+            return Ok(());
+        };
+        if !self.snapshot.clock_exempt(&slot) && !vote.nil {
+            match self.round.time_status(reading, vote.decision.block) {
+                crate::vote_clock_v1::TimeStatus::Eligible => {}
+                crate::vote_clock_v1::TimeStatus::Future { ahead_seconds } => {
+                    return Err(IngressError::FutureTimestamp { ahead_seconds }.into());
+                }
+                crate::vote_clock_v1::TimeStatus::UnknownProposal => {
+                    return Err(IngressError::UnknownProposal.into());
+                }
+                crate::vote_clock_v1::TimeStatus::Unqualified => {
+                    return Err(IngressError::ClockUnqualified.into());
+                }
+            }
+        }
+        Ok(())
+    }
+    /// `replay` against one caller-supplied clock reading (see `clock_reading`). The pre-check
+    /// repeats against the same reading and the same state, so it cannot fail once the owning
+    /// actor's own pre-check passed: after the latch is set there is no time verdict left.
+    pub(crate) fn replay_at(
+        &mut self,
+        reading: &crate::vote_clock_v1::FixedClock,
+        step: Step,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<Option<Vote>> {
+        self.replay_gate_at(reading, step)?;
+        let slot = self.replay_slot(step);
+        let Some((mut vote, signed)) = self.snapshot.votes.get(&slot).cloned() else {
+            return Ok(None);
+        };
+        self.poisoned = true;
+        let authority = self.round.authority();
+        vote.decision.verify_parent(&authority.parent)?;
+        if vote.decision.purpose != 2
+            || vote.decision.membership != authority.membership
+            || vote.decision.reputation != authority.reputation
+            || vote.decision.attestation != authority.attestation
+            || vote.node != self.node
+            || vote.key_version != self.round.voter(self.node)?.key_version
+        {
+            return Err(Error::WrongAnchor.into());
+        }
+        let public = self.round.voter(self.node)?.public_key;
+        if public != backend.public_key() {
+            return Err(Error::WrongGeneration.into());
+        }
+        self.store.verify_current(backend)?;
+        if !signed {
+            vote.signature = backend
+                .sign_digest(vote.signing_digest())
+                .map_err(|_| CounterVoterError::Backend)?;
+        }
+        let signature = Signature::from_slice(&vote.signature).map_err(|_| Error::BadSignature)?;
+        if signature.normalize_s().is_some() {
+            return Err(Error::NonCanonical.into());
+        }
+        VerifyingKey::from_sec1_bytes(&public)
+            .map_err(|_| Error::BadSignature)?
+            .verify_prehash(&vote.signing_digest(), &signature)
+            .map_err(|_| Error::BadSignature)?;
+        if !signed {
+            self.snapshot.votes.insert(slot, (vote.clone(), true));
+            self.snapshot.gated.insert(slot);
+            self.snapshot.legacy = false;
+            self.store.commit(&self.snapshot.encode(), backend)?;
+            self.store.verify_current(backend)?;
+        }
+        self.poisoned = false;
+        Ok(Some(vote))
+    }
+    pub fn check_backend(&mut self, backend: &mut impl CounterSigningBackend) -> Result<()> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        self.poisoned = true;
+        if self.round.custody_member(self.node)?.public_key != backend.public_key() {
+            return Err(Error::WrongGeneration.into());
+        }
+        self.store.verify_current(backend)?;
+        self.poisoned = false;
+        Ok(())
+    }
+    /// Initial counter comes from supervised public custody metadata, never a
+    /// newly sampled counter chosen merely because the old database is missing.
+    pub fn open(
+        path: &Path,
+        authority: HeightAuthority,
+        node: Hash,
+        initial_counter: Option<u64>,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<Self> {
+        let round = AuthenticatedRound::new(authority)?;
+        let context = round.signing_context(node)?;
+        if round.custody_member(node)?.public_key != backend.public_key() {
+            return Err(Error::WrongGeneration.into());
+        }
+        let initial = Snapshot::fresh(round.height()?, round.machine().state().clone()).encode();
+        let store = CounterStore::open(
+            path,
+            context,
+            initial_counter.map(|n| (n, initial.as_slice())),
+            backend,
+        )?;
+        let snapshot = Snapshot::decode(store.snapshot())?;
+        if snapshot.height != round.height()? {
+            return Err(CounterVoterError::WrongHeight);
+        }
+        let round = round.restore_state(snapshot.state.clone())?;
+        Ok(Self {
+            round,
+            store,
+            snapshot,
+            node,
+            context,
+            poisoned: false,
+            clock: crate::vote_clock_v1::unqualified(),
+        })
+    }
+    pub fn round_mut(&mut self) -> Result<&mut AuthenticatedRound> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        Ok(&mut self.round)
+    }
+    /// Caller has observed the monotonic precommit deadline. The authenticated
+    /// reducer still requires its unchanged-weight precommit quorum; elapsed
+    /// time alone cannot advance authority or erase a lock.
+    pub fn timeout_precommit(&mut self, backend: &mut impl CounterSigningBackend) -> Result<u64> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        // A missing quorum is ordinary liveness backpressure and does not poison
+        // custody. Mutation begins only when the reducer authorizes advancement.
+        let next = self.round.timeout_precommit()?;
+        self.poisoned = true;
+        if self.round.voter(self.node)?.public_key != backend.public_key() {
+            return Err(Error::WrongGeneration.into());
+        }
+        self.store.verify_current(backend)?;
+        self.snapshot.state = self.round.machine().state().clone();
+        self.store.commit(&self.snapshot.encode(), backend)?;
+        self.store.verify_current(backend)?;
+        self.poisoned = false;
+        Ok(next)
+    }
+    pub fn sign(
+        &mut self,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<Vote> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        let reading = self.clock_reading();
+        self.sign_at(&reading, step, proposal, pol_round, backend)
+    }
+    /// `sign` against one caller-supplied clock reading (see `clock_reading`).
+    pub(crate) fn sign_at(
+        &mut self,
+        reading: &crate::vote_clock_v1::FixedClock,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<Vote> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        // Time gate BEFORE any reducer, custody or counter mutation and before the poison latch:
+        // a deferral or abstention leaves no trace and does not poison custody.
+        // One clock reading serves the pre-latch gate and prepare_vote, so a clock change between
+        // two reads cannot poison custody after the gate has passed.
+        if let Err(e) = self.time_gate_with(reading, step, proposal, pol_round) {
+            // A request conflict keeps its established safety response: the in-memory poison.
+            // Nothing is written and no counter value is used (Architect decision V1).
+            // Absent input and every time deferral remain recoverable and leave no trace.
+            if matches!(e, CounterVoterError::ConflictingVote) {
+                self.poisoned = true;
+            }
+            return Err(e);
+        }
+        self.poisoned = true;
+        let result = self.sign_inner(step, proposal, pol_round, reading, backend);
+        if result.is_ok() {
+            self.poisoned = false;
+        }
+        result
+    }
+    fn sign_inner(
+        &mut self,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+        clock: &dyn crate::vote_clock_v1::VoteClock,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<Vote> {
+        let public = self.round.voter(self.node)?.public_key;
+        if backend.public_key() != public {
+            return Err(Error::WrongGeneration.into());
+        }
+        self.store.verify_current(backend)?;
+        let gate = if self.snapshot.clock_exempt(&slot_of(&self.round, step)) {
+            crate::vote_clock_v1::VoteGate::reserved()
+        } else {
+            crate::vote_clock_v1::VoteGate::Fresh(clock)
+        };
+        let mut vote = self
+            .round
+            .prepare_vote(self.node, step, proposal, pol_round, gate)?;
+        let slot = (vote.decision.round, vote.decision.step);
+        let signed = if let Some((old, signed)) = self.snapshot.votes.get(&slot) {
+            if old.unsigned_bytes() != vote.unsigned_bytes() {
+                return Err(CounterVoterError::ConflictingVote);
+            }
+            vote.signature = old.signature;
+            *signed
+        } else {
+            if self.snapshot.votes.len() >= 4096 {
+                return Err(CounterVoterError::Capacity);
+            }
+            false
+        };
+        self.snapshot.state = self.round.machine().state().clone();
+        self.snapshot.votes.insert(slot, (vote.clone(), signed));
+        // Reaching here means the fresh guard (or an exact bound exemption) passed for exactly
+        // this decision, so the durable marker is written in the same commit as the reservation.
+        self.snapshot.gated.insert(slot);
+        self.snapshot.legacy = false;
+        self.store.commit(&self.snapshot.encode(), backend)?;
+        self.store.verify_current(backend)?;
+        if !signed {
+            vote.signature = backend
+                .sign_digest(vote.signing_digest())
+                .map_err(|_| CounterVoterError::Backend)?;
+        }
+        let signature = Signature::from_slice(&vote.signature).map_err(|_| Error::BadSignature)?;
+        if signature.normalize_s().is_some() {
+            return Err(Error::NonCanonical.into());
+        }
+        VerifyingKey::from_sec1_bytes(&public)
+            .map_err(|_| Error::BadSignature)?
+            .verify_prehash(&vote.signing_digest(), &signature)
+            .map_err(|_| Error::BadSignature)?;
+        self.snapshot.votes.insert(slot, (vote.clone(), true));
+        self.store.commit(&self.snapshot.encode(), backend)?;
+        self.store.verify_current(backend)?;
+        Ok(vote)
+    }
+    /// Caller supplies authority from the atomically committed canonical store.
+    /// The reducer must already have observed finality for that exact parent.
+    pub fn advance(
+        &mut self,
+        authority: HeightAuthority,
+        backend: &mut impl CounterSigningBackend,
+    ) -> Result<()> {
+        if self.poisoned {
+            return Err(CounterVoterError::Poisoned);
+        }
+        self.poisoned = true;
+        if authority.parent.height != self.snapshot.height
+            || self.round.machine().state().halted
+            || self.round.machine().state().finalized != Some(authority.parent.block)
+        {
+            return Err(CounterVoterError::WrongHeight);
+        }
+        let next = AuthenticatedRound::new(authority)?;
+        if next.signing_context(self.node)? != self.context
+            || next.custody_member(self.node)?.public_key != backend.public_key()
+        {
+            return Err(Error::WrongGeneration.into());
+        }
+        let snapshot = Snapshot::fresh(next.height()?, next.machine().state().clone());
+        self.store.commit(&snapshot.encode(), backend)?;
+        self.round = next;
+        self.snapshot = snapshot;
+        self.poisoned = false;
+        Ok(())
+    }
+}

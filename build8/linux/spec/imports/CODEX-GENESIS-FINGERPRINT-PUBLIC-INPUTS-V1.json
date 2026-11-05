@@ -1,0 +1,160 @@
+{
+  "schema": "BUILD8-PUBLIC-INPUT-IMPORT-IDENTITIES-V1",
+  "importer": "Codex /root/hygiene",
+  "date": "2026-10-05",
+  "status": "PUBLIC exact imports; normative amendments separate; no Production evidence",
+  "files": [
+    {
+      "path": "qualification/FNDSA1024-PROFILE-LOCK-V1.json",
+      "source_path": "D:\\Mutiny\\build8\\qualification\\FNDSA1024-PROFILE-LOCK-V1.json",
+      "sha256": "a717455f5ff56ee6a2a9f61f2d1ffa2f2a852dfaff5c31666ed1e94757eb9b58",
+      "bytes": 2038,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "CRLF"
+    },
+    {
+      "path": "spec/STATE-ROOT-AND-PROOF-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\STATE-ROOT-AND-PROOF-V2.md",
+      "sha256": "250d5c86ee94b2bf377876490b4197c7f189771705c91d1c3ef54fd7f7aa230f",
+      "bytes": 6021,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "CRLF"
+    },
+    {
+      "path": "spec/PROTOCOL-RULE-MANIFEST-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\PROTOCOL-RULE-MANIFEST-V1.md",
+      "sha256": "fae557af8737cd09ee9371e426ea385971f59dcf74439d5caab3921614bc3332",
+      "bytes": 1707,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/ROUND-PROPOSAL-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\ROUND-PROPOSAL-V1.md",
+      "sha256": "ce5fdd94fe02079a07ada8363395920231a7ae3fd689491044b41226d90706db",
+      "bytes": 2683,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/CHECKPOINT-ARCHIVE-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\CHECKPOINT-ARCHIVE-V1.md",
+      "sha256": "9ceba9957624bbc6f9adb1f1df7c029ea4d1eb9c71f99e91a1e9e19f598ec65a",
+      "bytes": 3600,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/RECOVERY-TRANSPORT-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\RECOVERY-TRANSPORT-V1.md",
+      "sha256": "0c3570abb7fcfc6db86bc2f6b2761435e6e74cc025a395d6161507f267a29f7e",
+      "bytes": 2075,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/GENESIS-INITIAL-STATE-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\GENESIS-INITIAL-STATE-V1.md",
+      "sha256": "e2a200d6a53d628e240669021204d0ee8dcc3eca28d07ca69e47d08edc05563d",
+      "bytes": 3517,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/FNDSA1024-PINNED-PROFILE-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\FNDSA1024-PINNED-PROFILE-V1.md",
+      "sha256": "cd2f7518ef12835eb8f1b39686219da0d474704ec24760e12d4be7059ad223a9",
+      "bytes": 9717,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/WALLET-AUTHORITY-STATE-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\WALLET-AUTHORITY-STATE-V1.md",
+      "sha256": "d280ca0d3c29848788adbfdea06f9815c0f92f0f5eb78cf021a78a15249152cc",
+      "bytes": 2914,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/MINER-ENROLLMENT-V2-CODEC-V1.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\MINER-ENROLLMENT-V2-CODEC-V1.md",
+      "sha256": "236b6a2d1518e40dbb6784138a1280af92b6d733ed9f780aae8b740108452b4f",
+      "bytes": 11379,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/HYBRID-WORK-AUTHORITY-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\HYBRID-WORK-AUTHORITY-V2.md",
+      "sha256": "4e72f6e4e52023689eedbae4390f0d00ab6edbedb11b6058e57cd7f09e1bfdc8",
+      "bytes": 4470,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/HYBRID-LICENSED-EXECUTION-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\HYBRID-LICENSED-EXECUTION-V2.md",
+      "sha256": "d2487f2da602700db82e2031e94a80ef2c08375ce38193ea7fc135d9caad22d1",
+      "bytes": 2914,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/HYBRID-CONTINUITY-DURABLE-INGRESS-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\HYBRID-CONTINUITY-DURABLE-INGRESS-V2.md",
+      "sha256": "8a22291e1c5a5bcf692a05afc3d3cef30a07ce4d8a2857980ec2a2d843336601",
+      "bytes": 3908,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/HYBRID-CERTIFIED-BLOCK-ENVELOPE-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\HYBRID-CERTIFIED-BLOCK-ENVELOPE-V2.md",
+      "sha256": "4619d8682884d13295bea9a11f1668909970ba3f16605da2d2b90105cba248c0",
+      "bytes": 2173,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/HYBRID-CONTINUITY-KEY-STATE-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\HYBRID-CONTINUITY-KEY-STATE-V2.md",
+      "sha256": "3ee27e5e381e43fc8ebfc89d80e62cb1ae093e4ff6b1f94efeef2f1c7ccd3ab2",
+      "bytes": 5553,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/CONTINUITY-EXIT-HYBRID-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\CONTINUITY-EXIT-HYBRID-V2.md",
+      "sha256": "afaf71f1ffe7b7eef25933808a110313a1ef653f193df2e080590e07de331160",
+      "bytes": 2807,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/TRANSPORT-OBJECTS-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\TRANSPORT-OBJECTS-V2.md",
+      "sha256": "a1219386be86d6e6df0fe36ba4c46c0f745950f1d724a80bdcac14794fec95d2",
+      "bytes": 13024,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/INITIAL-NODE-AUTHENTICATION-BINDING-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\INITIAL-NODE-AUTHENTICATION-BINDING-V2.md",
+      "sha256": "84300267ed749c29292352aed37f0dba87e22f8a065ec32058692747bed7c23d",
+      "bytes": 3012,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    },
+    {
+      "path": "spec/HYBRID-MEMBERSHIP-CONTROLS-V2.md",
+      "source_path": "D:\\Mutiny\\build8\\spec\\HYBRID-MEMBERSHIP-CONTROLS-V2.md",
+      "sha256": "969167a4b1014d9e3d9713582299860349da43e64b0e3677ba40eefb58468034",
+      "bytes": 6863,
+      "import_semantics": "exact public original bytes, original unchanged",
+      "line_endings": "LF"
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+== Summary ==
+* Action: Claim a dividend
+  Summary: Claim 0.00012345 MUT of the award of epoch 131072 for License 966cf152..0bfc5723 (index 1), paid to tmut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzspmxqwz (an external address). No fee: the protocol pays from the Treasury reserve.
+! Chain class: TEST-VALUE chain: nothing here has real value
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: f387ac696478aec1cc2d2c625c591bce30ec0905618a56f506ab6e0b6365a59f
+  Chain class: TEST-VALUE (nothing on this chain has real value)
+
+== Signing wallet ==
+  Signing address: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  The claim signature: this wallet signs; wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Owner: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Treasury: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (the Treasury; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Recipient: tmut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzspmxqwz (an external address; legacy hex b52f9e00d8a3c89153b2f7b465fc3d8a31216b24c97e123b0461811e93f49345)
+
+== Money ==
+* The protocol pays: 0.00012345 MUT (12345 STRIKES) to tmut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzspmxqwz (an external address; legacy hex b52f9e00d8a3c89153b2f7b465fc3d8a31216b24c97e123b0461811e93f49345)
+* Type to confirm destination: zspmxqwz
+* Amount: 0.00012345 MUT (12345 STRIKES)
+* Network fee: 0.00000000 MUT (0 STRIKES); exempt: this operation class pays no fee; paid by nobody (exempt)
+* Total leaving this wallet: 0.00000000 MUT
+
+== Conditions ==
+  License: 966cf152cc17685fab288bfd7129b243ef4eb078ae32b721ebef2f890bfc5723 (index 1, issued at block 0); owner tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet); License generation 1 (it changes when the License is sold).
+  License status: active at the processed epoch 131072; dividend-eligible from epoch 0 (Genesis bootstrap License).
+  Award: Award of epoch 131072; share 0.00200000 MUT (200000 STRIKES). A block may include a claim on it only while its epoch is from 131072 to 196607 (the window closes at epoch 196608).
+  Entitlement: Remaining before this claim: 0.00200000 MUT (200000 STRIKES). After it: 0.00187655 MUT (187655 STRIKES). Claims already applied: 0.
+  Claim sequence: This claim carries sequence 0, read from confirmed state (the number of claims already applied for this License and award). It is valid only while exactly 0 claims have been applied: whichever claim with sequence 0 is included first uses it, and every other one then fails.
+  Epoch basis: Eligibility is judged at the epoch of the block that includes the claim. The verified block is in epoch 131082; a later block's epoch is at least that (a block's timestamp may not precede its parent's) and consensus sets no upper bound. Not valid in a block whose epoch is before 131072.
+  Time left: At most 65526 epochs after the verified block's epoch (131082) remain before the window closes at epoch 196608 (about 45 days 12 h, approximate at 60 s per epoch). The including block may be later, so the real margin can be shorter.
+  Owner at inclusion: Valid only if the License is still owned by tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m and the claim's key still controls that address when the claim executes. If the License is sold first, including by a sale in the same block (sales execute before claims), the claim fails and the buyer holds the remaining entitlement.
+  Payment source: No fee. The protocol pays exactly 0.00012345 MUT from the Treasury reserve: Treasury coins, oldest Treasury address first, then outpoint order, with change returning to the Treasury address of the last coin used. At the verified block that is 1 coin(s) worth 0.01200000 MUT with 0.01187655 MUT change to tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca; the coins are chosen when the claim executes.
+  Claim key: The key of generation 1 whose own address is tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m; it must be the current key of the License owner.
+  Validity window: Valid only for blocks 101 to 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval).
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+* Deadline epoch: 196607
+
+== Effects ==
+# Irreversible: The protocol pays 0.00012345 MUT to tmut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzspmxqwz (an external address) from the Treasury reserve. The recipient controls it from inclusion; there is no recall.
+# Irreversible: The remaining entitlement of License 966cf152..0bfc5723 for the award of epoch 131072 falls from 0.00200000 MUT to 0.00187655 MUT, and its claim sequence advances to 1.
+  Effect: The Treasury reserve falls from 0.00600000 MUT to 0.00587655 MUT; the Treasury's coins fall by the same amount.
+# Irreversible: Once signed, the claim cannot be revoked: it stays valid until it is included, another claim uses sequence 0, the License changes owner, the award window closes, or block 245 passes.
+
+== Warnings ==
+! Notice: This is a TEST-VALUE chain: nothing here has real value.
+! Caution: The dividend goes to tmut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzspmxqwz (an external address), which is not the License owner address tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m.
+
+== You must acknowledge ==
+* Required: I checked every destination address
+* Required: I checked the amount
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+
+== Binding ==
+  Review digest: fa738aa3b148def63db3e78687c42a3566b357ee42293574dcb4d8265eeccfb8

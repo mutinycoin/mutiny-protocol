@@ -1,0 +1,114 @@
+//! Bounded full-prefix catch-up from the locally pinned Genesis.
+//! Peer anchors are fetch hints, never authority or trusted state checkpoints.
+use crate::hybrid_runtime_v2::{HybridRuntime, PendingCache, RuntimeError};
+use mutiny_consensus_v8::{
+    anchors::FinalizedAnchor,
+    block_envelope_v2::{BlockEnvelope, MAX_ENVELOPE_BYTES},
+    state_tree::MAX_RECORD,
+};
+
+/// Local scheduling bound, not a new consensus block limit.
+pub const MAX_BATCH: usize = 64;
+
+pub trait HistorySource {
+    /// Implementations must enforce the byte bound before allocating a response
+    /// and impose their own I/O deadline. No network I/O is implemented here.
+    fn recovery(&mut self, parent: u64, maximum_bytes: usize) -> Result<Option<Vec<u8>>, String>;
+    fn block(&mut self, height: u64, maximum_bytes: usize) -> Result<Vec<u8>, String>;
+}
+
+#[derive(Debug)]
+pub enum SyncError {
+    Bounds,
+    Context,
+    Source(String),
+    Runtime(RuntimeError),
+    Encoding,
+    WrongHeight,
+    TargetMismatch,
+}
+impl From<RuntimeError> for SyncError {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+#[derive(Debug)]
+pub struct Progress {
+    pub installed: usize,
+    pub head: FinalizedAnchor,
+    pub target_reached: bool,
+    /// A disposable pending cache is never allowed to disguise a committed block.
+    pub pending_cache_available: bool,
+}
+
+pub fn catch_up(
+    runtime: &mut HybridRuntime,
+    source: &mut impl HistorySource,
+    advertised: &FinalizedAnchor,
+    maximum_blocks: usize,
+) -> Result<Progress, SyncError> {
+    if !(1..=MAX_BATCH).contains(&maximum_blocks) {
+        return Err(SyncError::Bounds);
+    }
+    let mut head = runtime.head()?;
+    if (head.network, head.genesis, head.fingerprint)
+        != (
+            advertised.network,
+            advertised.genesis,
+            advertised.fingerprint,
+        )
+    {
+        return Err(SyncError::Context);
+    }
+    let mut installed = 0;
+    let mut pending_cache_available = true;
+    for _ in 0..maximum_blocks {
+        if head.height >= advertised.height {
+            break;
+        }
+        let next = head.height.checked_add(1).ok_or(SyncError::Bounds)?;
+        // Recovery changes effective authority for this successor only after its
+        // complete signed history has passed the canonical store's verifier.
+        if let Some(raw) = source
+            .recovery(head.height, MAX_RECORD)
+            .map_err(SyncError::Source)?
+        {
+            if raw.is_empty() || raw.len() > MAX_RECORD {
+                return Err(SyncError::Bounds);
+            }
+            let result = runtime.accept_recovery(&raw)?;
+            if result.parent != head {
+                return Err(SyncError::WrongHeight);
+            }
+            if runtime.head()? != head {
+                return Err(SyncError::WrongHeight);
+            }
+        }
+        let raw = source
+            .block(next, MAX_ENVELOPE_BYTES)
+            .map_err(SyncError::Source)?;
+        if raw.is_empty() || raw.len() > MAX_ENVELOPE_BYTES {
+            return Err(SyncError::Bounds);
+        }
+        let block = BlockEnvelope::decode(&raw).map_err(|_| SyncError::Encoding)?;
+        if block.certificate.decision.anchor().height != next {
+            return Err(SyncError::WrongHeight);
+        }
+        let result = runtime.install(&raw)?;
+        pending_cache_available &= matches!(result.pending, PendingCache::Reconciled);
+        head = runtime.head()?;
+        if head != result.finalized || head.height != next {
+            return Err(SyncError::WrongHeight);
+        }
+        installed += usize::from(result.inserted);
+    }
+    if head.height == advertised.height && head != *advertised {
+        return Err(SyncError::TargetMismatch);
+    }
+    Ok(Progress {
+        installed,
+        target_reached: head == *advertised,
+        head,
+        pending_cache_available,
+    })
+}

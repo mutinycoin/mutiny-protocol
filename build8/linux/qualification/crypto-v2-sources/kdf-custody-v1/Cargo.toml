@@ -1,0 +1,10 @@
+[workspace]
+members = ["hkdf", "hmac", "sha2", "block-buffer", "pbkdf2", "argon2", "blake2"]
+resolver = "2"
+[patch.crates-io]
+hmac = { path = "hmac" }
+sha2 = { path = "sha2" }
+block-buffer = { path = "block-buffer" }
+pbkdf2 = { path = "pbkdf2" }
+argon2 = { path = "argon2" }
+blake2 = { path = "blake2" }

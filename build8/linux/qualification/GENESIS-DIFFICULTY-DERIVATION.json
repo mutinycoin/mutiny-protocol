@@ -1,0 +1,36 @@
+{
+  "schema": "BUILD8-INITIAL-POW-TARGET-DERIVATION-V1",
+  "status": "DERIVED_FROM_QUALIFIED_ACTIVE_SET",
+  "qualification_pass": true,
+  "locked": false,
+  "derivation": {
+    "active_count": 12,
+    "aggregate_hps": {
+      "numerator": "983040000000",
+      "denominator": "11658023"
+    },
+    "expected_hashes_per_60_seconds": {
+      "numerator": "58982400000000",
+      "denominator": "11658023"
+    },
+    "success_probability": {
+      "numerator": "5721651032963581782533795188750961429067408694973776098060478303225553",
+      "denominator": "28948022309329048855892746252171976963317496166410141009864396001978282409984"
+    },
+    "initial_pow_target_hex": "00000350e94ccd16c4d5661eafcd07f2f220b12f07c24ab8f8b90a0f2c131b43",
+    "expected_interval_seconds": {
+      "numerator": "80460717651050368816881494841810395096260434773068726378975476139109340151808",
+      "denominator": "1341011960850839480281358247363506584937673912884478772982924602318488984375"
+    },
+    "display_difficulty_max_target_ratio": {
+      "numerator": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "denominator": "22886604131854327130135180755003845716269634779895104392241913212902211"
+    },
+    "rounding": "T = clamp(floor(2^256 / (60 * sum(N_i * 1000000 / elapsed_us_i))) - 1, 1, 2^256-1)",
+    "hash_comparison": "unsigned big-endian SHA256d digest <= uncompressed big-endian target",
+    "safety_multiplier": null,
+    "target_clamped": false
+  },
+  "roster_sha256": "0edc926776ee4e37f4321e12c0a42a8ec58ec9f35de72c654c45c7959d53bb17",
+  "source_sha256": "ddb11f35b4621fa324337f49c0102abdbd79cf968ba0a1ab3b6425a6f9923c53"
+}

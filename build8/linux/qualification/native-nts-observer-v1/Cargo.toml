@@ -1,0 +1,20 @@
+[package]
+name = "mutiny-native-nts-observer-v1"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Isolated qualification software: never a dependency/feature of a shipping crate.
+[workspace]
+
+[dependencies]
+ntp-proto = { git = "https://github.com/pendulum-project/ntpd-rs", rev = "46ec9bb4d5b6cb24f814f5543d85b9138afb4cba", features = ["__internal-api"] }
+tokio = { version = "1.45", features = ["rt", "macros", "net", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Ephemeral in-memory TLS fixtures only. No disk key, OS trust-store install or
+# shipping graph edge. ntp-proto remains pinned with no test/fuzz feature.
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
+rustls-pki-types = "=1.15.1"

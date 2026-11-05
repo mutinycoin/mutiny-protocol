@@ -1,0 +1,83 @@
+[package]
+name = "mutiny-wallet-core-v8"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "UI-free wallet core for Mutiny Build 8: plan, review, authorize, outbox. No GUI, no network, no Bitcoin."
+
+[dependencies]
+mutiny-consensus-v8 = { path = "../consensus" }
+mutiny-crypto-v2 = { path = "../crypto-v2", features = ["wallet-custody"] }
+minicbor = { version = "=2.3.0", features = ["std"] }
+sha2 = "0.10"
+hex = "0.4"
+zeroize = "=1.9.0"
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
+
+[dev-dependencies]
+# Existing locked packages for imported PUBLIC TEST support modules only.
+ed25519-dalek = "=2.2.0"
+getrandom = "=0.2.17"
+# Actual NODE TCP integration only. Normal/build wallet graph remains UI-free and hermetic.
+# The reverse node->wallet dev edge would enable custody in the validator bin and is forbidden.
+mutinyd-v8 = { path = "../node", default-features = false }
+mutiny-transport-v2 = { path = "../transport-v2" }
+# Test-only self dependency: turns the NON-shipping `test-value-signing` feature on for this
+# crate's own integration tests (resolver 2 never unifies dev-dependency features into a normal
+# or release build). A plain `cargo build` / `cargo build --release` never sees this feature.
+mutiny-wallet-core-v8 = { path = ".", features = ["test-value-signing"] }
+serde_json = "1"
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+
+# PRIVATE TEST initial model only. Same pinned certificate packages as consensus;
+# no normal/build, Node reverse edge, feature, shipping or hardware factory.
+x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
+p384 = { version = "=0.13.1", default-features = false, features = ["ecdsa", "std"] }
+rsa = { version = "=0.9.10", default-features = false, features = ["std", "sha2"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "=0.2.189"
+
+[patch.crates-io]
+hkdf = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }
+
+# Test/dev profile only; release builds are unaffected (same table as consensus/Cargo.toml).
+# The hybrid signature, KDF and C crypto dependencies are far too slow at opt-level 0.
+# Only dependencies are optimized: this crate keeps debug assertions and overflow checks.
+[profile.dev.package."*"]
+opt-level = 3
+
+[features]
+default = []
+# NON-SHIPPING. Enables the TEST-VALUE signing gate (and test constructors) so tests can sign with
+# public TEST-VALUE keys while the production gate (crypto-v2 PRODUCTION_SECURITY_QUALIFIED) is
+# closed. Never default; never enabled by desktop or any shipping root; excluded by the
+# production exclusion checks and asserted false by every shipping binary.
+test-value-signing = []
+
+# Shipping release profile (Build 8 configuration record: docs/BUILD-CONFIGURATIONS-V1.md).
+# Profile tables are honoured only in the ROOT manifest being built, so every shipped root
+# carries the same table. Cargo's release default would be overflow-checks = false while
+# all tests run with it on; consensus arithmetic must behave identically in both.
+[profile.release]
+opt-level = 3
+# Checked integer arithmetic in the shipped binary (tests already run with checks on).
+overflow-checks = true
+debug-assertions = false
+# One codegen unit: deterministic, reproducible code generation.
+codegen-units = 1
+# Symbols are kept: the exclusion checks (build/check-shipping-config.sh) inspect them.
+strip = "none"
+# LTO off: it is not needed for correctness, and the C sources compiled by build.rs make
+# cross-language LTO an unverified variable. Revisit only with a reproducibility test.
+lto = false
+# UNWIND, deliberately. node/src/peer_supervisor.rs, actor_service.rs and
+# hybrid_peer_worker_v2.rs detect a panicked worker through JoinHandle::join().is_err()
+# and fail closed; panic = "abort" would remove that supervision. Abort is not provably safe.
+panic = "unwind"

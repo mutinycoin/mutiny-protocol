@@ -1,0 +1,86 @@
+//! Explicit local ceremony reservation. Never replace or repair an old journal.
+use mutiny_consensus_v8::counter_store::MonotonicCounter;
+use std::path::Path;
+type Result<T> = std::result::Result<T, String>;
+pub fn initialize<T, B: MonotonicCounter>(
+    path: &Path,
+    pinned: u64,
+    backend: &mut B,
+    build: impl FnOnce(&mut B) -> Result<T>,
+) -> Result<T> {
+    if pinned == 0 || backend.read()? != pinned {
+        return Err("Custody ceremony counter no longer current".into());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|e| e.to_string())?
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    sync_parent(path)?;
+    // A failed construction leaves the reservation for explicit inspection;
+    // retry must not silently replace an incomplete protected journal.
+    let value = build(backend)?;
+    sync_parent(path)?;
+    Ok(value)
+}
+fn sync_parent(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path.parent().ok_or("Custody parent")?)
+            .and_then(|p| p.sync_all())
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Counter(u64);
+    impl MonotonicCounter for Counter {
+        fn read(&mut self) -> Result<u64> {
+            Ok(self.0)
+        }
+        fn increment(&mut self) -> Result<()> {
+            panic!("Initialization cannot increment")
+        }
+    }
+    #[test]
+    fn fresh_ceremony_never_replaces_existing_or_adopts_current_counter() {
+        let mut salt = [0; 8];
+        getrandom::getrandom(&mut salt).unwrap();
+        let dir = std::env::temp_dir().join(format!("build8-custody-{}", hex::encode(salt)));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("voter.sqlite");
+        let mut counter = Counter(100);
+        assert!(initialize(&path, 99, &mut counter, |_| Ok(())).is_err());
+        assert!(!path.exists());
+        initialize(&path, 100, &mut counter, |_| {
+            std::fs::write(&path, b"protected").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert!(initialize::<(), _>(&path, 100, &mut counter, |_| panic!("No overwrite")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"protected");
+        let failed = dir.join("incomplete.sqlite");
+        assert!(
+            initialize(&failed, 100, &mut counter, |_| Err::<(), _>(
+                "simulated storage failure".into()
+            ))
+            .is_err()
+        );
+        assert!(failed.exists());
+        assert!(initialize::<(), _>(&failed, 100, &mut counter, |_| panic!("No repair")).is_err());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(failed).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+}

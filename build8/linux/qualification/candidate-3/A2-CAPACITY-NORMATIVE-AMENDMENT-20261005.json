@@ -1,0 +1,45 @@
+{
+  "status": "SOURCE-ONLY UNFROZEN; no runtime/freeze/Production claim",
+  "authority": "direct user A2 capacity decision 20261005 SHA47a1480b06dc780e3838f348ad4b8619707384f56a892ee6db667475e44b336d",
+  "policy_parent": "e232d017b1150442565b91d7dbf8f690c6194142",
+  "historical_imports": "Original imported artifacts/manifests/V9 unchanged. Amended normative copies are explicitly superseding clauses, not verbatim imports. Existing import provenance remains independently identifiable.",
+  "amendments": [
+    {
+      "path": "spec/WORK-AND-BLOCK-CODECS-V1.md",
+      "predecessor": "e232d017b1150442565b91d7dbf8f690c6194142",
+      "predecessor_sha256": "42ea1f720d1f406e5add8cb8bc0f0de77fdb6fdc49da02c01d5e97df963714fb",
+      "amended_sha256": "b101ba9c838109fb4fdcec24edd2efdd5eedeedbae48403afcf4f59489cf6e57"
+    },
+    {
+      "path": "spec/HYBRID-CERTIFIED-BLOCK-ENVELOPE-V2.md",
+      "predecessor": "e232d017b1150442565b91d7dbf8f690c6194142",
+      "predecessor_sha256": "4619d8682884d13295bea9a11f1668909970ba3f16605da2d2b90105cba248c0",
+      "amended_sha256": "ac70390caf76b936efc9ecfa892e35ee2b92e9ca3a00bfe9c7825150a8ae6088"
+    },
+    {
+      "path": "spec/DECISION-TECHNICAL-ANNEX-V1.md",
+      "predecessor": "e232d017b1150442565b91d7dbf8f690c6194142",
+      "predecessor_sha256": "8a4146f0767f72b0434c439d382927ba92e294eb3b24228db4019344f86206d1",
+      "amended_sha256": "2e35852a328a9c18446b4b9002c7ee6008dd8c985d073d7e9b2c52ddd70d5b96"
+    },
+    {
+      "path": "spec/ENDORSEMENT-WITHDRAWAL-REGISTRY-V1.json",
+      "predecessor": "immutable fixture-repair-v2 source",
+      "predecessor_sha256": "7a411c9fc08c7d3e9078c34139b60447d8b0e5af597bc0b9e7feac1d847a60f2",
+      "amended_sha256": "1ce30038209e9e2a38bae13bd09b847ba7438f7d104eb2feb5771a986a453025"
+    },
+    {
+      "path": "build/protocol-rule-candidate-scope-v2.json",
+      "predecessor": "e232d017b1150442565b91d7dbf8f690c6194142",
+      "predecessor_sha256": "8b7c98b17ba13549ce4736f9610248fb6c12c99944ab5bfb4412d008e7d3f1ef",
+      "amended_sha256": "496dd00c483f0aa6332b18f63e743a296f6e6e20868f6c5c62e273120d3e416d"
+    },
+    {
+      "path": "spec/A2-BODY-CAPACITY-V3.md",
+      "predecessor": "new normative candidate",
+      "predecessor_sha256": null,
+      "amended_sha256": "19f18a1fb8c350ecf94bb79e06b00594e475b9afd693e6fb276a0de881a8b6ec"
+    }
+  ],
+  "remaining": "End-to-end source/Node routes, genuine boundary/native execution/replay/max transport and independent review pending."
+}

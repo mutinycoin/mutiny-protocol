@@ -1,0 +1,382 @@
+{
+  "design": "qualification/candidate-3/P-LANE-DESIGN-V1.md section 1.a",
+  "expiry_horizon": 10080,
+  "generator": "consensus: BUILD8_EXPORT_OPERATION_ENVELOPE=1 cargo test --offline --locked --lib op_envelope_v1::tests::export_operation_envelope_vectors (create_new: refuses to overwrite; delete the file first)",
+  "invalid": [
+    {
+      "cbor_hex": "8501186518f58218645820000000000000000000000000000000000000000000000000000000000000000080",
+      "error": "ZeroReference",
+      "name": "E1_zero_reference_block",
+      "rule": "E1"
+    },
+    {
+      "cbor_hex": "8501186518f58218655820abababababababababababababababababababababababababababababababab80",
+      "error": "WindowOrder",
+      "name": "E2_reference_equals_first",
+      "rule": "E2"
+    },
+    {
+      "cbor_hex": "8501186518f58218c85820abababababababababababababababababababababababababababababababab80",
+      "error": "WindowOrder",
+      "name": "E2_reference_after_first",
+      "rule": "E2"
+    },
+    {
+      "cbor_hex": "850118f618f58218645820abababababababababababababababababababababababababababababababab80",
+      "error": "WindowOrder",
+      "name": "E2_first_after_last",
+      "rule": "E2"
+    },
+    {
+      "cbor_hex": "850118651927c68218645820abababababababababababababababababababababababababababababababab80",
+      "error": "Horizon",
+      "name": "E3_span_one_beyond_horizon",
+      "rule": "E3"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8285025820030303030303030303030303030303030303030303030303030303030303030301f6f685025820030303030303030303030303030303030303030303030303030303030303030301f6f6",
+      "error": "PreconditionOrder",
+      "name": "E4_duplicate_precondition",
+      "rule": "E4"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab828301582003030303030303030303030303030303030303030303030303030303030303038083015820030303030303030303030303030303030303030303030303030303030303030381841a000200000a0a00",
+      "error": "PreconditionOrder",
+      "name": "E4_same_subject_twice_with_different_facts",
+      "rule": "E4"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab82840358200505050505050505050505050505050505050505050505050505050505050505015820060606060606060606060606060606060606060606060606060606060606060683015820030303030303030303030303030303030303030303030303030303030303030380",
+      "error": "PreconditionOrder",
+      "name": "E4_tags_descending",
+      "rule": "E4"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8285025820040404040404040404040404040404040404040404040404040404040404040401f6f685025820030303030303030303030303030303030303030303030303030303030303030301f6f6",
+      "error": "PreconditionOrder",
+      "name": "E4_subjects_descending",
+      "rule": "E4"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820000000000000000000000000000000000000000000000000000000000000000080",
+      "error": "ZeroSubject",
+      "name": "E5_zero_license",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030382841a000200000a0a00841a000200000a0a00",
+      "error": "AccountOrder",
+      "name": "E5_accounts_equal_epochs",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030382841a000400000a0a00841a000200000a0a00",
+      "error": "AccountOrder",
+      "name": "E5_accounts_descending",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab818301582003030303030303030303030303030303030303030303030303030303030303038184000a0a00",
+      "error": "Account",
+      "name": "E5_award_epoch_zero",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030381841a00020000000000",
+      "error": "Account",
+      "name": "E5_share_zero",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030381841a000200000a0b00",
+      "error": "Account",
+      "name": "E5_remaining_above_share",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030381841a000200000a0700",
+      "error": "Account",
+      "name": "E5_claimed_amount_without_claims",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030381841a000200000a0a01",
+      "error": "Account",
+      "name": "E5_claims_without_claimed_amount",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183015820030303030303030303030303030303030303030303030303030303030303030381841a000200000a0704",
+      "error": "Account",
+      "name": "E5_claims_above_claimed_amount",
+      "rule": "E5"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8185025820000000000000000000000000000000000000000000000000000000000000000001f6f6",
+      "error": "ZeroSubject",
+      "name": "E6_zero_license",
+      "rule": "E6"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8185025820030303030303030303030303030303030303030303030303030303030303030300f6f6",
+      "error": "ZeroSequence",
+      "name": "E6_zero_assignment_sequence",
+      "rule": "E6"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab818403582000000000000000000000000000000000000000000000000000000000000000000158200606060606060606060606060606060606060606060606060606060606060606",
+      "error": "ZeroSubject",
+      "name": "E7_zero_treasury",
+      "rule": "E7"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab818403582005050505050505050505050505050505050505050505050505050505050505050158200000000000000000000000000000000000000000000000000000000000000000",
+      "error": "ZeroSubject",
+      "name": "E7_zero_address",
+      "rule": "E7"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab818403582005050505050505050505050505050505050505050505050505050505050505050058200606060606060606060606060606060606060606060606060606060606060606",
+      "error": "ZeroGeneration",
+      "name": "E7_zero_generation",
+      "rule": "E7"
+    },
+    {
+      "cbor_hex": "850119006518f58218645820abababababababababababababababababababababababababababababababab80",
+      "error": "NonCanonical",
+      "name": "noncanonical_first_height_non_minimal",
+      "rule": "canonical form"
+    },
+    {
+      "cbor_hex": "851801186518f58218645820abababababababababababababababababababababababababababababababab80",
+      "error": "NonCanonical",
+      "name": "noncanonical_version_non_minimal",
+      "rule": "canonical form"
+    },
+    {
+      "cbor_hex": "8501186518f5821864590020abababababababababababababababababababababababababababababababab80",
+      "error": "NonCanonical",
+      "name": "noncanonical_reference_block_long_length_head",
+      "rule": "canonical form"
+    },
+    {
+      "cbor_hex": "9f01186518f58218645820abababababababababababababababababababababababababababababababab80ff",
+      "error": "NonCanonical",
+      "name": "noncanonical_indefinite_outer_array",
+      "rule": "canonical form"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab9fff",
+      "error": "NonCanonical",
+      "name": "noncanonical_indefinite_precondition_list",
+      "rule": "canonical form"
+    },
+    {
+      "cbor_hex": "8501186518f58218645f5820ababababababababababababababababababababababababababababababababff80",
+      "error": "NonCanonical",
+      "name": "noncanonical_indefinite_reference_block",
+      "rule": "canonical form"
+    },
+    {
+      "cbor_hex": "8502186518f58218645820abababababababababababababababababababababababababababababababab80",
+      "error": "Codec",
+      "name": "codec_version_2",
+      "rule": "structure"
+    },
+    {
+      "cbor_hex": "8401186518f58218645820abababababababababababababababababababababababababababababababab",
+      "error": "Codec",
+      "name": "codec_outer_array_of_four",
+      "rule": "structure"
+    },
+    {
+      "cbor_hex": "85012018f58218645820abababababababababababababababababababababababababababababababab80",
+      "error": "Codec",
+      "name": "codec_negative_first_height",
+      "rule": "structure"
+    },
+    {
+      "cbor_hex": "8501186518f5821864581fababababababababababababababababababababababababababababababab80",
+      "error": "Codec",
+      "name": "codec_reference_block_31_bytes",
+      "rule": "structure"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab81820458200505050505050505050505050505050505050505050505050505050505050505",
+      "error": "Codec",
+      "name": "codec_unknown_precondition_tag_4",
+      "rule": "structure"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8183035820050505050505050505050505050505050505050505050505050505050505050501",
+      "error": "Codec",
+      "name": "codec_treasury_head_with_three_elements",
+      "rule": "structure"
+    },
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab8000",
+      "error": "Codec",
+      "name": "codec_trailing_byte",
+      "rule": "structure"
+    }
+  ],
+  "layout": "Envelope = [1, first_height, last_height, [reference_height, reference_block32], [Precondition...]]; Precondition = [1, license32, [[award_epoch, share, remaining, claims]...]] | [2, license32, assignment_sequence, active_worker32 | null, pending32 | null] | [3, treasury32, generation, address32]",
+  "note": "Public synthetic data only: no key, signature, chain or production identity. Hashes and heights are arbitrary TEST-VALUE patterns. A decoder must accept every valid vector (exact re-encoding) and refuse every invalid vector with the named error.",
+  "production_authorized": false,
+  "reader": "consensus: cargo test --offline --locked --lib op_envelope_v1::tests::committed_operation_envelope_vectors_match_the_codec",
+  "schema": "BUILD8-OPERATION-ENVELOPE-V1-VECTORS",
+  "spec": "spec/OPERATION-ENVELOPE-AND-CONFIRMATION-V1.md",
+  "status": "PROPOSED-UNFROZEN",
+  "synthetic_only": true,
+  "test_value": true,
+  "valid": [
+    {
+      "cbor_hex": "8501186518f58218645820abababababababababababababababababababababababababababababababab80",
+      "fields": {
+        "first_height": 101,
+        "last_height": 245,
+        "preconditions": [],
+        "reference_block": "abababababababababababababababababababababababababababababababab",
+        "reference_height": 100
+      },
+      "name": "minimal_parent_reference",
+      "sha256": "19219dce2c7ad82f5b128ce4e79f45dad2561b94d4c4f3f8cb7d56953f541c89"
+    },
+    {
+      "cbor_hex": "8501010182005820010101010101010101010101010101010101010101010101010101010101010180",
+      "fields": {
+        "first_height": 1,
+        "last_height": 1,
+        "preconditions": [],
+        "reference_block": "0101010101010101010101010101010101010101010101010101010101010101",
+        "reference_height": 0
+      },
+      "name": "single_height_window_with_genesis_reference",
+      "sha256": "c52168b2ec56575b403b15b2bccac53b0cd367c45be13d1b84b40542a88281de"
+    },
+    {
+      "cbor_hex": "85011901f4192954821901f35820222222222222222222222222222222222222222222222222222222222222222280",
+      "fields": {
+        "first_height": 500,
+        "last_height": 10580,
+        "preconditions": [],
+        "reference_block": "2222222222222222222222222222222222222222222222222222222222222222",
+        "reference_height": 499
+      },
+      "name": "horizon_boundary_span_10080",
+      "sha256": "eada00fed3e40628e60f79dbab483467c46b7b3c38fa81052b75f617375ea138"
+    },
+    {
+      "cbor_hex": "85011903e9190479821903e858205a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a8383015820313131313131313131313131313131313131313131313131313131313131313182841a0002000019c35019c35000841a0004000019c350199858028502582031313131313131313131313131313131313131313131313131313131313131310358204141414141414141414141414141414141414141414141414141414141414141582042424242424242424242424242424242424242424242424242424242424242428403582051515151515151515151515151515151515151515151515151515151515151510258205252525252525252525252525252525252525252525252525252525252525252",
+      "fields": {
+        "first_height": 1001,
+        "last_height": 1145,
+        "preconditions": [
+          {
+            "accounts": [
+              [
+                131072,
+                50000,
+                50000,
+                0
+              ],
+              [
+                262144,
+                50000,
+                39000,
+                2
+              ]
+            ],
+            "kind": "LicenseEntitlements",
+            "license": "3131313131313131313131313131313131313131313131313131313131313131",
+            "tag": 1
+          },
+          {
+            "active_worker": "4141414141414141414141414141414141414141414141414141414141414141",
+            "assignment_sequence": 3,
+            "kind": "LicenseAssignment",
+            "license": "3131313131313131313131313131313131313131313131313131313131313131",
+            "pending": "4242424242424242424242424242424242424242424242424242424242424242",
+            "tag": 2
+          },
+          {
+            "address": "5252525252525252525252525252525252525252525252525252525252525252",
+            "generation": 2,
+            "kind": "TreasuryHead",
+            "tag": 3,
+            "treasury": "5151515151515151515151515151515151515151515151515151515151515151"
+          }
+        ],
+        "reference_block": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "reference_height": 1000
+      },
+      "name": "all_three_preconditions",
+      "sha256": "d73486f2cd8570cb0aab431172c600b473593d94d981652191686e2e9ebd6c73"
+    },
+    {
+      "cbor_hex": "85010709820658206666666666666666666666666666666666666666666666666666666666666666828301582031313131313131313131313131313131313131313131313131313131313131318085025820313131313131313131313131313131313131313131313131313131313131313102f6f6",
+      "fields": {
+        "first_height": 7,
+        "last_height": 9,
+        "preconditions": [
+          {
+            "accounts": [],
+            "kind": "LicenseEntitlements",
+            "license": "3131313131313131313131313131313131313131313131313131313131313131",
+            "tag": 1
+          },
+          {
+            "active_worker": null,
+            "assignment_sequence": 2,
+            "kind": "LicenseAssignment",
+            "license": "3131313131313131313131313131313131313131313131313131313131313131",
+            "pending": null,
+            "tag": 2
+          }
+        ],
+        "reference_block": "6666666666666666666666666666666666666666666666666666666666666666",
+        "reference_height": 6
+      },
+      "name": "no_live_entitlement_and_detached_license",
+      "sha256": "faf76ee974143d271e48c678eabc065bf982a4e3718fdb4ce11ed774a2ba29de"
+    },
+    {
+      "cbor_hex": "85011a000100001a000127108219ffff5820777777777777777777777777777777777777777777777777777777777777777780",
+      "fields": {
+        "first_height": 65536,
+        "last_height": 75536,
+        "preconditions": [],
+        "reference_block": "7777777777777777777777777777777777777777777777777777777777777777",
+        "reference_height": 65535
+      },
+      "name": "integer_widths_four_byte_heights",
+      "sha256": "0ad3b5a2385c9c88993be29037d6055b5458aed93f601d701910662dfb85f599"
+    },
+    {
+      "cbor_hex": "85011b00000001000000001b0000000100000090821affffffff582078787878787878787878787878787878787878787878787878787878787878788183015820090909090909090909090909090909090909090909090909090909090909090981841a000200001b000000010000000018ff17",
+      "fields": {
+        "first_height": 4294967296,
+        "last_height": 4294967440,
+        "preconditions": [
+          {
+            "accounts": [
+              [
+                131072,
+                4294967296,
+                255,
+                23
+              ]
+            ],
+            "kind": "LicenseEntitlements",
+            "license": "0909090909090909090909090909090909090909090909090909090909090909",
+            "tag": 1
+          }
+        ],
+        "reference_block": "7878787878787878787878787878787878787878787878787878787878787878",
+        "reference_height": 4294967295
+      },
+      "name": "integer_widths_eight_byte_heights_and_amounts",
+      "sha256": "d55b68eb857334aec71b70e42942a98d2b6944afd51d8eab5800a9eab9faccac"
+    }
+  ]
+}

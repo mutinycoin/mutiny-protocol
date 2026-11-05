@@ -1,0 +1,86 @@
+== Summary ==
+* Action: Sell License ea605dc7..c86d198c
+  Summary: Sell License ea605dc7..c86d198c (generation 1) to tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca for 0.02000000 MUT, paid to tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m; valid during the finite signed height window.
+! Chain class: TEST-VALUE chain: nothing here has real value
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: 25e08699bf1908a64403501fee6feabcb44645a7a9cb3c2feb327670bfb477a8
+  Chain class: TEST-VALUE (nothing on this chain has real value)
+
+== Signing wallet ==
+  Signing address: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Key generation: 1
+  Wallet authority: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  Approval slot 0: this wallet signs; wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Approval slot 1: a counterparty must sign; wallet tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  The maker's offer signature: already provided and verified; maker <MAKER-ID>
+  The maker's fill signature: this wallet signs; wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+
+== Parties ==
+  Seller: tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Buyer: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (an external address; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Maker: <MAKER-ID> (the maker's descriptor commitment, not an address)
+
+== Money ==
+  Pays the seller side: 0.02000000 MUT (2000000 STRIKES) to tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+* Amount: 0.02000000 MUT (2000000 STRIKES)
+* Network fee: 0.00012328 MUT (12328 STRIKES); the greater of 240 STRIKES and one atom per byte of the signed encoding; paid by tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6), signed size 12328 bytes
+  Inputs: 1 coin(s) worth 0.05000000 MUT
+  Input 0: b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1:0 worth 0.05000000 MUT (another wallet)
+
+== Conditions ==
+  License: License ea605dc7106500a4622eec35fe0948e682d1bbb3de442bf60d2125e2c86d198c (index 6, issued at block 0); current native generation 1; recorded owner tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m; current Worker 7773384795c81a1b70ab26471a0255eb2b0942ba263d7480dda97500b89a3ced; Worker assignment sequence 1; dividend status active; dividend activation from epoch 0.
+  Inclusion rule: Signed inclusion heights 101 through 102; canonical reference height 100 block 0303030303030303030303030303030303030303030303030303030303030303. A retry never extends or rebases this window. Changes to the exact entitlement or assignment facts invalidate it.
+  Offer: Offer <OFFER-ID> by maker identity <MAKER-ID>: License ea605dc7106500a4622eec35fe0948e682d1bbb3de442bf60d2125e2c86d198c at generation 1 for 0.02000000 MUT (2000000 STRIKES); the maker is bound to the seller side; wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m; receives tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m; maximum fee 100000 STRIKES; condition none and its exact settlement slot, destination, condition and maximum fee under the version-2 offer rules; current maker authority is required at first canonical funding; fillable in blocks 50 to 200 (100 blocks after the verified block; about 1 h 40 min, approximate at the 60 s target interval). Single fill: inclusion consumes it for good.
+  Trade commitments: TradeID 7171717171717171717171717171717171717171717171717171717171717171 and ContractHash 7272727272727272727272727272727272727272727272727272727272727272 are opaque commitments: this wallet cannot interpret or verify what they commit to (Q8). Trade operation generation 1.
+  Approvals: The seller (slot 0, wallet tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m) and the buyer (slot 1, wallet tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca) must both approve this exact body with their CURRENT keys, and the maker must sign the fill over the same body; no part has any effect alone. Still missing: the seller's approval (slot 0), the buyer's approval (slot 1).
+  Payment destination: The price goes to tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m, the seller's own address, as the seller signs it.
+  Fee rule: The fee must be at least the greater of 240 STRIKES and the encoded size of the complete signed operation (both approvals and the maker's proof included): 12328 bytes, so 12328 atoms. The buyer pays it.
+  Buyer inputs: All 1 input coin(s) must belong to the current authorized lineage of buyer address tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca, unspent and mature when the sale is included, and must equal price + change + fee exactly (0.05000000 MUT).
+  Worker assignment: Commit assignment sequence 1, active worker 7773384795c81a1b70ab26471a0255eb2b0942ba263d7480dda97500b89a3ced, pending assignment none. Inclusion cancels that exact pending assignment and clears active work; finalized history and earned credits remain. A changed assignment fact requires fresh review.
+  Dividends: The signed LicenseEntitlements binds the COMPLETE live-account list and every share, remaining amount and claim sequence: award epoch 131072: share 0.00050000 MUT, remaining 0.00050000 MUT after 0 claim(s), claimable until epoch 196608. A prior claim or any changed account fact invalidates these exact signed bytes: rebuild the body, review and obtain every approval again. After actual inclusion only the current owner can claim the remaining entitlements. The signed price cannot adjust on retry.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 102 (2 blocks after the verified block; about 2 min, approximate at the 60 s target interval)
+* Earliest height: 101 (1 blocks after the verified block; about 1 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: At actual canonical inclusion height H (earliest preview 101), License ea605dc7106500a4622eec35fe0948e682d1bbb3de442bf60d2125e2c86d198c moves from tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m to tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca: its native transfer generation becomes 2 and its Worker assignment sequence becomes 2.
+# Irreversible: The License's current Worker authority (7773384795c81a1b70ab26471a0255eb2b0942ba263d7480dda97500b89a3ced) is cleared at actual canonical inclusion height H: no Worker mines with this License until its new owner assigns one.
+# Irreversible: The new owner's rights start at H + 1 after actual canonical inclusion; the reward of block H itself is still attributed to the seller, the owner in the parent state.
+  Effect: After inclusion the buyer must authorize a FRESH Worker assignment before the License can mine again. Import its exact public binding and verified Worker possession, review the current-owner assignment and deliver it within its signed epoch. It becomes effective in the next canonical epoch.
+# Irreversible: Consumes offer <OFFER-ID>: a single-fill offer can never be filled again.
+# Irreversible: Spends 1 coin(s) of the buyer worth 0.05000000 MUT. A spent coin cannot be recovered once the sale is included.
+# Irreversible: Pays the price of 0.02000000 MUT (2000000 STRIKES) to tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m (this wallet). The recipient controls it from inclusion; there is no recall.
+  Effect: Returns 0.02987672 MUT of change to the buyer tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (an external address).
+# Irreversible: Pays a trading fee of 0.00012328 MUT to the block producer.
+# Irreversible: Once every party has signed, the sale cannot be revoked: its exact signed inclusion window and committed entitlement/assignment facts control whether it can still execute.
+# Irreversible: This wallet loses License ea605dc7106500a4622eec35fe0948e682d1bbb3de442bf60d2125e2c86d198c, its remaining dividend entitlements and its mining rights at actual canonical inclusion height H.
+  Effect: The reward of the actual inclusion block H is still attributed to this wallet.
+  Effect: This wallet receives the price of 0.02000000 MUT (2000000 STRIKES) at tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m.
+
+== Warnings ==
+! Notice: This is a TEST-VALUE chain: nothing here has real value.
+! Caution: This sale retains signed inclusion heights 101 through 102 and canonical reference height 100. A retry never rebases or extends these bounds. Each new head requires review again before another signature.
+! Caution: The TradeID and ContractHash are opaque commitments: check them against the trade agreement you hold. This wallet cannot.
+! Danger: This wallet transfers the 0.00050000 MUT still unclaimed from 1 dividend award(s) with the License at actual inclusion. Claim first if you intend to keep it; a prior claim invalidates this exact signed sale and requires a new body, review and signatures. A seller claim in the sale's own block fails.
+! Notice: Still missing: the seller's approval (slot 0), the buyer's approval (slot 1). No part has any effect alone; the sale needs every part and inclusion within the signed window.
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Type to confirm: CONFIRM <PHRASE>
+
+== Binding ==
+  Review digest: <REVIEW-DIGEST>

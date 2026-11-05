@@ -1,0 +1,11 @@
+{
+  "encrypted_fragment_bytes": 10925,
+  "fragment_count": 43,
+  "parent_authority": "synthetic locally pinned parent; production chain authentication pending",
+  "production_qualified": false,
+  "proof_bytes": 5980,
+  "radio_used": false,
+  "result": "EXACT_BYTES_LOCAL_HYBRID_SETTLEMENT_VERIFY_PASS",
+  "schema": "BUILD8-SETTLEMENT-ENCRYPTED-TRANSPORT-V1",
+  "synthetic": true
+}

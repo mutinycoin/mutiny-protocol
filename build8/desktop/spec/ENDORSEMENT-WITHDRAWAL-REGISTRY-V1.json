@@ -1,0 +1,116 @@
+{
+  "status": "CANDIDATE-UNFROZEN-SOURCE-ONLY",
+  "authority": "Direct user A2 decision 2026-10-05; freeze follows execution/replay review and tests",
+  "namespace": "BlockBody.operations common canonical lifecycle discriminator",
+  "allocations": [
+    {
+      "kind": 23,
+      "owner": "DividendClaimV1",
+      "unchanged": true
+    },
+    {
+      "kind": 24,
+      "owner": "FundedBondCreateV3",
+      "unchanged": true
+    },
+    {
+      "kind": 25,
+      "owner": "TerminalEndorsementWithdrawalV1",
+      "outer_version": 2,
+      "arity": 5
+    }
+  ],
+  "separate_namespace": "Hybrid wallet transaction tag25 remains FundedRotationV2; no decoder fallback between namespaces",
+  "existing_kind_successors": [
+    {
+      "kind": 15,
+      "owner": "JoinV2 with A2 committed public witness",
+      "outer_version": 3,
+      "arity": 4,
+      "legacy_signed_bytes_unchanged": true
+    },
+    {
+      "kind": 16,
+      "owner": "HardwareRotateV2 with A2 committed public witness",
+      "outer_version": 3,
+      "arity": 4,
+      "legacy_signed_bytes_unchanged": true
+    }
+  ],
+  "admission_wrapper": {
+    "grammar": "[3, kind15_or_16, exact_signed_v2_bytes, exact_public_witness_bytes]",
+    "max_bytes": 147488,
+    "max_signed_bytes": 16384,
+    "max_witness_bytes": 131072,
+    "new_signature_domain": false,
+    "timestamp_in_wrapper": false
+  },
+  "recovery_transport_successor": {
+    "grammar": "[3,58,exact_signed_RecoveryHistoryV2_record_bytes,exact_public_witness_bytes]",
+    "arity": 4,
+    "max_combined_encoded_bytes": 262144,
+    "max_witness_bytes": 131072,
+    "maximal_fields_fit_independently": false,
+    "historical_state_tag58_version2_unchanged": true,
+    "timestamp_in_wrapper": false,
+    "new_signature_domain": false
+  },
+  "new_state_record_tags": [
+    {
+      "tag": 65,
+      "version": 2,
+      "owner": "AuthenticatedEndorsementDependencyV1",
+      "arity": 9
+    },
+    {
+      "tag": 66,
+      "version": 2,
+      "owner": "TerminalEndorsementWithdrawalV1",
+      "arity": 5,
+      "grammar": "[2,66,exact_operation_bytes,[sorted_unique_affected_lineage32...],derived_terminal_no_quorum_bool]",
+      "max_bytes": 231488,
+      "max_lineages": 1024,
+      "halt_source": "derived only when new H withdrawal(s) and fully applied resulting registry weight zero; monotone retained, rederived during full execution/replay, no operation/caller flag"
+    }
+  ],
+  "new_domains": [
+    {
+      "ascii": "MUTINY-BUILD8-ENDORSEMENT-WITHDRAWAL-ID-V1",
+      "body": "exact complete canonical operation bytes",
+      "authority": false
+    },
+    {
+      "ascii": "MUTINY-BUILD8-ENDORSEMENT-DEPENDENCY-KEY-V1",
+      "body": "canonical [node32, hardware_generation, profile32]",
+      "authority": false
+    },
+    {
+      "ascii": "MUTINY-BUILD8-ENDORSEMENT-WITHDRAWAL-KEY-V1",
+      "body": "exact canonical typed target bytes",
+      "authority": false
+    },
+    {
+      "ascii": "MUTINY-BUILD8-ENDORSEMENT-WITHDRAWAL-RULE-V1",
+      "body": "canonical [2, kind25, dependency_tag65, terminal_tag66, max_operation, max_context, max_target, max_evidence, max_judgment_bytes, max_judgment_items, max_reason, wrapper_version3, max_wrapper_bytes, max_signed_bytes, max_witness_bytes, max_terminal_record_bytes, max_excluded_lineages, derived_halt_scheme1, recovery_wrapper_version3, max_recovery_combined_bytes, ordinary_item16384, legacy_body65536, total_items4096, oversized_count1, body262150, envelope1942044, proposal270871, transport2097152, remove_one_reencode_projection_scheme1]",
+      "authority": false
+    }
+  ],
+  "manifest_entry": "terminal-endorsement-withdrawal-v1",
+  "scope": "Explicitly unfrozen candidate dependency/terminal evidence/executor/reconstruction/recovery/capacity source. Independent execution-replay review, native tests and carrier freeze pending. Marked bare recovery refuses; full witness and canonical-parent time required. Current Path B allows remote/VM execution/forwarding; qualifying physical TPM authenticity, verifier-owned fresh activation and class-complete unique physical lineage remain launch dependencies. Public software fixtures establish none of those.",
+  "capacity_successor": {
+    "spec": "A2-BODY-CAPACITY-V3.md",
+    "rule_description_version": 2,
+    "rule_description_arity": 29,
+    "ordinary_item_bytes": 16384,
+    "legacy_projection_encoded_and_raw_bytes": 65536,
+    "total_items_including_reserved": 4096,
+    "oversized_typed_a2_items": 1,
+    "body_bytes": 262150,
+    "envelope_bytes": 1942044,
+    "proposal_bytes": 270871,
+    "transport_object_bytes_unchanged": 2097152,
+    "projection": "remove exactly one qualifying oversized OP and reencode all remaining fields/order; all ordinary checks retained",
+    "certified_recovery": "exact whole bounded envelope retained as finality evidence BLOB; no state-record/kind7 widening, no hash-only locator",
+    "typed_ingress_requirement": "Explicit separate bounded A2 routes/schemas; ordinary SignedOperation9/submission/control budgets unchanged; full native current-parent preview and revalidation mandatory"
+  }
+}

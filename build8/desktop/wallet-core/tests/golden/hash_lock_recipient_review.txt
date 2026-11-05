@@ -1,0 +1,80 @@
+== Summary ==
+* Action: Approve a hash lock for this wallet
+  Summary: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f locks 0.01000000 MUT for this wallet; claim it with the preimage before block 150, in at least 1 block(s) after the lock's inclusion. The sender pays the network fee of 0.00012142 MUT.
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: 97a741e542c9671079a1602e994f804e1f5a550bb6f668ea22e360fbf9ab8538
+  Chain class: not declared (the chain has no Treasury record)
+
+== Signing wallet ==
+  Signing address: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Key generation: 1
+  Wallet authority: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Profile: ordinary wallet
+
+== Required authorizations ==
+  Approval slot 0: already provided and verified; wallet umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Approval slot 1: this wallet signs; wallet umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  The maker's fill signature: this wallet signs; wallet umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Parties ==
+  Lock sender: umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (an external address; legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c)
+  Lock recipient: umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Money ==
+  Locks: 0.01000000 MUT (1000000 STRIKES) to umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+* Amount: 0.01000000 MUT (1000000 STRIKES)
+* Network fee: 0.00012142 MUT (12142 STRIKES); the greater of 240 STRIKES and one atom per byte of the signed encoding; paid by umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (legacy hex 1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c), signed size 12142 bytes
+* Total leaving this wallet: 0.00000000 MUT
+  Inputs: 1 coin(s) worth 0.05000000 MUT
+  Input 0: 0101010101010101010101010101010101010101010101010101010101010101:0 worth 0.05000000 MUT (another wallet)
+
+== Conditions ==
+  Hash condition: The lock can be claimed only by publishing a 32-byte preimage whose SHA-256 is 425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c. The condition is opaque: this wallet does not check who knows the preimage.
+  Claim window: At least 1 block(s), the worst case: a claim counts only in a block after the lock's and below the refund height 150 (50 blocks after the verified block; about 50 min, approximate at the 60 s target interval) (last claim block 149), and this lock may be included as late as block 148, which leaves blocks 149 to 149. Included earlier, the lock leaves more. Claim and refund are mutually exclusive: whichever is included first ends the lock.
+  Refund height: From block 150 on only the sender can take the locked amount back, by a separate refund that must be signed and included: refund eligibility does not execute a refund.
+  Offer: Fills the maker's single-fill offer f91776dcb0cd7e665ffd57ff73e8add9d71a5e5c5dae41405f3aa1e81ff2e2cc, which may be filled in blocks 1 to 1000. The signed maker WalletOwner is bound to the recipient settlement slot at umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0, destination umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0, maximum fee 100000 STRIKES and condition none. Current maker authority is required at first canonical funding. Once the lock is included the exact funded terms persist and the offer can never be filled again.
+  Offer terms: 1000000 STRIKES locked against 50000 satoshis on the external chain with network code 3 (regtest). These external terms are integer data from the maker's signed offer; this wallet does not verify the external leg.
+  Maker: Descriptor commitment ff6aa7f8eebd6c35a36db63dc7b7fcdd98ad3716cd721a3dd7943807a4c2ddea: the maker signs with its bound WalletOwner key; this commitment is not a wallet address. The maker's fill signature over this exact operation is still required.
+  Finality: The lock is the native reservation of this trade. It is final only when a certified block that includes it is part of this wallet's verified chain and this host's own replay-derived index confirms its inclusion. A queued record is stored locally only; authenticated submission or peer acknowledgement is not confirmation. Inclusion in a proposed, uncertified block is not finality either.
+  Trade commitments: TradeID 2121212121212121212121212121212121212121212121212121212121212121 and ContractHash 2222222222222222222222222222222222222222222222222222222222222222 are opaque 32-byte commitments: shown, not interpreted or verified.
+  Trade generation: 1. A claim or refund of a lock carries the generation, TradeID and ContractHash of the lock.
+  Validity window: Valid only for blocks 101 to 148 (48 blocks after the verified block; about 48 min, approximate at the 60 s target interval).
+  Inputs: All 1 input coin(s) must still be unspent coins of the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f when the operation is included; a conflicting spend of any of them cancels it.
+  Fee rule: The fee must be at least the greater of 240 STRIKES and the encoded size of the complete signed operation (every approval and the maker's offer proof included): 12142 bytes, so 12142 atoms.
+  Approvals still required: the approval of the recipient (slot 1, this wallet); the maker's fill signature over this exact operation.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 148 (48 blocks after the verified block; about 48 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: Locks 0.01000000 MUT for the recipient umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0 (this wallet) under the hash condition. The recipient can take it by publishing the preimage before block 150; nobody can recall it in that window.
+  Effect: From block 150 on, if it was not claimed, only the sender umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f can take the locked amount back, by a separate signed refund.
+# Irreversible: Consumes the maker's single-fill offer f91776dc..1ff2e2cc: it can never be filled again.
+  Effect: Returns 0.03987858 MUT of change to the sender address umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f (an external address).
+# Irreversible: Pays a network fee of 0.00012142 MUT to the block producer.
+# Irreversible: Once complete and signed, the operation cannot be revoked: it stays valid until it is included or until block 148.
+  Effect: This wallet may claim 0.01000000 MUT with the preimage before block 150.
+
+== Warnings ==
+! Caution: TradeID and ContractHash are opaque commitments: check them against the trade agreement you hold. This wallet shows them but cannot check what they commit to.
+! Caution: The external leg of this trade (50000 satoshis, network code 3, per the offer) is not verified by this wallet; Bitcoin custody stays outside this wallet and is never touched by it.
+! Caution: Move nothing on the external leg until this lock is final in the verified chain: a local queue entry or a proposed block is not finality.
+! Caution: The claim window can be as short as 1 block(s) (blocks 149 to 149): the lock may be included as late as block 148, and a claim counts only below the refund height 150. The lock itself may be included in any of 48 block(s).
+
+== You must acknowledge ==
+* Required: I checked the amount
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Required: I understand that payment or Bitcoin evidence outside this chain is not verified by this wallet
+* Type to confirm: CONFIRM 6B693990
+
+== Binding ==
+  Review digest: 6b69399085eb98af5f801dd31a3ddd41aa21a6de1457fd8001971d4972a3b4bb

@@ -1,0 +1,340 @@
+//! Native TPM2 quote verification against a previously qualified, pinned physical
+//! admission profile. EK trust and supervised host association are admission
+//! prerequisites, never inferred merely from a valid quote signature.
+use crate::{
+    Error, Hash, Result, domain_hash,
+    freshness::{PhysicalAttestationVerifier, PhysicalMember},
+};
+use minicbor::{Decoder, Encoder};
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+struct Reader<'a> {
+    raw: &'a [u8],
+    pos: usize,
+}
+impl<'a> Reader<'a> {
+    fn new(raw: &'a [u8]) -> Self {
+        Self { raw, pos: 0 }
+    }
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self.pos.checked_add(n).ok_or(Error::Codec)?;
+        let value = self.raw.get(self.pos..end).ok_or(Error::Codec)?;
+        self.pos = end;
+        Ok(value)
+    }
+    fn u16(&mut self) -> Result<u16> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().map_err(|_| Error::Codec)?,
+        ))
+    }
+    fn u32(&mut self) -> Result<u32> {
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().map_err(|_| Error::Codec)?,
+        ))
+    }
+    fn blob(&mut self) -> Result<&'a [u8]> {
+        let n = self.u16()?;
+        self.take(n as usize)
+    }
+    fn end(self) -> Result<()> {
+        if self.pos == self.raw.len() {
+            Ok(())
+        } else {
+            Err(Error::NonCanonical)
+        }
+    }
+}
+fn unbox(raw: &[u8]) -> Result<&[u8]> {
+    let mut r = Reader::new(raw);
+    let v = r.blob()?;
+    r.end()?;
+    Ok(v)
+}
+/// TPMT_PUBLIC inside a TPM2B_PUBLIC (the bytes a TPM Name hashes).
+pub(crate) fn unboxed_public(boxed: &[u8]) -> Result<&[u8]> {
+    unbox(boxed)
+}
+pub fn public_key(boxed: &[u8], restricted: bool) -> Result<[u8; 33]> {
+    let mut r = Reader::new(unbox(boxed)?);
+    if r.u16()? != 0x23
+        || r.u16()? != 0xb
+        || r.u32()? != if restricted { 0x50472 } else { 0x40472 }
+        || !r.blob()?.is_empty()
+        || r.u16()? != 0x10
+        || r.u16()? != 0x18
+        || r.u16()? != 0xb
+        || r.u16()? != 3
+        || r.u16()? != 0x10
+    {
+        return Err(Error::UnqualifiedPhysical);
+    }
+    let x = r.blob()?;
+    let y = r.blob()?;
+    if x.len() != 32 || y.len() != 32 {
+        return Err(Error::Codec);
+    }
+    let mut point = vec![4];
+    point.extend_from_slice(x);
+    point.extend_from_slice(y);
+    r.end()?;
+    VerifyingKey::from_sec1_bytes(&point)
+        .map_err(|_| Error::BadSignature)?
+        .to_encoded_point(true)
+        .as_bytes()
+        .try_into()
+        .map_err(|_| Error::Codec)
+}
+fn signature(raw: &[u8]) -> Result<Signature> {
+    let mut r = Reader::new(raw);
+    if r.u16()? != 0x18 || r.u16()? != 0xb {
+        return Err(Error::BadSignature);
+    }
+    let a = r.blob()?;
+    let b = r.blob()?;
+    if a.len() != 32 || b.len() != 32 {
+        return Err(Error::BadSignature);
+    }
+    let mut s = [0u8; 64];
+    s[..32].copy_from_slice(a);
+    s[32..].copy_from_slice(b);
+    r.end()?;
+    Signature::from_slice(&s).map_err(|_| Error::BadSignature)
+}
+fn attestation_header<'a>(
+    r: &mut Reader<'a>,
+    kind: u16,
+    signer: &[u8],
+    challenge: &[u8],
+) -> Result<()> {
+    if r.u32()? != 0xff544347 || r.u16()? != kind || r.blob()? != signer || r.blob()? != challenge {
+        return Err(Error::WrongAnchor);
+    }
+    r.take(16)?;
+    if r.take(1)?[0] > 1 {
+        return Err(Error::Codec);
+    }
+    r.take(8)?;
+    Ok(())
+}
+/// Version 1 (`[1, nine fields]`) carries no provenance and is valid only in the Legacy/Test
+/// admission class. Version 2 (`[2, nine fields, provenance bytes]`, PROPOSED/UNFROZEN) adds the
+/// typed provenance statement (`crate::provenance::Provenance`) that the Production class
+/// requires; the authority's signature over the profile bytes covers it, and `commitment()`
+/// commits to it.
+#[derive(Clone, Debug)]
+pub struct TpmProfile {
+    pub hardware: Hash,
+    pub ak_public: Vec<u8>,
+    pub voting_public: Vec<u8>,
+    pub qualified_signer: Vec<u8>,
+    pub pcr_bitmap: [u8; 3],
+    pub pcr_digest: Hash,
+    pub certify_message: Vec<u8>,
+    pub certify_signature: Vec<u8>,
+    pub admission_trust_manifest: Hash,
+    pub provenance: Option<crate::provenance::Provenance>,
+}
+/// Marker for software-simulator TEST-VALUE evidence: an ACCIDENTAL-USE GUARD on public,
+/// deterministic simulator material, NOT proof that unmarked material is genuine hardware. It is
+/// trivially removable, so production eligibility never depends on its absence alone: the
+/// Production admission class additionally requires the committed trust-root set, a typed
+/// provenance statement bound to this profile's attestation key and device profile, and the
+/// admission authority's signature (see `crate::provenance`). Every Production-class admission
+/// path rejects a marked profile.
+pub fn test_value_trust_manifest() -> Hash {
+    domain_hash(
+        b"MUTINY-BUILD8-TEST-VALUE-NOT-PHYSICAL-ADMISSION-TRUST-MANIFEST-V1",
+        &[],
+    )
+}
+/// Hardware identity used by the software TEST-VALUE simulator; never a real machine.
+pub fn test_value_hardware() -> Hash {
+    domain_hash(
+        b"MUTINY-BUILD8-TEST-VALUE-SOFTWARE-TPM-HARDWARE-V1",
+        &[],
+    )
+}
+impl TpmProfile {
+    pub fn decode(raw: &[u8]) -> Result<Self> {
+        crate::blocks::canonical(raw, 8192)?;
+        let mut d = Decoder::new(raw);
+        let p = (|| -> std::result::Result<(Self, Option<Vec<u8>>), minicbor::decode::Error> {
+            let bad = || minicbor::decode::Error::message("TPM profile");
+            let version2 = match (d.array()?, d.u8()?) {
+                (Some(10), 1) => false,
+                (Some(11), 2) => true,
+                _ => return Err(bad()),
+            };
+            let profile = Self {
+                hardware: d.bytes()?.try_into().map_err(|_| bad())?,
+                ak_public: d.bytes()?.to_vec(),
+                voting_public: d.bytes()?.to_vec(),
+                qualified_signer: d.bytes()?.to_vec(),
+                pcr_bitmap: d.bytes()?.try_into().map_err(|_| bad())?,
+                pcr_digest: d.bytes()?.try_into().map_err(|_| bad())?,
+                certify_message: d.bytes()?.to_vec(),
+                certify_signature: d.bytes()?.to_vec(),
+                admission_trust_manifest: d.bytes()?.try_into().map_err(|_| bad())?,
+                provenance: None,
+            };
+            let provenance = if version2 { Some(d.bytes()?.to_vec()) } else { None };
+            Ok((profile, provenance))
+        })()
+        .map_err(|_| Error::Codec)?;
+        let (mut p, provenance) = p;
+        if let Some(raw) = provenance {
+            p.provenance = Some(crate::provenance::Provenance::decode(&raw)?);
+        }
+        if p.encode()? != raw {
+            return Err(Error::NonCanonical);
+        }
+        p.verify_certified_key()?;
+        Ok(p)
+    }
+    /// True when this profile carries a software TEST-VALUE marker (trust manifest or hardware).
+    pub fn is_test_value(&self) -> bool {
+        self.admission_trust_manifest == test_value_trust_manifest()
+            || self.hardware == test_value_hardware()
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        if self.ak_public.len() > 1024
+            || self.voting_public.len() > 1024
+            || self.qualified_signer.len() != 34
+            || self.certify_message.len() > 2048
+            || self.certify_signature.len() > 128
+        {
+            return Err(Error::Oversize);
+        }
+        let mut e = Encoder::new(Vec::new());
+        let (fields, version) = if self.provenance.is_some() { (11, 2) } else { (10, 1) };
+        e.array(fields)
+            .unwrap()
+            .u8(version)
+            .unwrap()
+            .bytes(&self.hardware)
+            .unwrap()
+            .bytes(&self.ak_public)
+            .unwrap()
+            .bytes(&self.voting_public)
+            .unwrap()
+            .bytes(&self.qualified_signer)
+            .unwrap()
+            .bytes(&self.pcr_bitmap)
+            .unwrap()
+            .bytes(&self.pcr_digest)
+            .unwrap()
+            .bytes(&self.certify_message)
+            .unwrap()
+            .bytes(&self.certify_signature)
+            .unwrap()
+            .bytes(&self.admission_trust_manifest)
+            .unwrap();
+        if let Some(provenance) = &self.provenance {
+            e.bytes(&provenance.encode()).unwrap();
+        }
+        Ok(e.into_writer())
+    }
+    pub fn commitment(&self) -> Result<Hash> {
+        Ok(domain_hash(
+            b"MUTINY-BUILD8-PHYSICAL-TPM-PROFILE-V1",
+            &self.encode()?,
+        ))
+    }
+    pub fn verify_certified_key(&self) -> Result<()> {
+        self.encode()?;
+        let key = VerifyingKey::from_sec1_bytes(&public_key(&self.ak_public, true)?)
+            .map_err(|_| Error::BadSignature)?;
+        public_key(&self.voting_public, false)?;
+        if self.qualified_signer[..2] != [0, 0xb] {
+            return Err(Error::Codec);
+        }
+        key.verify(&self.certify_message, &signature(&self.certify_signature)?)
+            .map_err(|_| Error::BadSignature)?;
+        let mut r = Reader::new(&self.certify_message);
+        // Existing qualified tpm2-tools certification marker; replay freshness
+        // is provided by the newly challenged quote and pinned certified key.
+        attestation_header(
+            &mut r,
+            0x8017,
+            &self.qualified_signer,
+            &[0, 0xff, 0x55, 0xaa],
+        )?;
+        let mut name = vec![0, 0xb];
+        name.extend_from_slice(&Sha256::digest(unbox(&self.voting_public)?));
+        if r.blob()? != name || r.blob()?.len() != 34 {
+            return Err(Error::UnqualifiedPhysical);
+        }
+        r.end()
+    }
+    pub fn verify_quote(&self, challenge: Hash, evidence: &[u8]) -> Result<()> {
+        self.verify_certified_key()?;
+        let (message, sig) = decode_quote(evidence)?;
+        let key = VerifyingKey::from_sec1_bytes(&public_key(&self.ak_public, true)?)
+            .map_err(|_| Error::BadSignature)?;
+        key.verify(message, &signature(sig)?)
+            .map_err(|_| Error::BadSignature)?;
+        let mut r = Reader::new(message);
+        attestation_header(&mut r, 0x8018, &self.qualified_signer, &challenge)?;
+        if r.u32()? != 1
+            || r.u16()? != 0xb
+            || r.take(1)?[0] != 3
+            || r.take(3)? != self.pcr_bitmap
+            || r.blob()? != self.pcr_digest
+        {
+            return Err(Error::UnqualifiedPhysical);
+        }
+        r.end()
+    }
+}
+pub fn encode_quote(message: &[u8], signature: &[u8]) -> Result<Vec<u8>> {
+    if message.len() > 2048 || signature.len() > 128 {
+        return Err(Error::Oversize);
+    }
+    let mut e = Encoder::new(Vec::new());
+    e.array(3)
+        .unwrap()
+        .u8(1)
+        .unwrap()
+        .bytes(message)
+        .unwrap()
+        .bytes(signature)
+        .unwrap();
+    Ok(e.into_writer())
+}
+fn decode_quote(raw: &[u8]) -> Result<(&[u8], &[u8])> {
+    if raw.len() > 2304 {
+        return Err(Error::Oversize);
+    }
+    let mut d = Decoder::new(raw);
+    if d.array().map_err(|_| Error::Codec)? != Some(3) || d.u8().map_err(|_| Error::Codec)? != 1 {
+        return Err(Error::Codec);
+    }
+    let msg = d.bytes().map_err(|_| Error::Codec)?;
+    let sig = d.bytes().map_err(|_| Error::Codec)?;
+    if d.position() != raw.len() || encode_quote(msg, sig)? != raw {
+        return Err(Error::NonCanonical);
+    }
+    Ok((msg, sig))
+}
+/// Construct only from admitted profiles whose EK, ActivateCredential, physical
+/// host association and measured-boot trust manifest were already qualified.
+pub struct PinnedTpmVerifier {
+    pub profiles: BTreeMap<Hash, TpmProfile>,
+}
+impl PhysicalAttestationVerifier for PinnedTpmVerifier {
+    fn verify(&self, member: &PhysicalMember, challenge: Hash, evidence: &[u8]) -> Result<()> {
+        let p = self
+            .profiles
+            .get(&member.admission_commitment)
+            .ok_or(Error::UnqualifiedPhysical)?;
+        if p.commitment()? != member.admission_commitment
+            || p.hardware != member.hardware
+            || public_key(&p.voting_public, false)? != member.continuity_key
+            || p.ak_public != member.attestation_key
+        {
+            return Err(Error::UnqualifiedPhysical);
+        }
+        p.verify_quote(challenge, evidence)
+    }
+}

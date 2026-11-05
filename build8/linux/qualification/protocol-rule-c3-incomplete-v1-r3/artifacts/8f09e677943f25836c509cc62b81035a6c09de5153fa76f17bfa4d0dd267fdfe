@@ -1,0 +1,76 @@
+#include "object_control_v2.h"
+#include <string.h>
+static uint16_t read16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+static void write16(uint8_t *p, uint16_t n) {
+    p[0]=(uint8_t)(n >> 8); p[1]=(uint8_t)n;
+}
+static int nonzero(const uint8_t *p) {
+    uint8_t v=0; size_t i;
+    for(i=0;i<32;i++) v|=p[i];
+    return v!=0;
+}
+static uint32_t object_limit(uint8_t kind) {
+    if(kind==1 || kind==9 || kind==11) return 16384u;
+    if(kind==10) return 4096u;
+    return kind==5 ? 512u : (kind==6 ? 4096u : (kind==7 ? 262144u : (kind==8 ? 74257u : B8_OBJECT_MAX_BYTES)));
+}
+static uint16_t fragments(uint32_t n) {
+    return (uint16_t)((n+139u)/140u);
+}
+int b8_object_offer_parse(const b8_frame_metadata *m,
+    const uint8_t *p, size_t length, uint8_t *kind, uint32_t *object_length) {
+    uint32_t n;
+    if(kind) *kind=0;
+    if(object_length) *object_length=0;
+    if(!kind || !object_length || !m || !p || length!=6 ||
+       m->kind!=1 || m->fragment!=0 || m->hops>16 || !nonzero(m->object) ||
+       p[0]!=2 || p[1]<1 || p[1]>11) return B8_FRAME_ENCODING;
+    n=((uint32_t)p[2]<<24)|((uint32_t)p[3]<<16)|((uint32_t)p[4]<<8)|p[5];
+    if(n==0 || n>object_limit(p[1]) || fragments(n)!=m->count)
+        return B8_FRAME_ENCODING;
+    *kind=p[1]; *object_length=n;
+    return B8_FRAME_OK;
+}
+int b8_object_offer_encode(const uint8_t id[32], uint8_t kind,
+    uint32_t n, uint8_t hops, b8_frame_metadata *m, uint8_t p[6]) {
+    if(m) memset(m,0,sizeof(*m));
+    if(p) memset(p,0,6);
+    if(!m || !p || !id || !nonzero(id) || kind<1 || kind>11 ||
+       n==0 || n>object_limit(kind) || hops>16) return B8_FRAME_ENCODING;
+    m->kind=1; memcpy(m->object,id,32); m->count=fragments(n); m->hops=hops;
+    p[0]=2; p[1]=kind; p[2]=(uint8_t)(n>>24); p[3]=(uint8_t)(n>>16);
+    p[4]=(uint8_t)(n>>8); p[5]=(uint8_t)n;
+    return B8_FRAME_OK;
+}
+static int bitmap_valid(uint16_t start, uint16_t count, uint16_t total,
+    const uint8_t *packed) {
+    size_t bytes=((size_t)count+7u)/8u;
+    if(total==0 || total>16384 || count==0 || count>B8_OBJECT_BITMAP_BITS ||
+       (uint32_t)start+count>total) return 0;
+    if(count%8u && (packed[bytes-1]>>(count%8u))!=0) return 0;
+    return 1;
+}
+int b8_object_bitmap_parse(const uint8_t *p, size_t length,
+    uint16_t total, b8_object_bitmap *b) {
+    uint16_t start,count; size_t bytes;
+    if(b) memset(b,0,sizeof(*b));
+    if(!b || !p || length<6 || length>140 || p[0]!=2) return B8_FRAME_ENCODING;
+    start=read16(p+1); count=read16(p+3); bytes=((size_t)count+7u)/8u;
+    if(length!=5+bytes || !bitmap_valid(start,count,total,p+5)) return B8_FRAME_ENCODING;
+    b->start=start; b->count=count; memcpy(b->packed,p+5,bytes);
+    return B8_FRAME_OK;
+}
+int b8_object_bitmap_encode(const b8_object_bitmap *b, uint16_t total,
+    uint8_t p[140], size_t *length) {
+    size_t bytes;
+    if(p) memset(p,0,140);
+    if(length) *length=0;
+    if(!b || !p || !length || !bitmap_valid(b->start,b->count,total,b->packed))
+        return B8_FRAME_ENCODING;
+    bytes=((size_t)b->count+7u)/8u;
+    p[0]=2; write16(p+1,b->start); write16(p+3,b->count);
+    memcpy(p+5,b->packed,bytes); *length=5+bytes;
+    return B8_FRAME_OK;
+}

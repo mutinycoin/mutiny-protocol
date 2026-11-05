@@ -1,0 +1,244 @@
+//! Qualified-clock eligibility for FRESH block votes (Architect ruling, 2 Oct 2026, 15:46 ET).
+//!
+//! Rule, with zero additional future-date allowance:
+//!
+//! ```text
+//! A fresh vote is time-eligible only when block.timestamp <= qualified_local_UTC_now.
+//! ```
+//!
+//! * The consensus timestamp rules are the median-time-past LOWER bound and (D3, 3 Oct 2026) that a
+//!   block's timestamp must not precede its parent's; both are deterministic and clock-free
+//!   (`pow::validate_timestamp`). There is no wall-clock admission bound for unfinalized
+//!   candidates or proposals. Nothing here is a
+//!   consensus rule: it constrains what THIS validator is willing to sign, never what a finalized,
+//!   fully validated certificate may contain. Replay and verification of finalized history never
+//!   consult a clock (see `tests/vote_timestamp_guard_v1.rs`, `finalized_replay_reads_no_clock`).
+//! * Epoch formula, dividend schedule, actual-block-epoch claim eligibility and the monotone event
+//!   cursor are untouched.
+//! * Unhealthy or unqualified clock => ABSTAIN from new time-dependent voting. The proposed
+//!   timestamp and unauthenticated peer time can never establish clock health: the only input to
+//!   `evaluate` that is not the block's own timestamp is `VoteClock::reading`, which is local.
+//! * Nil votes carry no block and are not time-dependent; they stay available so that rounds and
+//!   timeouts still progress. Abstaining validators remain in the committed quorum denominator
+//!   (nothing in this module touches weights or membership).
+//! * Zero allowance means zero additional LEAD over the qualified clock. It does not claim a
+//!   physical clock has zero error. Accuracy, drift, holdover, restart recovery and compatibility
+//!   with round timing are explicit qualification requirements of the production clock source,
+//!   which this module deliberately does not provide: the default clock is `UnqualifiedClock`
+//!   (fail closed), so a node with no qualified source installed cannot sign a block vote.
+//!   `ControlledClock` is a deterministic fixture for tests and qualification harnesses only.
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
+/// One sample of the validator's local clock, in whole UTC seconds (the unit of block timestamps).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockReading {
+    /// The source asserts it is currently qualified.
+    Qualified { utc_seconds: u64 },
+    /// No qualified time is available (never qualified, health lost, regressed, restarting...).
+    Unqualified,
+}
+/// A local, qualified UTC source. Implementations own their qualification: they must return
+/// `Unqualified` whenever they cannot currently stand behind the reading.
+pub trait VoteClock: Send + Sync {
+    fn reading(&self) -> ClockReading;
+}
+/// Fail-closed default for every signing owner.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnqualifiedClock;
+impl VoteClock for UnqualifiedClock {
+    fn reading(&self) -> ClockReading {
+        ClockReading::Unqualified
+    }
+}
+pub fn unqualified() -> Arc<dyn VoteClock> {
+    Arc::new(UnqualifiedClock)
+}
+/// Result of comparing a block timestamp with the local clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeStatus {
+    Eligible,
+    /// The block is ahead of the qualified clock by this many seconds: defer, do not vote yet.
+    Future { ahead_seconds: u64 },
+    /// No qualified clock: abstain from time-dependent voting.
+    Unqualified,
+    /// The proposal was never executed by this round, so its timestamp is unknown. Fail closed.
+    UnknownProposal,
+}
+impl TimeStatus {
+    pub fn is_eligible(self) -> bool {
+        self == Self::Eligible
+    }
+}
+/// The single comparison. `<=`, no allowance.
+pub fn evaluate(clock: &dyn VoteClock, block_timestamp: u64) -> TimeStatus {
+    match clock.reading() {
+        ClockReading::Unqualified => TimeStatus::Unqualified,
+        ClockReading::Qualified { utc_seconds } if block_timestamp <= utc_seconds => {
+            TimeStatus::Eligible
+        }
+        ClockReading::Qualified { utc_seconds } => TimeStatus::Future {
+            ahead_seconds: block_timestamp - utc_seconds,
+        },
+    }
+}
+/// How a signer reached `prepare_vote`.
+#[derive(Clone, Copy)]
+pub enum VoteGate<'a> {
+    /// A new vote decision: the clock is consulted before ANY reducer or custody state changes.
+    Fresh(&'a dyn VoteClock),
+    /// The owner already holds a durable reservation for this exact (round, step) slot. That
+    /// reservation was created through `Fresh`; re-deriving the identical vote (idempotent
+    /// retransmission, crash recovery) is not a fresh vote and must not depend on today's clock.
+    Reserved(ReservedToken),
+}
+/// Only this crate can construct `Reserved`: a caller of the public `prepare_vote` cannot claim
+/// that a slot already holds a gated reservation to skip the clock.
+#[derive(Clone, Copy)]
+pub struct ReservedToken(());
+impl VoteGate<'static> {
+    pub(crate) fn reserved() -> Self {
+        Self::Reserved(ReservedToken(()))
+    }
+}
+
+/// A single clock reading captured once and reused. A signing attempt reads the real clock ONCE
+/// and judges every gate of that attempt with the same reading, so a clock change between two
+/// reads inside one attempt cannot leave a voter poisoned or an actor halted.
+#[derive(Clone, Copy, Debug)]
+pub struct FixedClock(pub ClockReading);
+impl FixedClock {
+    pub fn of(clock: &dyn VoteClock) -> Self {
+        Self(clock.reading())
+    }
+}
+impl VoteClock for FixedClock {
+    fn reading(&self) -> ClockReading {
+        self.0
+    }
+}
+
+/// Deterministic clock for tests and qualification harnesses. NOT a production time source.
+#[derive(Debug)]
+pub struct ControlledClock {
+    utc_seconds: AtomicU64,
+    qualified: AtomicBool,
+}
+impl ControlledClock {
+    pub fn at(utc_seconds: u64) -> Arc<Self> {
+        Arc::new(Self {
+            utc_seconds: AtomicU64::new(utc_seconds),
+            qualified: AtomicBool::new(true),
+        })
+    }
+    pub fn set(&self, utc_seconds: u64) {
+        self.utc_seconds.store(utc_seconds, Ordering::SeqCst);
+    }
+    pub fn advance(&self, seconds: u64) {
+        self.utc_seconds.fetch_add(seconds, Ordering::SeqCst);
+    }
+    /// Model a health fault (lost sync, failed self-test, restart in progress...).
+    pub fn set_qualified(&self, qualified: bool) {
+        self.qualified.store(qualified, Ordering::SeqCst);
+    }
+}
+impl VoteClock for ControlledClock {
+    fn reading(&self) -> ClockReading {
+        if self.qualified.load(Ordering::SeqCst) {
+            ClockReading::Qualified {
+                utc_seconds: self.utc_seconds.load(Ordering::SeqCst),
+            }
+        } else {
+            ClockReading::Unqualified
+        }
+    }
+}
+/// Optional wrapper for any source: a reading below the highest qualified reading this wrapper
+/// has already reported is a fault, so it reports `Unqualified` until the inner clock again
+/// reaches that high-water mark. It uses no tolerance, threshold or other measured constant.
+/// A qualified source that can step backwards must not let a regression re-open the guard.
+pub struct HighWater<C: VoteClock> {
+    inner: C,
+    high: Mutex<u64>,
+}
+impl<C: VoteClock> HighWater<C> {
+    pub fn new(inner: C) -> Self {
+        Self {
+            inner,
+            high: Mutex::new(0),
+        }
+    }
+}
+impl<C: VoteClock> VoteClock for HighWater<C> {
+    fn reading(&self) -> ClockReading {
+        match self.inner.reading() {
+            ClockReading::Unqualified => ClockReading::Unqualified,
+            ClockReading::Qualified { utc_seconds } => {
+                let mut high = match self.high.lock() {
+                    Ok(g) => g,
+                    Err(_) => return ClockReading::Unqualified,
+                };
+                if utc_seconds < *high {
+                    return ClockReading::Unqualified;
+                }
+                *high = utc_seconds;
+                ClockReading::Qualified { utc_seconds }
+            }
+        }
+    }
+}
+impl<T: VoteClock + ?Sized> VoteClock for Arc<T> {
+    fn reading(&self) -> ClockReading {
+        (**self).reading()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn zero_allowance_boundary_and_fail_closed_default() {
+        let c = ControlledClock::at(1_000);
+        assert_eq!(evaluate(&*c, 1_000), TimeStatus::Eligible);
+        assert_eq!(evaluate(&*c, 999), TimeStatus::Eligible);
+        assert_eq!(
+            evaluate(&*c, 1_001),
+            TimeStatus::Future { ahead_seconds: 1 }
+        );
+        assert_eq!(evaluate(&UnqualifiedClock, 0), TimeStatus::Unqualified);
+        c.set_qualified(false);
+        assert_eq!(evaluate(&*c, 0), TimeStatus::Unqualified);
+        c.set_qualified(true);
+        c.advance(1);
+        assert_eq!(evaluate(&*c, 1_001), TimeStatus::Eligible);
+        // Real long outage: validators' clocks advanced too, so a large timestamp jump is eligible
+        // as soon as the local qualified clock has reached it. No interval cap exists to obstruct it.
+        let after_outage = ControlledClock::at(1_000 + 90 * 86_400);
+        assert_eq!(evaluate(&*after_outage, 1_000 + 90 * 86_400), TimeStatus::Eligible);
+        assert_eq!(
+            evaluate(&*after_outage, 1_000 + 90 * 86_400 + 1),
+            TimeStatus::Future { ahead_seconds: 1 }
+        );
+        assert_eq!(
+            evaluate(&*ControlledClock::at(0), u64::MAX),
+            TimeStatus::Future {
+                ahead_seconds: u64::MAX
+            }
+        );
+    }
+    #[test]
+    fn high_water_wrapper_refuses_regression_without_any_tolerance() {
+        let c = ControlledClock::at(500);
+        let w = HighWater::new(c.clone());
+        assert_eq!(w.reading(), ClockReading::Qualified { utc_seconds: 500 });
+        c.set(499);
+        assert_eq!(w.reading(), ClockReading::Unqualified);
+        assert_eq!(evaluate(&w, 0), TimeStatus::Unqualified);
+        c.set(500);
+        assert_eq!(w.reading(), ClockReading::Qualified { utc_seconds: 500 });
+        c.set_qualified(false);
+        assert_eq!(w.reading(), ClockReading::Unqualified);
+    }
+}

@@ -1,0 +1,112 @@
+[package]
+name = "mutiny-desktop-v8"
+version = "0.1.0"
+edition = "2024"
+
+# The wallet executable (Order W8, candidate 3: renamed from mutiny-desktop-v8-ceremony). The package
+# name mutiny-desktop-v8 is unchanged; the rename does not redefine the wider Desktop product.
+[[bin]]
+name = "mutiny-wallet-v8"
+path = "src/main.rs"
+
+[features]
+# NON-SHIPPING W15 window; explicit bin selection is required.
+testvalue-window = ["mutiny-wallet-core-v8/test-value-signing", "dep:p256", "windows-sys/Win32_System_Pipes", "windows-sys/Win32_System_IO"]
+# Distinct native-owner qualification bootstrap; fixed wallet mode remains unchanged.
+native-owner-test = ["testvalue-window", "dep:p384", "dep:x509-cert", "dep:ed25519-dalek", "dep:minicbor", "dep:rsa"]
+# Exact ASUS principal for isolated debug native TEST Root only; shipping sources unchanged.
+asus-native-test-principal = ["native-owner-test"]
+
+[[bin]]
+name = "mutiny-wallet-v8-testvalue"
+path = "src/testvalue/main.rs"
+required-features = ["testvalue-window"]
+
+[[bin]]
+name = "mutiny-treasury-v8-testvalue"
+path = "src/testvalue/treasury_main.rs"
+required-features = ["testvalue-window"]
+
+[dependencies]
+# Existing locked fixture parser/RSA signer, enabled only by native-owner-test.
+minicbor = { version = "=2.3.0", features = ["std"], optional = true }
+rsa = { version = "=0.9.10", default-features = false, features = ["std", "sha2"], optional = true }
+# Existing locked public TEST DER/provenance dependencies, absent from ordinary shipping.
+p384 = { version = "=0.13.1", default-features = false, features = ["ecdsa", "std"], optional = true }
+x509-cert = { version = "=0.2.5", default-features = false, features = ["std"], optional = true }
+ed25519-dalek = { version = "=2.2.0", optional = true }
+# Direct public fixture signing edge enabled only by the explicit nonshipping window.
+# Consensus keeps its independent unconditional public-certificate verification dependency.
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"], optional = true }
+mutiny-crypto-v2 = { path = "../crypto-v2", features = ["wallet-custody"] }
+mutiny-consensus-v8 = { path = "../consensus" }
+mutinyd-v8 = { path = "../node" }
+mutiny-transport-v2 = { path = "../transport-v2" }
+# The UI-free wallet core (plan, review, approval, authorization, outbox). Default features only:
+# the NON-SHIPPING test-value-signing gate is enabled for tests by the dev-dependency below and
+# never by this line (Cargo does not unify dev-dependency features into a normal or release build).
+mutiny-wallet-core-v8 = { path = "../wallet-core" }
+eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow"] }
+zeroize = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
+raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
+
+[patch.crates-io]
+hkdf = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }
+
+[dev-dependencies]
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+# Tests only: wallet-core's TEST-VALUE signing gate (public test keys while the production gate is
+# closed). Absent from `cargo build` / `cargo build --release` and from `cargo tree -e normal,build`.
+mutiny-wallet-core-v8 = { path = "../wallet-core", features = ["test-value-signing"] }
+
+# Test/dev profile only; release builds are unaffected. Same block as consensus/Cargo.toml.
+# The hybrid signature (FN-DSA), KDF and C crypto dependencies are far too slow at opt-level 0,
+# (consensus/Cargo.toml: debug tests there expired their wall-clock deadlines). Only dependencies are
+# optimized: this crate keeps debug assertions and overflow checks.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Shipping release profile (Build 8 configuration record: docs/BUILD-CONFIGURATIONS-V1.md).
+# Profile tables are honoured only in the ROOT manifest being built, so every shipped root
+# carries the same table. Cargo's release default would be overflow-checks = false while
+# all tests run with it on; wallet arithmetic must behave identically in both.
+[profile.release]
+opt-level = 3
+# Checked integer arithmetic in the shipped binary (tests already run with checks on).
+overflow-checks = true
+debug-assertions = false
+# One codegen unit: deterministic, reproducible code generation.
+codegen-units = 1
+# Symbols are kept: the exclusion checks (build/check-shipping-config.sh) inspect them.
+strip = "none"
+# LTO off: it is not needed for correctness, and the C sources compiled by crypto-v2's build.rs
+# make cross-language LTO an unverified variable. Revisit only with a reproducibility test.
+lto = false
+# UNWIND, deliberately (the same value as every other shipped root). The wallet relies on
+# unwinding in three places: (1) crypto-v2 runs every private-key operation on a worker thread
+# (crypto-v2/src/lib.rs private_job) and maps a worker panic to Error::Worker through
+# JoinHandle::join(); with panic = "abort" a panic there would abort the whole process instead
+# of failing closed, and Zeroizing secret buffers are dropped (zeroized) only while unwinding;
+# (2) desktop/src/wallet_host_service_v2.rs detects a panicked wallet service thread with
+# join().is_err(); (3) the node library linked by the wallet supervises its peer workers the
+# same way (node/src/peer_supervisor.rs, actor_service.rs, hybrid_peer_worker_v2.rs).
+# Abort is not provably safe.
+panic = "unwind"
+
+# Isolated monolithic native TEST Root producer; no production issuer.
+[[bin]]
+name = "mutiny-wallet-root-native-test"
+path = "src/rootproducer_native/main.rs"
+required-features = ["testvalue-window", "native-owner-test"]

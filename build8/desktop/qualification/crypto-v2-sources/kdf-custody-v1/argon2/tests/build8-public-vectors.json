@@ -1,0 +1,145 @@
+{
+  "schema": "BUILD8-ARGON2ID-PUBLIC-VECTORS-V1",
+  "synthetic_only": true,
+  "reference": {
+    "cryptography": "50.0.1",
+    "openssl": "OpenSSL 4.0.2 25 Aug 2026"
+  },
+  "cases": [
+    {
+      "password": "",
+      "salt": "5055424c4943204152474f4e322053414c5400",
+      "memory": 8,
+      "rounds": 1,
+      "lanes": 1,
+      "length": 16,
+      "expected": "22dd397412015354c7abbae340e7a335"
+    },
+    {
+      "password": "5055424c49432050415353574f52442046495854555245",
+      "salt": "5055424c4943204152474f4e322053414c5401",
+      "memory": 8,
+      "rounds": 1,
+      "lanes": 1,
+      "length": 16,
+      "expected": "38dd491b001433f70519323f4387899b"
+    },
+    {
+      "password": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt": "5055424c4943204152474f4e322053414c5402",
+      "memory": 8,
+      "rounds": 1,
+      "lanes": 1,
+      "length": 16,
+      "expected": "6532bf3ea2797bda4ec1b61480744b37"
+    },
+    {
+      "password": "",
+      "salt": "5055424c4943204152474f4e322053414c5403",
+      "memory": 32,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "a634a5cb057c1280e1c4ba2bd86674b78a8bca6de7da0c1735ca2845a6ff4f1b"
+    },
+    {
+      "password": "5055424c49432050415353574f52442046495854555245",
+      "salt": "5055424c4943204152474f4e322053414c5404",
+      "memory": 32,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "25ba1d44080f0ad5e84162af0773eda0d21fc2926171bb3314ebfb541d4e0cf7"
+    },
+    {
+      "password": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt": "5055424c4943204152474f4e322053414c5405",
+      "memory": 32,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "66e7a4bb63506a9505c589cb39db4dc3c0d6ca678790b4cf91b0a1e718a1ffce"
+    },
+    {
+      "password": "",
+      "salt": "5055424c4943204152474f4e322053414c5406",
+      "memory": 64,
+      "rounds": 2,
+      "lanes": 2,
+      "length": 64,
+      "expected": "19c8c0dbeafac02bc01e0fa7a942c6377d2dcb45fb928fdc72f391161f45e688b62fa4c641d36e5142496a838c9f9f08116668f59b6d35a114800bcb8e99ae49"
+    },
+    {
+      "password": "5055424c49432050415353574f52442046495854555245",
+      "salt": "5055424c4943204152474f4e322053414c5407",
+      "memory": 64,
+      "rounds": 2,
+      "lanes": 2,
+      "length": 64,
+      "expected": "8223fb32946da39dc33c92f8945c3e47653e0d651d200eb73ee2cbb1db0d3b5e09820a9adb010d5e59a0e292325e7c63b6ea8efb35d2699b7b8201107739807e"
+    },
+    {
+      "password": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt": "5055424c4943204152474f4e322053414c5408",
+      "memory": 64,
+      "rounds": 2,
+      "lanes": 2,
+      "length": 64,
+      "expected": "6ff5fc9059d83441537e370ea75c02a940bc48ef08f448b20eabbb60630e3f656cc14bdfee984d29d6831b165b1351bd02d20c09da58e3252b5a9cde2b7ce1ca"
+    },
+    {
+      "password": "",
+      "salt": "5055424c4943204152474f4e322053414c5409",
+      "memory": 1024,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "9e03d95e2caa91ade54b8ee3b3620095f17b45362632ca6c0846c12f4d2ed414"
+    },
+    {
+      "password": "5055424c49432050415353574f52442046495854555245",
+      "salt": "5055424c4943204152474f4e322053414c540a",
+      "memory": 1024,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "16b2294370535143d8bf8793ad77c5bda49a596f5c54856198afc6421ab1525c"
+    },
+    {
+      "password": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt": "5055424c4943204152474f4e322053414c540b",
+      "memory": 1024,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "0f95d2f0df74398b91aa5cfd7c54e0024131315bf9bc9831851ddfb567a72236"
+    },
+    {
+      "password": "",
+      "salt": "5055424c4943204152474f4e322053414c540c",
+      "memory": 65536,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "1d4101fffa3395b1ddd7b7fa9ed5311286b03b20844ca09303f920af674e535b"
+    },
+    {
+      "password": "5055424c49432050415353574f52442046495854555245",
+      "salt": "5055424c4943204152474f4e322053414c540d",
+      "memory": 65536,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "abc993214581e9c8905af60f22af11c4bbf6868affeff25b8d907f3c074dad3b"
+    },
+    {
+      "password": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "salt": "5055424c4943204152474f4e322053414c540e",
+      "memory": 65536,
+      "rounds": 3,
+      "lanes": 1,
+      "length": 32,
+      "expected": "194115035fea4a20140bf84f7c9935348967c423583e7f88ad058dcaa9f012ae"
+    }
+  ]
+}

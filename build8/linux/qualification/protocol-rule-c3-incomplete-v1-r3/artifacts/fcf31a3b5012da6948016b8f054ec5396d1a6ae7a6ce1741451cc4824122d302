@@ -1,0 +1,759 @@
+//! Leap-second DATE POLICY of the host adapter (Architect rulings, 3 Oct 2026; Order of 4 Oct 2026,
+//! decisions C1, C7, C9 and C11). The engine (`holdover_clock_v1`) owns the safety rules and the
+//! derivation of the ambiguous zone from the POSIX step mapping; this module decides what the
+//! adapter stands behind and turns it into a [`LeapView`].
+//!
+//! Assumptions (declared, NOT proven here; all are live-qualification gates):
+//! * POSIX-step semantics: the OS clock steps (chrony `leapsecmode system`); leap SMEARING sources
+//!   are unsupported and excluded. An inserted second repeats a POSIX second; a deleted one skips one.
+//! * The POSSIBLE-BOUNDARY SET is every month end, both kinds: ITU-R Recommendation TF.460-6 puts a
+//!   leap second (+1 s or -1 s) only as the last second of a UTC month, first preference December
+//!   and June, second preference March and September (general knowledge of the recommendation's
+//!   text, not re-read in this repository). No transition can therefore begin inside a month; the
+//!   earliest possible step at a month end `T` is `T - S` (a deletion; an insertion steps at `T`).
+//! * RFC 5905 defines the NTP leap indicator as a warning of a leap second in the last minute of
+//!   the CURRENT month; it states no minimum lead time, and chrony reports only Insert / Delete /
+//!   Normal with no date. How early before an event any source raises the indicator is UNVERIFIED
+//!   (docs/CLOCK-PROFILE-V1.md section 6: "advance leap indicator behaviour" is unverified for all
+//!   four operators). One ordinary poll proves nothing about FUTURE announcement behaviour.
+//! * Calendar arithmetic is civil (proleptic Gregorian, no leap seconds), on POSIX milliseconds.
+//!
+//! Policy:
+//! * C9: a "clear" (no event pending) is never assumed across a possible boundary that no
+//!   authenticated information has excluded, and no information this node can obtain excludes a
+//!   FUTURE month end (no announcement lead time is qualified; the "24 h + 1 s" lead assumption of
+//!   the previous policy is NOT used). So a clear ends at the earliest possible step of the first
+//!   month end after the authenticated reading that established it, and an anchor is never vouched
+//!   for past the earliest possible step of its OWN month end (`view`). An aged or restored claim
+//!   can never extend this: the clear is recomputed from the latest authenticated reading only,
+//!   and a restored record never re-establishes a clear (`restore_claim`).
+//! * A poll that AUTHENTICATED reports Insert/Delete in month M names the event at the end of M,
+//!   boundary `T`. The view is `Pending { kind, boundary }`; the engine expires holdover before the
+//!   step instant (`T` for an insertion, `T - S` for a deletion) and refuses a sample whose interval
+//!   touches the ambiguous zone `[T - S, T)` or lies past an unresolved event. NO blanket extra
+//!   second is added to samples outside the zone. Pending is sticky.
+//! * C1: a Pending event (and a hint) is released only by a QUALIFIED authenticated reading (NTS
+//!   check passed AND uncertainty within the profile's sample ceiling) whose LOWEST possible time is
+//!   at least `T + RELEASE_AFTER_BOUNDARY_MS`: an unambiguous interval wholly past the zone. The
+//!   cushion is explicit OPERATIONAL POLICY (see the constant). It applies after EVERY month end,
+//!   announced or not: a Normal reading whose lowest time is within the cushion after the start of
+//!   its month establishes no clear (a node that missed an announcement gets the same cushion).
+//! * C11: an announcement from a poll that failed the NTS check, and the leap claim of a restored
+//!   record, are UNAUTHENTICATED HINTS: one slot (the earliest month end still ahead of the anchor),
+//!   idempotent, applied only where it shortens the view, never on an unassessed view, never
+//!   clearing or replacing an authenticated event, never evidence for a clear or a release, and
+//!   never qualifying anything. Availability effect (accepted, recorded in the document): a hostile
+//!   or confused source can shorten holdover by at most one step before an authenticated insertion
+//!   (to the earliest possible step, which the calendar bound applies anyway without an
+//!   announcement), and after a month end it names it keeps samples refused until a qualified
+//!   authenticated reading past that boundary's release point releases the hint. A hint the
+//!   anchor is already past is ignored.
+//! * C7: `POLICY_VERSION` stays 2; a claim of any other version is discarded, so an obsolete claim
+//!   gains no authority on upgrade (not even as a hint).
+//! * Failed polls never extend a horizon. There is no unauthenticated fallback.
+use mutiny_consensus_v8::holdover_clock_v1::{LEAP_STEP_MS, LeapClaim, LeapKind, LeapView};
+
+/// Version of THIS date policy, stored in the leap claim of the persisted anchor (Order C7: kept at
+/// 2). A stored claim of any other version is discarded. Since Order C4 and C11 a claim of THIS
+/// version is at most an unauthenticated, shorten-only hint (a Pending boundary); a stored Clear is
+/// never restored, so the narrower meaning of a Clear under Order C9 needs no version bump: no stored
+/// claim can lengthen anything.
+///
+/// 2 (independent review, MINOR-1): an announcement from an unauthenticated poll is folded as the
+/// kind with the earliest step and never past the current view.
+pub const POLICY_VERSION: u32 = 2;
+/// Order C1: an announced event (or a hint) is withdrawn only when a QUALIFIED reading's lowest
+/// possible time is this far past the boundary `T`. This is explicit OPERATIONAL POLICY: it is NOT
+/// derived from the timestamp mapping (labels at or after `T` are shown exactly once, so the mapping
+/// alone would release at `T`) and it is NOT a measured upper bound on kernel or chrony settling
+/// after the step (nothing here was measured). It reuses the defined step size `S`, so no new
+/// duration is introduced; it costs at most about one second of extra abstention per event.
+pub const RELEASE_AFTER_BOUNDARY_MS: u64 = LEAP_STEP_MS;
+
+const DAY_MS: i64 = 86_400_000;
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+fn civil_from_days(z: i64) -> (i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m)
+}
+/// Month index `year * 12 + (month - 1)` of a POSIX millisecond instant (UTC, civil calendar).
+pub fn month_index(ms: u64) -> i64 {
+    let days = (ms / DAY_MS as u64) as i64;
+    let (y, m) = civil_from_days(days);
+    y * 12 + (m - 1)
+}
+/// POSIX milliseconds of 00:00:00 UTC on the first day of month `index`.
+pub fn month_start_ms(index: i64) -> Option<u64> {
+    let (y, m0) = (index.div_euclid(12), index.rem_euclid(12));
+    let days = days_from_civil(y, m0 + 1, 1);
+    u64::try_from(days.checked_mul(DAY_MS)?).ok()
+}
+/// Earliest nominal instant at which ANY step at the boundary `T` can begin: `T - S`, the step of a
+/// deleted second (an inserted second steps at `T`). A horizon must not pass it unless an event at
+/// this boundary has been excluded.
+pub fn earliest_step_ms(boundary_ms: u64) -> u64 {
+    LeapKind::Delete
+        .step_begins_ms(boundary_ms)
+        .min(LeapKind::Insert.step_begins_ms(boundary_ms))
+}
+/// Calendar-only horizon for an anchor adopted at `lower_ms`: holdover must expire before the
+/// earliest possible step at the next month end.
+pub fn calendar_horizon_ms(lower_ms: u64) -> Option<u64> {
+    Some(earliest_step_ms(month_start_ms(month_index(lower_ms) + 1)?))
+}
+/// True when `ms` is exactly 00:00:00 UTC on the first day of a month (an event boundary).
+pub fn is_month_start(ms: u64) -> bool {
+    month_start_ms(month_index(ms)) == Some(ms)
+}
+/// The kind whose step begins earliest at the boundary `T` (a deletion steps at `T - S`, an
+/// insertion at `T`): how a hint, whose kind cannot be trusted, is folded.
+fn earliest_step_kind(boundary_ms: u64) -> LeapKind {
+    let delete = LeapKind::Delete.step_begins_ms(boundary_ms);
+    if delete <= LeapKind::Insert.step_begins_ms(boundary_ms) {
+        LeapKind::Delete
+    } else {
+        LeapKind::Insert
+    }
+}
+/// Order C1: a reading whose LOWEST possible time is `lo` is past the boundary `T` by the release
+/// cushion.
+fn past_release(boundary_ms: u64, lo: u64) -> bool {
+    lo >= boundary_ms.saturating_add(RELEASE_AFTER_BOUNDARY_MS)
+}
+
+/// What one chrony poll said about the leap status, after authentication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeapObservation {
+    /// No usable poll (chronyc failed, not synchronised, not authenticated): never extends.
+    Unavailable,
+    Normal,
+    Insert,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingEvent {
+    kind: LeapKind,
+    /// The event boundary `T`.
+    boundary_ms: u64,
+}
+impl PendingEvent {
+    fn step_begins_ms(&self) -> u64 {
+        self.kind.step_begins_ms(self.boundary_ms)
+    }
+}
+
+/// What the adapter currently stands behind. Lives in RAM only; a restart starts from nothing
+/// except, at most, a hint from the stored claim (`restore_claim`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LeapMemory {
+    /// Order C9: the earliest possible step at the first month end after the latest AUTHENTICATED
+    /// Normal reading (whose interval lies in one month). It vouches for admitting a sample while no
+    /// anchor exists; an anchor is bounded by its own month end instead (`view`).
+    cleared_until_ms: Option<u64>,
+    /// An AUTHENTICATED announcement (its kind is trusted).
+    pending: Option<PendingEvent>,
+    /// Order C11: the earliest month-end boundary named by an UNAUTHENTICATED hint. One slot.
+    hint_ms: Option<u64>,
+}
+
+/// How a leap claim restored from the persisted anchor was treated (Order C4, C7, C11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimDisposition {
+    /// The previous process stood behind nothing (it had not assessed the leap status).
+    NoClaim,
+    /// A stored announcement kept as an UNAUTHENTICATED, shorten-only hint (Order C11): the record
+    /// is unkeyed, so not even a stored authenticated announcement is trusted evidence.
+    Hinted,
+    /// Dropped: no authority at all.
+    Discarded(DiscardReason),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscardReason {
+    /// Written by a different version of this policy (Order C7: an obsolete claim gains nothing).
+    PolicyVersion,
+    /// Not a value this policy can produce (a boundary that is not a month start).
+    Malformed,
+    /// A stored clear: a record never re-establishes or extends a clear (Order C9).
+    ClearNotRestored,
+}
+
+impl LeapMemory {
+    /// Fold one AUTHENTICATED poll (the host never folds an unauthenticated one here). `interval` is
+    /// the UTC interval of THAT reading (wall centre +/- its own uncertainty); `None` when no reading
+    /// exists. `qualified` is true when the reading also meets the profile's sample ceiling: only
+    /// such a reading may release an announced event or a hint (Order C1). An authenticated reading
+    /// establishes the clear of its own month whatever its width (Order C9: authenticated
+    /// information, and calendar knowledge only), and an authenticated announcement is folded
+    /// either way (it can only shorten).
+    pub fn observe(&mut self, obs: LeapObservation, interval: Option<(u64, u64)>, qualified: bool) {
+        let Some((lo, hi)) = interval else {
+            return;
+        };
+        match obs {
+            LeapObservation::Unavailable => {}
+            LeapObservation::Insert | LeapObservation::Delete => {
+                let kind = if obs == LeapObservation::Insert {
+                    LeapKind::Insert
+                } else {
+                    LeapKind::Delete
+                };
+                let Some(boundary_ms) = month_start_ms(month_index(lo) + 1) else {
+                    return;
+                };
+                let new = PendingEvent { kind, boundary_ms };
+                self.pending = Some(match self.pending {
+                    // Only a qualified reading past the old event's release point replaces it (C1);
+                    // otherwise the event whose step begins earlier is kept.
+                    Some(old) if !(qualified && past_release(old.boundary_ms, lo)) => {
+                        if old.step_begins_ms() <= new.step_begins_ms() {
+                            old
+                        } else {
+                            new
+                        }
+                    }
+                    _ => new,
+                });
+                // Any earlier "clear" for this month end was wrong.
+                self.cleared_until_ms = None;
+                if qualified {
+                    self.release_hint(lo);
+                }
+            }
+            LeapObservation::Normal => {
+                if let Some(p) = self.pending {
+                    // C1: only a QUALIFIED reading wholly past the release point withdraws it.
+                    if qualified && past_release(p.boundary_ms, lo) {
+                        self.pending = None; // the event is safely past
+                    } else {
+                        return; // sticky: Normal cannot withdraw an unresolved announcement
+                    }
+                }
+                if qualified {
+                    self.release_hint(lo);
+                }
+                let month = month_index(lo);
+                // C1 after EVERY month end (independent review, MINOR-2): the boundary at the start
+                // of this reading's month may have carried an event this node never saw announced
+                // (a blackout over the month end, or an announcement window between two polls), so
+                // a reading within the release cushion after it clears nothing, exactly as if that
+                // event had been announced.
+                let past_month_start =
+                    month_start_ms(month).is_some_and(|start| past_release(start, lo));
+                if month == month_index(hi) && past_month_start {
+                    // C9: the CURRENT month end only. No qualified lead time exists, so a Normal
+                    // reading excludes no future boundary; a straddling reading clears nothing.
+                    self.cleared_until_ms = month_start_ms(month + 1).map(earliest_step_ms);
+                }
+            }
+        }
+    }
+    /// Order C1: withdraw the hint once a qualified reading's lowest time is past its release point.
+    fn release_hint(&mut self, lo: u64) {
+        if self.hint_ms.is_some_and(|t| past_release(t, lo)) {
+            self.hint_ms = None;
+        }
+    }
+    /// Fold an announcement from a poll that did NOT pass the NTS check as a hint (Order C11).
+    /// `interval` is the UTC interval of THAT reading, as for `observe`; the hint names the month end
+    /// after its lowest time (the earlier month end of a straddling reading).
+    pub fn observe_unverified(&mut self, interval: (u64, u64), anchor_lower_ms: Option<u64>) {
+        let Some(boundary_ms) = month_start_ms(month_index(interval.0) + 1) else {
+            return;
+        };
+        self.hint(boundary_ms, anchor_lower_ms);
+    }
+    /// The one hint slot: the earliest boundary still ahead of the current anchor. Idempotent (the
+    /// same hint again changes nothing) and bounded (one value, never a list).
+    fn hint(&mut self, boundary_ms: u64, anchor_lower_ms: Option<u64>) {
+        self.hint_ms = Some(match self.hint_ms {
+            Some(old) if anchor_lower_ms.is_none_or(|a| old > a) => old.min(boundary_ms),
+            _ => boundary_ms,
+        });
+    }
+    /// Take what a restored record's leap claim may still contribute (Order C4, C7, C9, C11): a
+    /// stored announcement becomes an unauthenticated, shorten-only hint; a stored clear and a
+    /// claim of another policy version are discarded. Nothing is ever extended or trusted.
+    pub fn restore_claim(&mut self, claim: LeapClaim) -> ClaimDisposition {
+        if claim.view == LeapView::Unassessed {
+            return ClaimDisposition::NoClaim;
+        }
+        if claim.policy != POLICY_VERSION {
+            return ClaimDisposition::Discarded(DiscardReason::PolicyVersion);
+        }
+        match claim.view {
+            LeapView::Unassessed => ClaimDisposition::NoClaim,
+            LeapView::Clear { .. } => ClaimDisposition::Discarded(DiscardReason::ClearNotRestored),
+            LeapView::Pending { boundary_ms, .. } => {
+                if !is_month_start(boundary_ms) {
+                    return ClaimDisposition::Discarded(DiscardReason::Malformed);
+                }
+                self.hint(boundary_ms, None);
+                ClaimDisposition::Hinted
+            }
+        }
+    }
+    /// The view to push. `anchor_lower_ms` is the ADOPTED lower bound of the current anchor (not
+    /// rolled). An anchor is never vouched for past the earliest possible step of its own month end
+    /// unless an authenticated announcement names exactly that boundary (then its kind applies);
+    /// without an anchor the latest qualified clear governs admission. A hint then shortens.
+    pub fn view(&self, anchor_lower_ms: Option<u64>) -> LeapView {
+        let anchor_boundary = anchor_lower_ms.and_then(|a| month_start_ms(month_index(a) + 1));
+        let base = match (self.pending, anchor_boundary) {
+            // An announcement for a LATER month end than the anchor's: the anchor's own month end,
+            // which nothing excluded, comes first.
+            (Some(p), Some(b)) if p.boundary_ms > b => LeapView::Clear {
+                valid_until_ms: earliest_step_ms(b),
+            },
+            (Some(p), _) => LeapView::Pending {
+                kind: p.kind,
+                boundary_ms: p.boundary_ms,
+            },
+            (None, Some(b)) => LeapView::Clear {
+                valid_until_ms: earliest_step_ms(b),
+            },
+            (None, None) => match self.cleared_until_ms {
+                Some(valid_until_ms) => LeapView::Clear { valid_until_ms },
+                None => LeapView::Unassessed,
+            },
+        };
+        match self.hint_ms {
+            Some(t) if base != LeapView::Unassessed && anchor_lower_ms.is_none_or(|a| t > a) => {
+                let hinted = LeapView::Pending {
+                    kind: earliest_step_kind(t),
+                    boundary_ms: t,
+                };
+                if hinted.horizon_ms() < base.horizon_ms() {
+                    hinted
+                } else {
+                    base
+                }
+            }
+            _ => base,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mutiny_consensus_v8::holdover_clock_v1::LeapView::{Clear, Pending, Unassessed};
+
+    fn ms(y: i64, m: i64, d: i64, h: i64, min: i64, s: i64) -> u64 {
+        ((days_from_civil(y, m, d) * 86_400 + h * 3600 + min * 60 + s) * 1000) as u64
+    }
+    /// The zone start a view guards (the engine's admission predicate refuses intervals reaching it).
+    fn guard(v: LeapView) -> u64 {
+        match v {
+            Unassessed => 0,
+            Clear { valid_until_ms } => valid_until_ms,
+            Pending { boundary_ms, .. } => boundary_ms - LEAP_STEP_MS,
+        }
+    }
+    const S: u64 = LEAP_STEP_MS;
+
+    #[test]
+    fn civil_calendar_matches_known_posix_instants() {
+        assert_eq!(ms(1970, 1, 1, 0, 0, 0), 0);
+        assert_eq!(ms(2000, 3, 1, 0, 0, 0), 951_868_800_000);
+        assert_eq!(ms(2016, 12, 31, 23, 59, 59), 1_483_228_799_000);
+        assert_eq!(ms(2026, 10, 1, 0, 0, 0), 1_790_812_800_000);
+        assert_eq!(month_index(0), 1970 * 12);
+        assert_eq!(month_index(ms(2026, 2, 28, 23, 59, 59)), 2026 * 12 + 1);
+        assert_eq!(month_index(ms(2024, 2, 29, 12, 0, 0)), 2024 * 12 + 1, "leap day stays in Feb");
+        assert_eq!(month_start_ms(2026 * 12 + 11), Some(ms(2026, 12, 1, 0, 0, 0)));
+        assert_eq!(month_start_ms(2027 * 12), Some(ms(2027, 1, 1, 0, 0, 0)));
+        // Round trip over a long range.
+        for idx in (1970 * 12 + 1)..(2200 * 12) {
+            let start = month_start_ms(idx).unwrap();
+            assert_eq!(month_index(start), idx);
+            assert_eq!(month_index(start - 1), idx - 1);
+            assert!(is_month_start(start));
+            assert!(!is_month_start(start + 1) && !is_month_start(start - 1));
+        }
+    }
+    #[test]
+    fn horizons_are_the_earliest_step_of_a_month_end_and_nothing_else() {
+        let t = ms(2026, 12, 1, 0, 0, 0);
+        // The earliest step at a boundary is the step of a deleted second, one step before it.
+        assert_eq!(earliest_step_ms(t), t - S);
+        assert_eq!(earliest_step_ms(t), LeapKind::Delete.step_begins_ms(t));
+        assert!(LeapKind::Insert.step_begins_ms(t) > earliest_step_ms(t));
+        assert_eq!(calendar_horizon_ms(ms(2026, 11, 10, 0, 0, 0)), Some(t - S));
+        // The release cushion reuses the defined step; no other duration appears in this policy.
+        assert_eq!(RELEASE_AFTER_BOUNDARY_MS, S);
+    }
+
+    #[test]
+    fn c9_a_clear_never_crosses_a_month_end_nothing_authenticated_excluded() {
+        // Order C9, over 1970..2200: a qualified authenticated Normal reading anywhere in month M
+        // clears only up to the earliest possible step at the END OF M (the previous policy vouched
+        // until the end of M + 1 on the unmeasured "24 h + 1 s" lead assumption). An anchor adopted
+        // in M is never vouched for past that instant either, and an anchor of an EARLIER month keeps
+        // its own, earlier, month end however new the reading.
+        for idx in (1970 * 12)..(2200 * 12) {
+            let start = month_start_ms(idx).unwrap();
+            let next = month_start_ms(idx + 1).unwrap();
+            let end = Clear { valid_until_ms: next - S };
+            for t in [start + S, start + S + 1, next - 1] {
+                let mut m = LeapMemory::default();
+                m.observe(LeapObservation::Normal, Some((t, t)), true);
+                assert_eq!(m.view(None), end, "month {idx}");
+                assert_eq!(m.view(Some(t)), end, "month {idx}");
+                assert_eq!(m.view(Some(start)), end);
+                if idx > 1970 * 12 {
+                    assert_eq!(m.view(Some(start - 1)), Clear { valid_until_ms: start - S });
+                }
+            }
+            // C1 after every month end (review MINOR-2): within the cushion after the month's start
+            // a Normal reading clears nothing; an anchor is still bounded by its own month end.
+            for t in [start, start + 1, start + S - 1] {
+                let mut m = LeapMemory::default();
+                m.observe(LeapObservation::Normal, Some((t, t)), true);
+                assert_eq!(m.view(None), Unassessed, "month {idx}, {} ms in", t - start);
+                assert_eq!(m.view(Some(t)), end, "month {idx}");
+            }
+        }
+    }
+
+    #[test]
+    fn c9_clear_expiry_endpoints_and_what_a_clear_needs() {
+        // The horizon is EXCLUSIVE (the engine requires the rolled upper bound to stay BELOW it):
+        // for a reading in November 2026, labels up to T - S - 1 are vouched for, T - S is not.
+        let t = ms(2026, 12, 1, 0, 0, 0);
+        let mut m = LeapMemory::default();
+        m.observe(LeapObservation::Normal, Some((ms(2026, 11, 30, 23, 0, 0), ms(2026, 11, 30, 23, 0, 0))), true);
+        let v = m.view(None);
+        assert_eq!(v, Clear { valid_until_ms: t - S });
+        assert_eq!((v.horizon_ms() - 1, v.horizon_ms()), (t - S - 1, t - S));
+        // A reading whose interval straddles the month end clears nothing (the previous clear, or
+        // none, stays); one that lies wholly in the next month clears the end of THAT month.
+        let mut s = LeapMemory::default();
+        s.observe(LeapObservation::Normal, Some((t - 13, t + 13)), true);
+        assert_eq!(s.view(None), Unassessed);
+        // Wholly in December but within the release cushion after its start (C1 after every month
+        // end, review MINOR-2): nothing yet, down to the last millisecond of the cushion.
+        s.observe(LeapObservation::Normal, Some((t, t + 26)), true);
+        assert_eq!(s.view(None), Unassessed);
+        s.observe(LeapObservation::Normal, Some((t + S - 1, t + S + 25)), true);
+        assert_eq!(s.view(None), Unassessed);
+        s.observe(LeapObservation::Normal, Some((t + S, t + S + 26)), true);
+        assert_eq!(s.view(None), Clear { valid_until_ms: ms(2027, 1, 1, 0, 0, 0) - S });
+        // A clear is established by an AUTHENTICATED reading (the host folds no other), whatever
+        // its width, and only for its own month; an older reading's clear is never extended by time
+        // passing (it is recomputed from the latest authenticated reading only).
+        let mut u = LeapMemory::default();
+        u.observe(LeapObservation::Normal, Some((t - 86_400_000, t - 86_400_000)), false);
+        let aged = u.view(None);
+        assert_eq!(aged, Clear { valid_until_ms: t - S });
+        u.observe(LeapObservation::Unavailable, Some((t + 5_000, t + 5_000)), true);
+        u.observe(LeapObservation::Normal, None, true);
+        assert_eq!(u.view(None), aged, "a poll without a reading moves nothing");
+        u.observe(LeapObservation::Normal, Some((t + 5_000, t + 5_000)), false);
+        assert_eq!(u.view(None), Clear { valid_until_ms: ms(2027, 1, 1, 0, 0, 0) - S });
+    }
+
+    #[test]
+    fn normal_clears_pending_announces_and_pending_is_sticky() {
+        let t = ms(2026, 12, 1, 0, 0, 0); // end of November
+        let mut m = LeapMemory::default();
+        assert_eq!(m.view(None), Unassessed, "nothing known, no anchor");
+        // Calendar-only bound for an anchor adopted mid-November.
+        assert_eq!(m.view(Some(ms(2026, 11, 10, 0, 0, 0))), Clear { valid_until_ms: t - S });
+        m.observe(LeapObservation::Normal, Some((ms(2026, 11, 10, 0, 0, 0), ms(2026, 11, 10, 0, 0, 1))), true);
+        assert_eq!(m.view(None), Clear { valid_until_ms: t - S });
+        // Insert announced in November: event at the end of November.
+        m.observe(LeapObservation::Insert, Some((ms(2026, 11, 30, 12, 0, 0), ms(2026, 11, 30, 12, 0, 1))), true);
+        assert_eq!(m.view(None), Pending { kind: LeapKind::Insert, boundary_ms: t });
+        // The authenticated kind applies to an anchor of that month: an insertion steps at T.
+        assert_eq!(m.view(Some(ms(2026, 11, 30, 12, 0, 0))), Pending { kind: LeapKind::Insert, boundary_ms: t });
+        // A later Normal (flapping indicator) cannot withdraw it before the event is past.
+        m.observe(LeapObservation::Normal, Some((ms(2026, 11, 30, 23, 0, 0), ms(2026, 11, 30, 23, 0, 1))), true);
+        assert!(matches!(m.view(None), Pending { .. }));
+        // Exact edges of the release: one millisecond short of boundary + cushion keeps it ...
+        let release = t + RELEASE_AFTER_BOUNDARY_MS;
+        m.observe(LeapObservation::Normal, Some((release - 1, release + 99)), true);
+        assert!(matches!(m.view(None), Pending { .. }), "still inside the cushion");
+        // ... a qualified reading whose LOWEST possible time is exactly boundary + cushion withdraws
+        // it; Normal in December clears the end of December (C9: not further).
+        m.observe(LeapObservation::Normal, Some((release, release + 100)), true);
+        assert_eq!(m.view(None), Clear { valid_until_ms: ms(2027, 1, 1, 0, 0, 0) - S });
+        // Delete: the clock jumps when POSIX time reaches T - 1 s.
+        let mut d = LeapMemory::default();
+        d.observe(LeapObservation::Delete, Some((ms(2026, 6, 30, 1, 0, 0), ms(2026, 6, 30, 1, 0, 1))), true);
+        let tj = ms(2026, 7, 1, 0, 0, 0);
+        assert_eq!(d.view(None), Pending { kind: LeapKind::Delete, boundary_ms: tj });
+        // The engine derives the step and the zone from (kind, boundary); nothing else is stored.
+        assert_eq!(LeapKind::Delete.step_begins_ms(tj), tj - S);
+    }
+
+    #[test]
+    fn c1_release_requires_a_qualified_unambiguous_reading() {
+        // Order C1. The cushion is policy; the release needs, on top of it, a reading that passed
+        // the NTS check AND the profile's sample ceiling, whose WHOLE interval lies past T + S.
+        let t = ms(2026, 12, 1, 0, 0, 0);
+        let announced = || {
+            let mut m = LeapMemory::default();
+            m.observe(LeapObservation::Insert, Some((t - 3_600_000, t - 3_600_000)), true);
+            m
+        };
+        let release = t + RELEASE_AFTER_BOUNDARY_MS;
+        // An unqualified authenticated reading past the cushion: no release, no clear.
+        let mut m = announced();
+        m.observe(LeapObservation::Normal, Some((release + 5_000, release + 5_100)), false);
+        assert_eq!(m.view(None), Pending { kind: LeapKind::Insert, boundary_ms: t });
+        // An unqualified announcement for the NEXT month does not replace (lengthen) it either.
+        m.observe(LeapObservation::Delete, Some((release + 5_000, release + 5_100)), false);
+        assert_eq!(m.view(None), Pending { kind: LeapKind::Insert, boundary_ms: t });
+        // A qualified reading whose LOWEST time is one ms short of T + S: not unambiguously past.
+        let mut m = announced();
+        m.observe(LeapObservation::Normal, Some((release - 1, release + 26)), true);
+        assert!(matches!(m.view(None), Pending { .. }));
+        // A qualified reading wholly past T + S releases it; so does a qualified announcement there,
+        // which then names its own month end.
+        let mut m = announced();
+        m.observe(LeapObservation::Normal, Some((release, release + 26)), true);
+        assert!(matches!(m.view(None), Clear { .. }));
+        let mut m = announced();
+        m.observe(LeapObservation::Delete, Some((release, release + 26)), true);
+        assert_eq!(m.view(None), Pending { kind: LeapKind::Delete, boundary_ms: ms(2027, 1, 1, 0, 0, 0) });
+    }
+
+    #[test]
+    fn c11_hints_are_bounded_idempotent_shorten_only_and_never_clear_or_qualify() {
+        let nov_end = ms(2026, 12, 1, 0, 0, 0);
+        let dec_end = ms(2027, 1, 1, 0, 0, 0);
+        let mid_nov = ms(2026, 11, 10, 0, 0, 0);
+        let late_nov = ms(2026, 11, 30, 12, 0, 0);
+        let reading = |t: u64| (t - 13, t + 13);
+        let hinted = Pending { kind: LeapKind::Delete, boundary_ms: nov_end };
+        assert_eq!(earliest_step_kind(nov_end), LeapKind::Delete);
+        // No view at all (no anchor, nothing authenticated): a hint has nothing to shorten.
+        let mut m = LeapMemory::default();
+        m.observe_unverified(reading(late_nov), None);
+        assert_eq!(m.view(None), Unassessed, "a hint never assesses anything");
+        // It never establishes a clear and never releases anything (an authenticated, qualified
+        // reading is needed for that).
+        assert_eq!(m.cleared_until_ms, None);
+        // Under an authenticated Insert for the same month end, the hint shortens it to the earliest
+        // step (T - S instead of T), keeps the authenticated event in place, and repeating it (any
+        // number of times, from any reading in November) changes nothing.
+        let mut m = LeapMemory::default();
+        m.observe(LeapObservation::Insert, Some(reading(late_nov)), true);
+        let before = m.clone();
+        m.observe_unverified(reading(late_nov), Some(mid_nov));
+        assert_eq!(m.view(Some(mid_nov)), hinted);
+        assert_eq!(m.pending, before.pending, "the authenticated event is untouched");
+        let once = m.clone();
+        for t in [late_nov, mid_nov, late_nov + 60_000] {
+            m.observe_unverified(reading(t), Some(mid_nov));
+        }
+        assert_eq!(m, once, "idempotent");
+        // A hint for a LATER month end does not shorten a November view and is not applied; it
+        // also never displaces the earlier hint (one slot, the earliest boundary).
+        m.observe_unverified(reading(ms(2026, 12, 15, 0, 0, 0)), Some(mid_nov));
+        assert_eq!(m.view(Some(mid_nov)), hinted);
+        assert_eq!(m.hint_ms, Some(nov_end));
+        // Under a clear without an anchor the hint shortens nothing that the clear did not already
+        // end, and an unauthenticated Normal is not even folded (the host ignores it).
+        let mut c = LeapMemory::default();
+        c.observe(LeapObservation::Normal, Some(reading(mid_nov)), true);
+        let cleared = c.view(None);
+        c.observe_unverified(reading(late_nov), None);
+        assert_eq!(c.view(None).horizon_ms(), cleared.horizon_ms());
+        // A qualified authenticated reading past the hint's release point withdraws it; an
+        // unqualified one does not.
+        c.observe(LeapObservation::Normal, Some((nov_end + S, nov_end + S + 26)), false);
+        assert_eq!(c.hint_ms, Some(nov_end));
+        c.observe(LeapObservation::Normal, Some((nov_end + S, nov_end + S + 26)), true);
+        assert_eq!(c.hint_ms, None);
+        assert_eq!(c.view(None), Clear { valid_until_ms: dec_end - S });
+        // A hint naming a month end the anchor is already past is stale for it: not applied, and
+        // replaced by the next hint.
+        let mut p = LeapMemory::default();
+        p.observe_unverified(reading(ms(2026, 10, 20, 0, 0, 0)), None);
+        assert_eq!(p.view(Some(mid_nov)), Clear { valid_until_ms: nov_end - S });
+        p.observe_unverified(reading(late_nov), Some(mid_nov));
+        assert_eq!(p.hint_ms, Some(nov_end));
+    }
+
+    #[test]
+    fn c11_a_hint_never_lengthens_any_view_in_any_month() {
+        // Every month 1970-2200, every kind of state the policy holds, hints read in that month,
+        // at its end and in the next: the view's horizon and guard never move later, and an
+        // unassessed view stays unassessed.
+        let seeded = |obs: LeapObservation, t: u64| {
+            let mut m = LeapMemory::default();
+            m.observe(obs, Some((t, t)), true);
+            m
+        };
+        let mut checked = 0u32;
+        for idx in (1970 * 12 + 1)..(2200 * 12) {
+            let start = month_start_ms(idx).unwrap();
+            let end = month_start_ms(idx + 1).unwrap();
+            let mid = start + (end - start) / 2;
+            let states = [
+                (LeapMemory::default(), None),
+                (LeapMemory::default(), Some(mid)),
+                (seeded(LeapObservation::Normal, mid), None),
+                (seeded(LeapObservation::Normal, mid), Some(mid)),
+                (seeded(LeapObservation::Insert, mid), Some(mid)),
+                (seeded(LeapObservation::Delete, mid), Some(mid)),
+                (seeded(LeapObservation::Insert, start - 1), Some(start - 1)),
+            ];
+            for (state, anchor) in &states {
+                for t in [start, mid, end - 1, end, end + (end - start) / 2] {
+                    let before = state.view(*anchor);
+                    let mut folded = state.clone();
+                    folded.observe_unverified((t - 13, t + 13), *anchor);
+                    let after = folded.view(*anchor);
+                    assert!(after.horizon_ms() <= before.horizon_ms(), "{t}: {before:?} -> {after:?}");
+                    assert!(guard(after) <= guard(before), "{t}: {before:?} -> {after:?}");
+                    assert_eq!(after == Unassessed, before == Unassessed);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 50_000, "{checked}");
+    }
+
+    #[test]
+    fn review_r5_an_announcement_on_a_straddling_reading_names_the_earlier_month_end() {
+        // The reviewer's missing test (mutant M16 survived at 0fb149d: the boundary inferred from
+        // the reading's HIGHEST possible time). A reading whose interval straddles a month boundary
+        // names the EARLIER month end (the event may be at that boundary right now), authenticated
+        // or not.
+        let t = ms(2027, 1, 1, 0, 0, 0);
+        for (obs, kind) in [
+            (LeapObservation::Insert, LeapKind::Insert),
+            (LeapObservation::Delete, LeapKind::Delete),
+        ] {
+            let mut m = LeapMemory::default();
+            m.observe(obs, Some((t - 13, t + 13)), true);
+            assert_eq!(m.view(None), Pending { kind, boundary_ms: t }, "{obs:?}");
+        }
+        // Unauthenticated, under the calendar-only bound of a December anchor (horizon T - S): the
+        // hint names T too (applied as soon as a view exists to shorten; here it equals the bound).
+        let anchor = ms(2026, 12, 20, 0, 0, 0);
+        let mut m = LeapMemory::default();
+        m.observe_unverified((t - 13, t + 13), Some(anchor));
+        assert_eq!(m.hint_ms, Some(t));
+        assert_eq!(m.view(Some(anchor)).horizon_ms(), t - S);
+    }
+
+    fn claim(view: LeapView) -> LeapClaim {
+        LeapClaim {
+            policy: POLICY_VERSION,
+            view,
+        }
+    }
+    #[test]
+    fn c4_c7_c9_c11_a_restored_claim_is_at_most_a_shorten_only_hint() {
+        let nov_end = ms(2026, 12, 1, 0, 0, 0);
+        let mid_nov = ms(2026, 11, 10, 0, 0, 0);
+        // Nothing was assessed: nothing to restore, whatever the policy tag says.
+        let mut m = LeapMemory::default();
+        assert_eq!(m.restore_claim(LeapClaim { policy: 99, view: Unassessed }), ClaimDisposition::NoClaim);
+        // C7: a claim of another policy version (older or newer) gains NO authority, not even as a
+        // hint that could only shorten.
+        for policy in [1, POLICY_VERSION + 1] {
+            for view in [
+                Clear { valid_until_ms: nov_end - S },
+                Pending { kind: LeapKind::Delete, boundary_ms: nov_end },
+            ] {
+                let mut m = LeapMemory::default();
+                assert_eq!(
+                    m.restore_claim(LeapClaim { policy, view }),
+                    ClaimDisposition::Discarded(DiscardReason::PolicyVersion)
+                );
+                assert_eq!(m, LeapMemory::default());
+            }
+        }
+        // C9: a stored clear is never restored, whatever horizon it names.
+        for v in [nov_end - S, ms(2027, 3, 1, 0, 0, 0) - S, u64::MAX] {
+            let mut m = LeapMemory::default();
+            assert_eq!(
+                m.restore_claim(claim(Clear { valid_until_ms: v })),
+                ClaimDisposition::Discarded(DiscardReason::ClearNotRestored)
+            );
+            assert_eq!(m, LeapMemory::default());
+        }
+        // A stored announcement that is not a month start is malformed.
+        let mut m = LeapMemory::default();
+        assert_eq!(
+            m.restore_claim(claim(Pending { kind: LeapKind::Insert, boundary_ms: nov_end + 1 })),
+            ClaimDisposition::Discarded(DiscardReason::Malformed)
+        );
+        // C11: a stored announcement becomes a HINT, whatever kind it names and however far away:
+        // it only ever shortens (an insertion's step T becomes the earliest step T - S), it
+        // establishes nothing on its own, and a far-future one has no effect until its month.
+        let mut m = LeapMemory::default();
+        assert_eq!(
+            m.restore_claim(claim(Pending { kind: LeapKind::Insert, boundary_ms: nov_end })),
+            ClaimDisposition::Hinted
+        );
+        assert_eq!(m.view(None), Unassessed);
+        m.observe(LeapObservation::Insert, Some((mid_nov, mid_nov + 26)), true);
+        assert_eq!(m.view(Some(mid_nov)), Pending { kind: LeapKind::Delete, boundary_ms: nov_end });
+        let mut far = LeapMemory::default();
+        assert_eq!(
+            far.restore_claim(claim(Pending { kind: LeapKind::Insert, boundary_ms: ms(2030, 1, 1, 0, 0, 0) })),
+            ClaimDisposition::Hinted
+        );
+        far.observe(LeapObservation::Normal, Some((mid_nov, mid_nov + 26)), true);
+        assert_eq!(far.view(Some(mid_nov)), Clear { valid_until_ms: nov_end - S });
+    }
+
+    #[test]
+    fn restoring_any_claim_never_lengthens_any_view_in_any_month() {
+        // For every month and every claim shape a record can carry, the views of a memory that
+        // restored the claim are never longer (horizon and guard) than those of one that did not,
+        // with or without an anchor, before and after a qualified authenticated reading.
+        let mut checked = 0u32;
+        for idx in (1970 * 12 + 1)..(2200 * 12) {
+            let start = month_start_ms(idx).unwrap();
+            let end = month_start_ms(idx + 1).unwrap();
+            let mid = start + (end - start) / 2;
+            for view in [
+                Clear { valid_until_ms: end - S },
+                Clear { valid_until_ms: month_start_ms(idx + 2).unwrap() - S },
+                Pending { kind: LeapKind::Insert, boundary_ms: end },
+                Pending { kind: LeapKind::Insert, boundary_ms: month_start_ms(idx + 2).unwrap() },
+                Pending { kind: LeapKind::Delete, boundary_ms: start },
+            ] {
+                let mut restored = LeapMemory::default();
+                restored.restore_claim(claim(view));
+                let mut plain = LeapMemory::default();
+                for step in 0..2 {
+                    if step == 1 {
+                        restored.observe(LeapObservation::Normal, Some((mid, mid + 26)), true);
+                        plain.observe(LeapObservation::Normal, Some((mid, mid + 26)), true);
+                    }
+                    for anchor in [None, Some(mid)] {
+                        let (a, b) = (restored.view(anchor), plain.view(anchor));
+                        assert!(a.horizon_ms() <= b.horizon_ms(), "{view:?}: {a:?} vs {b:?}");
+                        assert!(guard(a) <= guard(b), "{view:?}: {a:?} vs {b:?}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 50_000, "{checked}");
+    }
+}

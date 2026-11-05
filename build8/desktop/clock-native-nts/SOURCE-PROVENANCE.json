@@ -1,0 +1,44 @@
+{
+  "source_head": "d1997eef228ce92b97d633afcfb6aac180b6b1d2",
+  "source": "qualification/native-nts-observer-v1",
+  "inputs": {
+    "src/bounded_io.rs": {
+      "bytes": 2447,
+      "sha256": "8a642e06f78a7726ae35467950d41146f69db6858d8af70acfbb98c793e599b6"
+    },
+    "src/integer_interval.rs": {
+      "bytes": 15850,
+      "sha256": "f61fc4edae8a41b7b60993f745ff36f5e0bb8b7e83942ec4596facd32a69c071"
+    },
+    "src/native_linux_elapsed.rs": {
+      "bytes": 3201,
+      "sha256": "0b315194a1a868bd7134d673b42995e6ade1264790e267258d54ff4e943c8283"
+    },
+    "src/native_windows_elapsed.rs": {
+      "bytes": 6869,
+      "sha256": "bf9997a139536caa58eef3e6a4fc7d531ca0bf9ee096c0f9b0865dd29150cefe"
+    },
+    "src/observer.rs": {
+      "bytes": 6894,
+      "sha256": "f4779ac95e8bfd6ceb07518a52ac7e2c309e3d74f68ae7df93b1d8f01607dee3"
+    },
+    "src/windows_boot.rs": {
+      "bytes": 5625,
+      "sha256": "c60d8e369dd3d8de0495465233d09e13590350607ae4e6946a09c0d94406de7f"
+    },
+    "src/native_stamp.rs": {
+      "bytes": 6369,
+      "sha256": "1a48479ed8fc0b7456346856e5969ed6af601494031564f4ab768e275458d334"
+    },
+    "Cargo.toml": {
+      "bytes": 805,
+      "sha256": "64b5c9aad965455e76c3d606236db23ac2ebda89b432a10bedde670094e554fb"
+    },
+    "Cargo.lock": {
+      "bytes": 34175,
+      "sha256": "6099d9c198f676bb6446462499e4e5396d448f4e5cad25281dc43ec1f1a8366c"
+    }
+  },
+  "status": "SOURCE_ONLY_UNCOMPILED",
+  "adaptation": "Standalone ordinary library identity; private authenticated result, explicit required deployment inputs; no diagnostic JSON ingestion or production startup"
+}

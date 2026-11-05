@@ -1,0 +1,753 @@
+//! Candidate authenticated hybrid node controls, admission and exit scheduling.
+//! No rotation/recovery fallback and no production executor activation.
+use crate::{
+    Error, Hash, NETWORK_ID, Result,
+    admission_v2::{Expected, Policy},
+    anchors::FinalizedAnchor,
+    continuity_exit_v2::{Exit, ParentControl},
+    continuity_keys_v2, domain_hash,
+    node_admission_v2::Binding,
+    recovery::ContinuityState,
+    wallet_authority_v1::WalletBook,
+};
+use minicbor::{Decoder, Encoder, data::Type};
+use std::collections::{BTreeMap, BTreeSet};
+const MAX_RECORD: usize = 17 * 1024;
+pub(crate) fn is_record(raw: &[u8]) -> bool {
+    let mut d = Decoder::new(raw);
+    d.array().ok().flatten().is_some() && d.u8().ok() == Some(2) && d.u8().ok() == Some(51)
+}
+fn key(node: Hash) -> Hash {
+    domain_hash(b"MUTINY-BUILD8-NODE-CONTROL-KEY-V2", &node)
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Control {
+    binding: Binding,
+    sequence: u64,
+    admitted_height: u64,
+    admission_boundary: Option<u64>,
+    exit_boundary: Option<u64>,
+    hardware_since_height: u64,
+    node_current: Option<Vec<u8>>,
+}
+impl Control {
+    pub fn node(&self) -> Hash {
+        self.binding.admission.node
+    }
+    pub fn generation(&self) -> u64 {
+        self.binding.admission.hardware_generation
+    }
+    pub(crate) fn admitted_height(&self) -> u64 {
+        self.admitted_height
+    }
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    pub fn exit_boundary(&self) -> Option<u64> {
+        self.exit_boundary
+    }
+    pub fn binding(&self) -> &Binding {
+        &self.binding
+    }
+    pub fn current_node_descriptor(&self) -> &[u8] {
+        self.node_current
+            .as_deref()
+            .unwrap_or(&self.binding.node_descriptor)
+    }
+    pub(crate) fn parent(&self) -> ParentControl<'_> {
+        ParentControl {
+            node: self.node(),
+            hardware_generation: self.generation(),
+            sequence: self.sequence,
+            owner_address: self.binding.admission.owner,
+            node_descriptor: self.current_node_descriptor(),
+            exit_pending: self.exit_boundary.is_some(),
+        }
+    }
+    fn encode(&self) -> Result<Vec<u8>> {
+        for boundary in [self.admission_boundary, self.exit_boundary]
+            .into_iter()
+            .flatten()
+        {
+            if boundary == 0 || !boundary.is_multiple_of(60) || boundary < self.admitted_height {
+                return Err(Error::InvalidCounter);
+            }
+        }
+        if self.admission_boundary.is_some() && self.exit_boundary.is_some()
+            || self.hardware_since_height < self.admitted_height
+        {
+            return Err(Error::InvalidCounter);
+        }
+        let mut e = Encoder::new(Vec::new());
+        e.array(if self.node_current.is_some() { 10 } else { 9 })
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .u8(51)
+            .unwrap()
+            .u32(NETWORK_ID)
+            .unwrap()
+            .bytes(&self.binding.encode()?)
+            .unwrap()
+            .u64(self.sequence)
+            .unwrap()
+            .u64(self.admitted_height)
+            .unwrap();
+        for h in [self.admission_boundary, self.exit_boundary] {
+            if let Some(h) = h {
+                e.u64(h).unwrap();
+            } else {
+                e.null().unwrap();
+            }
+        }
+        e.u64(self.hardware_since_height).unwrap();
+        if let Some(current) = &self.node_current {
+            let (key, generation) = mutiny_crypto_v2::PublicKey::decode_descriptor(current)
+                .map_err(|_| Error::Codec)?;
+            if key.role != mutiny_crypto_v2::Role::Node
+                || generation <= 1
+                || current == &self.binding.node_descriptor
+            {
+                return Err(Error::WrongGeneration);
+            }
+            e.bytes(current).unwrap();
+        }
+        let raw = e.into_writer();
+        if raw.len() > MAX_RECORD {
+            return Err(Error::Oversize);
+        }
+        Ok(raw)
+    }
+    pub(crate) fn decode(raw: &[u8]) -> Result<Self> {
+        crate::blocks::canonical(raw, MAX_RECORD)?;
+        let mut d = Decoder::new(raw);
+        let fields = d.array().map_err(|_| Error::Codec)?;
+        if !matches!(fields, Some(9 | 10))
+            || d.u8().map_err(|_| Error::Codec)? != 2
+            || d.u8().map_err(|_| Error::Codec)? != 51
+            || d.u32().map_err(|_| Error::Codec)? != NETWORK_ID
+        {
+            return Err(Error::Codec);
+        }
+        let c = Self {
+            binding: Binding::decode(d.bytes().map_err(|_| Error::Codec)?)?,
+            sequence: d.u64().map_err(|_| Error::Codec)?,
+            admitted_height: d.u64().map_err(|_| Error::Codec)?,
+            admission_boundary: optional(&mut d)?,
+            exit_boundary: optional(&mut d)?,
+            hardware_since_height: d.u64().map_err(|_| Error::Codec)?,
+            node_current: if fields == Some(10) {
+                Some(d.bytes().map_err(|_| Error::Codec)?.to_vec())
+            } else {
+                None
+            },
+        };
+        if d.position() != raw.len() || c.encode()? != raw {
+            return Err(Error::NonCanonical);
+        }
+        Ok(c)
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Book {
+    controls: BTreeMap<Hash, Control>,
+}
+impl Book {
+    pub(crate) fn controls(&self) -> impl Iterator<Item = &Control> {
+        self.controls.values()
+    }
+    /// Tentative recovery control. Hardware credit starts AFTER the finalized
+    /// recovery parent, matching the existing exclusive hardware-since rule.
+    /// The archive itself is committed by the first resumed canonical block.
+    pub(crate) fn stage_recovery(
+        &self,
+        material: &crate::recovery_replacement_v2::Replacement,
+        registry: &ContinuityState,
+        keys: &continuity_keys_v2::Book,
+    ) -> Result<Self> {
+        let old = self.get(material.old_node).ok_or(Error::UnknownSigner)?;
+        let node = material.binding.admission.node;
+        if old.admission_boundary.is_some()
+            || old.exit_boundary.is_some()
+            || self.controls.contains_key(&node)
+            || old.generation() != material.old_hardware_generation
+        {
+            return Err(Error::WrongGeneration);
+        }
+        let height = material
+            .parent
+            .height
+            .checked_add(1)
+            .ok_or(Error::Overflow)?;
+        let mut next = self.clone();
+        next.controls
+            .remove(&material.old_node)
+            .ok_or(Error::UnknownSigner)?;
+        next.controls.insert(
+            node,
+            Control {
+                binding: material.binding.clone(),
+                sequence: old.sequence.checked_add(1).ok_or(Error::Overflow)?,
+                admitted_height: old.admitted_height,
+                admission_boundary: None,
+                exit_boundary: None,
+                hardware_since_height: material.parent.height,
+                node_current: None,
+            },
+        );
+        next.validate_at_height(registry, keys, height)?;
+        Ok(next)
+    }
+    pub(crate) fn stage_node_key_rotation(
+        &self,
+        operation: &crate::node_key_rotate_v2::NodeKeyRotate,
+        parent: &FinalizedAnchor,
+        wallets: &WalletBook,
+        keys: &continuity_keys_v2::Book,
+    ) -> Result<Self> {
+        let old = self.get(operation.node).ok_or(Error::UnknownSigner)?;
+        if old.admission_boundary.is_some() || old.exit_boundary.is_some() {
+            return Err(Error::WrongOperation);
+        }
+        operation.verify(parent, &old.parent(), wallets)?;
+        let mut next = self.clone();
+        let control = next
+            .controls
+            .get_mut(&operation.node)
+            .ok_or(Error::UnknownSigner)?;
+        control.node_current = Some(operation.proposed.clone());
+        control.sequence = operation.sequence;
+        next.records(keys)?;
+        Ok(next)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.controls.is_empty()
+    }
+    pub fn get(&self, node: Hash) -> Option<&Control> {
+        self.controls.get(&node)
+    }
+    /// Called only after independently validated canonical equivocation
+    /// settlement. This clears scheduled transitions, not historical identity.
+    pub(crate) fn revoke_nodes(&mut self, nodes: &BTreeSet<Hash>) -> Result<()> {
+        if nodes.iter().any(|node| !self.controls.contains_key(node)) {
+            return Err(Error::UnknownSigner);
+        }
+        for node in nodes {
+            let control = self.controls.get_mut(node).ok_or(Error::UnknownSigner)?;
+            control.exit_boundary = None;
+            control.admission_boundary = None;
+        }
+        Ok(())
+    }
+    /// A2 nonpunitive eligibility exclusion. Separate from equivocation
+    /// settlement: only pending membership transitions are cancelled. No money,
+    /// key, history, reputation, penalty or bond deadline is modified here.
+    pub(crate) fn exclude_endorsement_nodes(&mut self, nodes: &BTreeSet<Hash>) -> Result<()> {
+        if nodes.iter().any(|node| !self.controls.contains_key(node)) { return Err(Error::UnknownSigner); }
+        for node in nodes {
+            let control = self.controls.get_mut(node).ok_or(Error::UnknownSigner)?;
+            control.admission_boundary = None;
+            control.exit_boundary = None;
+        }
+        Ok(())
+    }
+    pub(crate) fn endorsement_exclusions_clear(&self, nodes: &BTreeSet<Hash>) -> Result<bool> {
+        for node in nodes {
+            let control = self.controls.get(node).ok_or(Error::UnknownSigner)?;
+            if control.admission_boundary.is_some() || control.exit_boundary.is_some() { return Ok(false); }
+        }
+        Ok(true)
+    }
+    /// Initial one-physical-voter construction only. Both returned books are
+    /// tentative Genesis inputs; this never installs a live canonical state.
+    /// `class` is the admission class of the Genesis being built. There is deliberately no V2
+    /// Genesis CONSTRUCTOR (which stack Production Genesis uses is an open decision); this book
+    /// constructor only applies the same class rule as every other admission path.
+    pub fn genesis(
+        binding: &Binding,
+        policy: &Policy,
+        expected: &Expected,
+        wallets: &WalletBook,
+        class: crate::provenance::AdmissionClass,
+    ) -> Result<(Self, continuity_keys_v2::Book)> {
+        binding.verify(policy, expected, wallets, class)?;
+        let (_, node_generation) =
+            mutiny_crypto_v2::PublicKey::decode_descriptor(&binding.node_descriptor)
+                .map_err(|_| Error::Codec)?;
+        if binding.admission.hardware_generation != 1
+            || binding.node_signer.is_some()
+            || binding.admission.key_generation != 1
+            || node_generation != 1
+        {
+            return Err(Error::WrongGeneration);
+        }
+        let mut keys = continuity_keys_v2::Book::default();
+        keys.admit(&binding.admission, policy, expected, wallets, class)?;
+        let book = Self {
+            controls: BTreeMap::from([(
+                binding.admission.node,
+                Control {
+                    binding: binding.clone(),
+                    sequence: 0,
+                    admitted_height: 0,
+                    admission_boundary: None,
+                    exit_boundary: None,
+                    hardware_since_height: 0,
+                    node_current: None,
+                },
+            )]),
+        };
+        book.records(&keys)?;
+        Ok((book, keys))
+    }
+    pub(crate) fn stage_join(
+        &self,
+        binding: &Binding,
+        policy: &Policy,
+        expected: &Expected,
+        wallets: &WalletBook,
+        height: u64,
+        registry: &ContinuityState,
+        keys: &continuity_keys_v2::Book,
+        class: crate::provenance::AdmissionClass,
+    ) -> Result<(Self, continuity_keys_v2::Book, ContinuityState)> {
+        self.validate_registry(registry, keys)?;
+        if height == 0 || registry.members.len() >= crate::continuity_v2::MAX_VOTERS {
+            return Err(Error::Capacity);
+        }
+        let a = &binding.admission;
+        let (_, node_generation) =
+            mutiny_crypto_v2::PublicKey::decode_descriptor(&binding.node_descriptor)
+                .map_err(|_| Error::Codec)?;
+        if a.hardware_generation != 1
+            || a.key_generation != 1
+            || node_generation != 1
+            || binding.node_signer.is_some()
+        {
+            return Err(Error::WrongGeneration);
+        }
+        binding.verify(policy, expected, wallets, class)?;
+        let profile = crate::tpm::TpmProfile::decode(&a.profile)?;
+        let voting_key = crate::tpm::public_key(&profile.voting_public, false)?;
+        if self.controls.contains_key(&a.node)
+            || registry.members.iter().any(|m| {
+                m.node == a.node
+                    || m.lineage == a.node
+                    || m.hardware == profile.hardware
+                    || m.voting_key == voting_key
+            })
+        {
+            return Err(Error::Duplicate);
+        }
+        let boundary = height.checked_add(59).ok_or(Error::Overflow)? / 60 * 60;
+        let mut next = self.clone();
+        let mut next_keys = keys.clone();
+        let mut updated = registry.clone();
+        next_keys.admit(a, policy, expected, wallets, class)?;
+        next.controls.insert(
+            a.node,
+            Control {
+                binding: binding.clone(),
+                sequence: 0,
+                admitted_height: height,
+                admission_boundary: if boundary == height {
+                    None
+                } else {
+                    Some(boundary)
+                },
+                exit_boundary: None,
+                hardware_since_height: height,
+                node_current: None,
+            },
+        );
+        updated.members.push(crate::recovery::Member {
+            lineage: a.node,
+            node: a.node,
+            hardware: profile.hardware,
+            generation: 1,
+            voting_key,
+            attestation: profile.commitment()?,
+            history: Default::default(),
+            physical: true,
+            eligible: boundary == height,
+            genesis_member: false,
+        });
+        next.validate_at_height(&updated, &next_keys, height)?;
+        Ok((next, next_keys, updated))
+    }
+    pub fn records(&self, keys: &continuity_keys_v2::Book) -> Result<BTreeMap<Hash, Vec<u8>>> {
+        if self.controls.len() > 1024 {
+            return Err(Error::Capacity);
+        }
+        let (mut ed, mut pq) = (BTreeSet::new(), BTreeSet::new());
+        let (mut forbidden_ed, mut forbidden_pq) = (BTreeSet::new(), BTreeSet::new());
+        for binding in keys.bindings() {
+            let (owner, _) =
+                mutiny_crypto_v2::PublicKey::decode_descriptor(binding.owner_descriptor())
+                    .map_err(|_| Error::Codec)?;
+            let continuity = binding.public()?;
+            forbidden_ed.extend([owner.ed448, continuity.ed448]);
+            forbidden_pq.extend([owner.fndsa, continuity.fndsa]);
+        }
+        let mut records = BTreeMap::new();
+        for (node, control) in &self.controls {
+            if *node != control.node() {
+                return Err(Error::WrongAnchor);
+            }
+            let stored = keys.get(*node).ok_or(Error::UnknownSigner)?;
+            control.binding.verify_stored(stored)?;
+            let (public, _) =
+                mutiny_crypto_v2::PublicKey::decode_descriptor(control.current_node_descriptor())
+                    .map_err(|_| Error::Codec)?;
+            if forbidden_ed.contains(&public.ed448)
+                || forbidden_pq.contains(&public.fndsa)
+                || !ed.insert(public.ed448)
+                || !pq.insert(public.fndsa)
+            {
+                return Err(Error::Duplicate);
+            }
+            records.insert(key(*node), control.encode()?);
+        }
+        Ok(records)
+    }
+    pub(crate) fn stage_key_rotation(
+        &self,
+        binding: &Binding,
+        sequence: u64,
+        policy: &Policy,
+        expected: &Expected,
+        wallets: &WalletBook,
+        keys: &continuity_keys_v2::Book,
+        class: crate::provenance::AdmissionClass,
+    ) -> Result<(Self, continuity_keys_v2::Book)> {
+        let node = binding.admission.node;
+        let old = self.get(node).ok_or(Error::UnknownSigner)?;
+        if old.admission_boundary.is_some()
+            || old.exit_boundary.is_some()
+            || old.sequence.checked_add(1) != Some(sequence)
+            || old.binding.node_descriptor != binding.node_descriptor
+            || old.current_node_descriptor() != binding.signer_descriptor()
+        {
+            return Err(Error::WrongGeneration);
+        }
+        binding.verify(policy, expected, wallets, class)?;
+        let next_keys =
+            keys.replace_software_key(&binding.admission, policy, expected, wallets, class)?;
+        let mut next = self.clone();
+        let control = next.controls.get_mut(&node).ok_or(Error::UnknownSigner)?;
+        control.binding = binding.clone();
+        control.sequence = sequence;
+        next.records(&next_keys)?;
+        Ok((next, next_keys))
+    }
+    /// Stage a fully verified ordinary hardware rotation after parent-slot and
+    /// economic accounting. Never changes lineage participation or bond history.
+    pub(crate) fn stage_hardware_rotation(
+        &self,
+        rotation: &crate::hardware_rotate_v2::HardwareRotate,
+        policy: &Policy,
+        expected: &Expected,
+        wallets: &WalletBook,
+        registry: &ContinuityState,
+        keys: &continuity_keys_v2::Book,
+        class: crate::provenance::AdmissionClass,
+    ) -> Result<(Self, continuity_keys_v2::Book, ContinuityState)> {
+        let binding = &rotation.binding;
+        let a = &binding.admission;
+        let old = self.get(a.node).ok_or(Error::UnknownSigner)?;
+        if old.admission_boundary.is_some()
+            || old.exit_boundary.is_some()
+            || old.sequence.checked_add(1) != Some(rotation.sequence)
+            || old.generation() != rotation.old_hardware_generation
+            || old.binding.node_descriptor != binding.node_descriptor
+            || old.current_node_descriptor() != binding.signer_descriptor()
+        {
+            return Err(Error::WrongGeneration);
+        }
+        binding.verify(policy, expected, wallets, class)?;
+        let next_keys = keys.replace_hardware(a, policy, expected, wallets, class)?;
+        let profile = crate::tpm::TpmProfile::decode(&a.profile)?;
+        let height = rotation
+            .parent
+            .height
+            .checked_add(1)
+            .ok_or(Error::Overflow)?;
+        let mut next = self.clone();
+        let mut updated = registry.clone();
+        let member = updated
+            .members
+            .iter_mut()
+            .find(|m| m.node == a.node)
+            .ok_or(Error::UnknownSigner)?;
+        if !member.physical
+            || !member.eligible
+            || member.generation != rotation.old_hardware_generation
+        {
+            return Err(Error::UnqualifiedPhysical);
+        }
+        let control = next.controls.get_mut(&a.node).ok_or(Error::UnknownSigner)?;
+        if member.hardware != profile.hardware {
+            member.history.h = 0;
+            control.hardware_since_height = height;
+        }
+        member.generation = a.hardware_generation;
+        member.hardware = profile.hardware;
+        member.voting_key = crate::tpm::public_key(&profile.voting_public, false)?;
+        member.attestation = profile.commitment()?;
+        control.binding = binding.clone();
+        control.sequence = rotation.sequence;
+        next.validate_at_height(&updated, &next_keys, height)?;
+        Ok((next, next_keys, updated))
+    }
+    /// Hardware-local H cannot inherit slots earned before the current physical
+    /// machine was installed. Lineage P/S/A and total participation are unchanged.
+    pub(crate) fn adjust_hardware_history(
+        &self,
+        height: u64,
+        body: &crate::blocks::BlockBody,
+        previous: &crate::continuity_execution::ContinuityAccounting,
+        before: &ContinuityState,
+        after: &mut ContinuityState,
+    ) -> Result<()> {
+        if !height.is_multiple_of(60) {
+            return Ok(());
+        }
+        let start = height.checked_sub(60).ok_or(Error::InvalidCounter)?;
+        for control in self
+            .controls
+            .values()
+            .filter(|c| c.hardware_since_height > start)
+        {
+            let old = before
+                .members
+                .iter()
+                .find(|m| m.node == control.node())
+                .ok_or(Error::UnknownSigner)?;
+            if !old.physical || !old.eligible {
+                continue;
+            }
+            let offset = control
+                .hardware_since_height
+                .checked_sub(start)
+                .ok_or(Error::InvalidCounter)?;
+            if offset > 60 {
+                return Err(Error::InvalidCounter);
+            }
+            let mut bits = previous
+                .slots
+                .bits
+                .get(&control.node())
+                .copied()
+                .unwrap_or(0);
+            if body.operations.iter().any(|raw| {
+                crate::participation::ParticipationAck::decode(raw)
+                    .is_ok_and(|ack| ack.node == control.node())
+            }) {
+                bits |= 1u64 << 59;
+            }
+            if (bits & (!0u64 << offset)).count_ones() < 54 {
+                after
+                    .members
+                    .iter_mut()
+                    .find(|m| m.node == control.node())
+                    .ok_or(Error::UnknownSigner)?
+                    .history
+                    .h = old.history.h;
+            }
+        }
+        Ok(())
+    }
+    /// Exact admitted physical identity matching. The caller authenticates the
+    /// parent state/root; these checks do not turn an arbitrary registry into trust.
+    pub fn validate_registry(
+        &self,
+        registry: &ContinuityState,
+        keys: &continuity_keys_v2::Book,
+    ) -> Result<()> {
+        self.records(keys)?;
+        if self.controls.len() != keys.bindings().count() {
+            return Err(Error::UnknownSigner);
+        }
+        let mut physical = BTreeSet::new();
+        for member in &registry.members {
+            if !member.physical {
+                if self.controls.contains_key(&member.node) {
+                    return Err(Error::UnqualifiedPhysical);
+                }
+                continue;
+            }
+            if !physical.insert(member.node) {
+                return Err(Error::Duplicate);
+            }
+            let control = self
+                .controls
+                .get(&member.node)
+                .ok_or(Error::UnknownSigner)?;
+            let admission = &control.binding.admission;
+            let profile = crate::tpm::TpmProfile::decode(&admission.profile)?;
+            if admission.genesis != registry.genesis
+                || admission.fingerprint != registry.fingerprint
+                || admission.hardware_generation != member.generation
+                || profile.hardware != member.hardware
+                || profile.commitment()? != member.attestation
+                || crate::tpm::public_key(&profile.voting_public, false)? != member.voting_key
+            {
+                return Err(Error::UnqualifiedPhysical);
+            }
+        }
+        if physical.len() != self.controls.len() {
+            return Err(Error::UnknownSigner);
+        }
+        registry.weights()?;
+        Ok(())
+    }
+    /// Validate controls against the canonical height represented by a parent
+    /// checkpoint. Pending transitions cannot already be overdue or grant
+    /// eligibility before their boundary has executed.
+    pub fn validate_at_height(
+        &self,
+        registry: &ContinuityState,
+        keys: &continuity_keys_v2::Book,
+        height: u64,
+    ) -> Result<()> {
+        self.validate_registry(registry, keys)?;
+        for member in registry.members.iter().filter(|m| m.physical) {
+            let control = self
+                .controls
+                .get(&member.node)
+                .ok_or(Error::UnknownSigner)?;
+            if control.admitted_height > height
+                || control.hardware_since_height > height
+                || control
+                    .admission_boundary
+                    .is_some_and(|h| member.eligible || h <= height)
+                || control
+                    .exit_boundary
+                    .is_some_and(|h| !member.eligible || h <= height)
+            {
+                return Err(Error::WrongGeneration);
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn from_records(
+        records: &BTreeMap<Hash, Vec<u8>>,
+        keys: &continuity_keys_v2::Book,
+    ) -> Result<Self> {
+        if records.len() > 1024 {
+            return Err(Error::Capacity);
+        }
+        let mut book = Self::default();
+        for (k, raw) in records {
+            let control = Control::decode(raw)?;
+            if *k != key(control.node()) {
+                return Err(Error::WrongAnchor);
+            }
+            if book.controls.insert(control.node(), control).is_some() {
+                return Err(Error::Duplicate);
+            }
+        }
+        if book.records(keys)? != *records {
+            return Err(Error::NonCanonical);
+        }
+        Ok(book)
+    }
+    /// Existing exit semantics: validate using H-1, schedule at ceil(H/60)*60,
+    /// apply after boundary participation/reputation. Return tentative copies;
+    /// the parent and its certificate weights are never mutated.
+    pub fn apply_exits(
+        &self,
+        parent: &FinalizedAnchor,
+        exits: &[Exit],
+        parent_registry: &ContinuityState,
+        post_registry: &ContinuityState,
+        parent_wallets: &WalletBook,
+        keys: &continuity_keys_v2::Book,
+    ) -> Result<(Self, ContinuityState)> {
+        self.validate_registry(parent_registry, keys)?;
+        self.validate_registry(post_registry, keys)?;
+        if exits.len() > 1024 {
+            return Err(Error::Capacity);
+        }
+        parent.validate_context(parent_registry.genesis, parent_registry.fingerprint)?;
+        if parent_registry.anchor.height != parent.height
+            || parent_registry.anchor.tip != parent.block
+        {
+            return Err(Error::WrongAnchor);
+        }
+        if post_registry.genesis != parent_registry.genesis
+            || post_registry.fingerprint != parent_registry.fingerprint
+        {
+            return Err(Error::WrongAnchor);
+        }
+        let height = parent.height.checked_add(1).ok_or(Error::Overflow)?;
+        let mut next = self.clone();
+        let mut updated = post_registry.clone();
+        let mut seen = BTreeSet::new();
+        for exit in exits {
+            if !seen.insert(exit.node) {
+                return Err(Error::Duplicate);
+            }
+            let control = self.controls.get(&exit.node).ok_or(Error::UnknownSigner)?;
+            exit.verify(parent, &control.parent(), parent_wallets)?;
+            let member = parent_registry
+                .members
+                .iter()
+                .find(|m| m.node == exit.node)
+                .ok_or(Error::UnknownSigner)?;
+            if !member.physical || !member.eligible || member.generation != control.generation() {
+                return Err(Error::WrongGeneration);
+            }
+            let control = next
+                .controls
+                .get_mut(&exit.node)
+                .ok_or(Error::UnknownSigner)?;
+            control.sequence = exit.sequence;
+            control.exit_boundary = Some(height.checked_add(59).ok_or(Error::Overflow)? / 60 * 60);
+        }
+        if height.is_multiple_of(60) {
+            for control in next.controls.values_mut() {
+                if control.admission_boundary.is_some_and(|h| h <= height) {
+                    let member = updated
+                        .members
+                        .iter_mut()
+                        .find(|m| m.node == control.node())
+                        .ok_or(Error::UnknownSigner)?;
+                    if member.eligible
+                        || member.generation != control.generation()
+                        || member.genesis_member
+                    {
+                        return Err(Error::WrongGeneration);
+                    }
+                    // Reputation accounting for this boundary already ran on
+                    // the parent registry. New eligibility affects H+1 only.
+                    member.eligible = true;
+                    control.admission_boundary = None;
+                }
+                if control.exit_boundary.is_some_and(|h| h <= height) {
+                    let member = updated
+                        .members
+                        .iter_mut()
+                        .find(|m| m.node == control.node())
+                        .ok_or(Error::UnknownSigner)?;
+                    if member.generation != control.generation() {
+                        return Err(Error::WrongGeneration);
+                    }
+                    member.eligible = false;
+                    control.exit_boundary = None;
+                }
+            }
+        }
+        updated.weights()?;
+        next.records(keys)?;
+        Ok((next, updated))
+    }
+}
+fn optional(d: &mut Decoder<'_>) -> Result<Option<u64>> {
+    if d.datatype().map_err(|_| Error::Codec)? == Type::Null {
+        d.null().map_err(|_| Error::Codec)?;
+        Ok(None)
+    } else {
+        Ok(Some(d.u64().map_err(|_| Error::Codec)?))
+    }
+}

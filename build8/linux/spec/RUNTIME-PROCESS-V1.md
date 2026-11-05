@@ -1,0 +1,172 @@
+# Configured runtime lifecycle
+
+RuntimeService owns one IntegratedActor behind one mutex, the Worker listener,
+authenticated peer listener, bounded reconnect/exchange supervisor and automatic
+actor ticks. It validates peer pins, connection bounds and the Worker signing
+key's equality with coordinator authority before launch. Both sockets bind
+before ticks start. Partial startup failure joins every component already
+started; shutdown stops ticks, then exchange and listeners. The process polls
+the finite actor output channel; peers fetch already-durable votes/proposals.
+Listener or actor failure terminates the configured process instead of leaving
+a misleading partly running service.
+
+The isolated qualification executable gate is `--qualification-runtime absoluteConfigPath`.
+The configuration is at most 64 KiB and requires these fields:
+
+`schema`, `actual_genesis`, `bundle`, `bundle_sha256`, `database`,
+`database_byte_limit`, `worker_key`, `peer_key`, `worker_bind`, `peer_bind`,
+`worker_connections`, `peer_connections`, `allowed_peers`, `outbound`.
+
+Schema is BUILD8-QUALIFICATION-RUNTIME-V1 and actual_genesis must be false.
+Paths are absolute. Key files are regular 32-byte mode-0600 custody files; only
+their public keys cross the transport. Listeners and outbound targets must be
+loopback. Outbound entries have exactly `address` and `public`; every public key
+must be allowed, unique, and different from the local peer key. Empty outbound
+is allowed for controlled incoming-only qualification. There are at most 32
+outbound peers, 32 peer connections, 256 Worker connections and 1,024 pins.
+
+The database byte limit is a local main-database capacity policy. It does not
+alter block validity or authorize pruning. Canonical, mempool and finality
+writers reapply the persisted page cap. Other bounded stores retain their own
+policies; final production disk provisioning is a separate readiness gate.
+
+EOF or `stop` on the controlling stdin joins the services. Status/event output
+contains public runtime information only. No background OS service is installed.
+This entry point is nonvoting and never opens a TPM bridge or counter journal.
+Shipping binaries carry no qualification custody: a `physical_voter` object in
+a BUILD8-QUALIFICATION-RUNTIME-V1 configuration is refused with the explicit
+message `qualification physical custody is not available in shipping binaries`
+[amendment 1]. The optional `physical_profile_commitment` field (32-byte hex) is
+an explicit bundle-SELECTION pin that can only narrow: a differing pin refuses
+the bundle, a matching pin cannot admit a profile the Genesis registry does not
+commit to, and a pin with a fixture-only bundle is refused. The non-voting
+`--qualification-stdio genesis-bundle chain-database expected-bundle-sha256`
+form takes the same optional pin as a sixth argument; the former seven-argument
+form, which opened a host-specific qualification custody bridge, is refused
+with the same message [amendment 3]. Final profile/admission artifacts,
+sealed-Genesis trust verification and the supervised custody handoff remain
+necessary before production launch.
+
+## Production entry point
+
+`--run absoluteConfigPath` requires BUILD8-RUNTIME-V1, actual_genesis=true
+and the additional independently pinned genesis_block_hash and local
+filesystem_reserve_bytes (at least 1 GiB). It uses the same
+actor and ingress validators. `--run` and `--initialize-production-custody`
+first require the compile-time production gate, which is closed in this
+candidate, so both stop before any configuration is read. Behind that gate the
+sealed Genesis is reconstructed before any chain database opens. The V1 sealed
+artifact (`BUILD8-SEALED-GENESIS-V1`) is not a Production Genesis
+implementation: under the binary's Production trust it is refused with
+`V1 is not a Production Genesis implementation (Order A9)`. V2 is the
+Production Genesis target (`BUILD8-SEALED-GENESIS-V2`): its class is one byte of
+the immutable Genesis inputs, committed into GenesisID and bound by the rule
+manifest, and no local flag, file name, environment variable or profile can
+change it. The binary-supported V2 trust (the candidate V9 manifest, class
+Production) commits to no endorsement-root set, so no Production Genesis can be
+verified until real roots exist and a regenerated manifest commits to them
+[amendment 4]. Release locking and the actual ceremony remain outstanding. This
+entry point is not evidence of readiness.
+
+Production listeners and pinned outbound peers may use routable addresses.
+The optional production `physical_voter` object has exactly seven fields:
+`node`, `journal`, `node_auth_key`, `custody_manifest_sha256`, `counter_index`
+(u32), `counter_public_sha256` and `tpm_helper` [amendment 2]. Its canonical
+Node authentication key must equal the process peer key. GenesisID,
+fingerprint, NodeID and the voting key come from the admitted physical member
+in consensus state; `counter_index`, `counter_public_sha256` and
+`custody_manifest_sha256` are explicit configuration cross-checked against the
+hash-pinned custody manifest, so a pin can only make startup fail. `tpm_helper`
+has exactly `privilege` (`"none"` or `"sudo-n"`) and `argv` (1 to 4 entries,
+each exactly `{"path": absolute file path, "sha256": 64 hex or null}`). The
+helper is spawned without a shell, with a cleared environment, working
+directory `/` and the fixed argument `serve-network`; `"sudo-n"` prepends only
+the absolute `/usr/bin/sudo -n --`, which may be set-user-ID root and never
+set-group-ID. Validation refuses a non-absolute path or one with `..`, `.` or
+empty components, a symlink in any component, a non-regular file,
+group/world-writable bits on the file or any ancestor, a file or ancestor not
+owned by uid 0, a set-user-ID or set-group-ID bit on a helper file, and a
+`sha256` that differs from the file bytes; off Linux it always refuses. Only a
+preexisting production journal and the separate host-local production TPM
+channel can be opened. There is no initial-counter, reset, qualification-helper
+fallback, or automatic custody handoff. An omitted physical_voter creates a
+nonvoting node without accessing TPM custody. The physical configuration path
+has not been exercised against real TPM custody.
+
+Production ignores stdin and joins its runtime on SIGTERM or SIGINT. Signal
+handlers only set an atomic stop flag; cleanup occurs in the ordinary main loop.
+Qualification retains its explicit stop/EOF controller.
+
+## One-connection bidirectional peer exchange
+
+A dialer first pulls missing finalized history and then pushes history to a
+behind listener, at most eight blocks per direction per exchange. Both paths
+share the same validation routine, process recovery overlays before successors,
+and submit competing common-height certificates to the receiving canonical
+store. Remote status is a fetch hint, never finality authority.
+
+At equal heights both sides transfer bounded operation/candidate/vote pages and
+eligible round proposals. Independent push/pull cursors reset when the height
+changes. Both coordinators can request purpose-bound work probes and collect
+responses over that same socket. Duplicate durable ingress is harmless; exchange
+counts are submission counts, not unique global object counts. Every socket
+operation occurs outside the actor mutex. This supports physical Node A dialing
+Vultr from behind NAT, including synchronization when Vultr starts behind; no
+reverse inbound connection to Node A is required.
+
+`--verify-sealed-genesis artifact artifactSHA GenesisBlockHash` independently
+reconstructs the supported Genesis and prints a public report without opening
+chain storage or TPM custody. It does not seal or authorize Genesis itself. It
+reads the V1 sealed artifact under the binary's Production trust and therefore
+refuses every V1 artifact with the Order A9 message; it has no V2 form in this
+candidate [amendment 4].
+
+`--initialize-production-custody productionConfigPath` is a separate explicit
+post-seal ceremony. It requires the production helper's pinned public manifest,
+height zero and an absent journal. It exclusively creates a mode-0600 journal
+at the exact manifest counter; it neither advances that counter nor creates
+votes. Parent directories are fsynced. Existing or incomplete journals are
+never replaced; failed construction leaves the reserved path for inspection.
+It starts no listeners or actor ticks. `--run` continues to require resume-only
+custody. No actual invocation has occurred during software qualification.
+
+## Amendments in this integration copy (Lane A1, 4 October 2026)
+
+The text above is `spec/RUNTIME-PROCESS-V1.md` of the original checkout (sha256
+e15cef2c6a02a3e244a4a8b88c911755c40b6302febc08b76354ab6d2f89cddf, 6,169 bytes,
+untracked at master d474110; `spec/imports/RUNTIME-PROCESS-V1.md.identity.txt`),
+imported verbatim and amended only where a paragraph is marked [amendment N].
+The original checkout is unchanged.
+
+1. Order A14, item (a) of `docs/BUILD-CONFIGURATIONS-V1.md` section 13: the
+   qualification entry point refuses `physical_voter`. Evidence (Windows host,
+   software): `node/src/main.rs` test
+   `qualification_physical_custody_is_refused_in_shipping_binaries`.
+2. Order A14, item (b), confirming the implemented A12 helper mode and A13
+   layout checks: the seven-field production `physical_voter` object and its
+   `tpm_helper` validation. Evidence: `node/src/main.rs` tests
+   `production_custody_fields_are_exact_and_explicit` and
+   `custody_pins_take_identity_from_consensus_and_helper_config_changes_nothing_else`;
+   `node/src/tpm_backend.rs` tests
+   `helper_configuration_is_explicit_bounded_and_absolute`,
+   `helper_invocation_has_no_shell_cleared_environment_and_fixed_protocol`,
+   `helper_path_policy_refuses_symlinks_writable_and_non_root_entries` and
+   `helper_validation_refuses_off_linux`. The Linux-only file checks have not
+   run on Linux.
+3. Order A14, item (c): the optional qualification `physical_profile_commitment`
+   field and sixth `--qualification-stdio` argument. Evidence:
+   `qualification_physical_custody_is_refused_in_shipping_binaries` and
+   `physical_profile_pin_only_narrows_and_never_admits` (`node/src/main.rs`).
+4. Orders A9 and A10: V1 is not a Production Genesis implementation; V2 is the
+   target, with the class committed in Genesis identity and the rule manifest
+   (`qualification/candidate-3/A-GENESIS-V2-DESIGN.md`). Evidence:
+   `node/src/genesis_artifact_v2.rs` tests
+   `v1_artifact_under_production_trust_is_refused_with_the_order_a9_message`
+   and `production_or_foreign_trust_refuses_the_test_value_artifact`;
+   `node/src/main.rs` test
+   `production_and_custody_entry_points_fail_before_configuration_or_platform_access`;
+   `consensus/tests/genesis_v2.rs`.
+
+Not amended here (outside the A-decisions; reported to Cipher): both
+configuration schemas also require a `clock` object (BUILD8-CLOCK-V1,
+`node/src/main.rs` `check_runtime_fields`), which the field list above omits.

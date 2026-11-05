@@ -1,0 +1,192 @@
+//! Pure bounded hybrid body planning. Selection is local policy; every chosen
+//! body must pass complete explicit V2 execution before work signing. No finality
+//! or canonical-state installation is performed here.
+use crate::{
+    Hash, NETWORK_ID,
+    anchors::FinalizedAnchor,
+    blocks::BlockBody,
+    execution::{CandidatePreparation, Execution, State, WorkParent},
+    mempool_v2::Mempool,
+    pow::Candidate,
+};
+pub const MAX_PREVIEWS: usize = 128;
+/// Complete atomic objects; implementations report their finalized references.
+pub trait PendingSource: crate::op_envelope_v1::PendingReferences {
+    fn pending_items_at(&self, anchor: &FinalizedAnchor, state: &State)
+        -> std::result::Result<Vec<crate::submission_v1::Submission>, String>;
+}
+impl PendingSource for Mempool {
+    fn pending_items_at(&self, anchor: &FinalizedAnchor, state: &State)
+        -> std::result::Result<Vec<crate::submission_v1::Submission>, String> {
+        self.pending_at(anchor,state).map_err(|e|format!("{e:?}"))?.into_iter()
+            .map(|t|t.encode().map_err(|e|format!("{e:?}"))
+                .and_then(|raw|crate::submission_v1::Submission::decode(0,&raw).map_err(|e|format!("{e:?}"))))
+            .collect()
+    }
+}
+impl PendingSource for crate::submission_pool_v1::SubmissionPool {
+    fn pending_items_at(&self, anchor: &FinalizedAnchor, state: &State)
+        -> std::result::Result<Vec<crate::submission_v1::Submission>, String> {
+        self.pending_at(anchor,state).map_err(|e|format!("{e:?}"))
+    }
+}
+pub struct Request<'a> {
+    pub parent: &'a WorkParent,
+    pub state: &'a State,
+    pub pool: &'a dyn PendingSource,
+    pub license: Hash,
+    pub worker: Hash,
+    pub timestamp: u64,
+    pub ticket: u64,
+    pub operations: &'a [Vec<u8>],
+}
+pub struct Prepared {
+    pub candidate: Candidate,
+    pub body: BlockBody,
+    pub execution: Execution,
+}
+pub fn prepare(request: Request<'_>) -> std::result::Result<Prepared, String> {
+    prepare_with_history(request, &Default::default())
+}
+/// Historical authorities must come from authenticated canonical replay.
+pub fn prepare_with_history(
+    request: Request<'_>,
+    history: &crate::evidence_history_v2::History,
+) -> std::result::Result<Prepared, String> {
+    prepare_with_recovery(request, history, None)
+}
+pub(crate) fn prepare_with_recovery(
+    request: Request<'_>,
+    history: &crate::evidence_history_v2::History,
+    recovery: Option<&crate::recovery_transition_v2::Prepared>,
+) -> std::result::Result<Prepared, String> {
+    let Request {
+        parent,
+        state,
+        pool,
+        license,
+        worker,
+        timestamp,
+        ticket,
+        operations,
+    } = request;
+    if operations.len() > 4096
+        || operations.iter().any(|raw| raw.len() > 16384)
+        || operations
+            .iter()
+            .try_fold(0usize, |n, raw| n.checked_add(raw.len()))
+            .is_none_or(|n| n > 65536)
+    {
+        return Err("Hybrid operation capacity".into());
+    }
+
+    let height = parent.height.checked_add(1).ok_or("Height exhausted")?;
+    let mut candidate = Candidate {
+        network: NETWORK_ID,
+        genesis: parent.genesis,
+        fingerprint: parent.fingerprint,
+        parent: parent.block,
+        height,
+        timestamp,
+        body_root: [0; 32],
+        state_root: [0; 32],
+        license,
+        worker,
+        target: parent.target,
+    };
+    let (_, owner, _) = state
+        .work_context_v2(parent, &candidate)
+        .map_err(|e| format!("Hybrid candidate execution: {e:?}"))?;
+    let mut body = BlockBody {
+        height,
+        reward_owner: owner,
+        fees: 0,
+        transactions: vec![],
+        operations: operations.to_vec(),
+    };
+    let anchor = FinalizedAnchor {
+        network: NETWORK_ID,
+        genesis: parent.genesis,
+        fingerprint: parent.fingerprint,
+        height: parent.height,
+        block: parent.block,
+    };
+    let pending = pool
+        .pending_items_at(&anchor, state)
+        .map_err(|e| format!("Hybrid pending basis: {e:?}"))?;
+    // A funded BondCreate (kind 24) carries its own inputs: there is no separate funding
+    // transaction to pre-select. Its DECLARED fee joins the block fee exactly as the executor
+    // pre-sums it (design 1.c); the complete execution below verifies it.
+    body.fees = crate::trading_host_v1::preview_fees(operations)
+        .map_err(|e| format!("Hybrid trading candidate: {e:?}"))?
+        .checked_add(
+            crate::bond_create_v3::declared_fees(operations)
+                .map_err(|e| format!("Hybrid candidate execution: {e:?}"))?,
+        )
+        .ok_or("Hybrid fee overflow")?;
+    candidate.body_root = body
+        .root()
+        .map_err(|e| format!("Hybrid candidate execution: {e:?}"))?;
+    let mut execution = state
+        .prepare_candidate_with_recovery_v2(
+            CandidatePreparation {
+                parent,
+                candidate: &candidate,
+                ticket_sequence: ticket,
+                body: &body,
+            },
+            history,
+            recovery,
+        )
+        .map_err(|e| format!("Hybrid candidate execution: {e:?}"))?;
+    let mut pending = pending;
+    pending.sort_by(|a,b| {
+        let lhs=(a.fee() as u128)*(b.raw.len() as u128);
+        let rhs=(b.fee() as u128)*(a.raw.len() as u128);
+        rhs.cmp(&lhs).then(a.id.cmp(&b.id))
+    });
+    // AM-3: reserve the first 32 trials for fee-free structural work. Remaining
+    // trials keep the same fee-per-byte/id ordering. Failed trials count too.
+    let structural: Vec<_> = pending.iter().filter(|o|o.structural() && o.fee()==0).take(32).map(|o|o.id).collect();
+    let selected: Vec<_> = structural.iter().filter_map(|id|pending.iter().find(|o|&o.id==id)).chain(
+        pending.iter().filter(|o|!structural.contains(&o.id)).take(MAX_PREVIEWS-structural.len())).collect();
+    for object in selected {
+
+        let Some(fees) = body.fees.checked_add(object.fee()) else {
+            continue;
+        };
+        let mut trial = body.clone();
+        trial.fees = fees;
+        if object.list==0 {trial.transactions.push(object.raw.clone());}
+        else {
+            // Acknowledgements remain last, as required by the canonical body codec.
+            let pos=trial.operations.iter().position(|r|crate::blocks::operation_kind(r).ok()==Some(11)).unwrap_or(trial.operations.len());
+            trial.operations.insert(pos,object.raw.clone());
+        }
+        let Ok(root) = trial.root() else {
+            continue;
+        };
+        let mut c = candidate.clone();
+        c.body_root = root;
+        if let Ok(result) = state.prepare_candidate_with_recovery_v2(
+            CandidatePreparation {
+                parent,
+                candidate: &c,
+                ticket_sequence: ticket,
+                body: &trial,
+            },
+            history,
+            recovery,
+        ) {
+            body = trial;
+            candidate = c;
+            execution = result;
+        }
+    }
+    candidate.state_root = execution.root;
+    Ok(Prepared {
+        candidate,
+        body,
+        execution,
+    })
+}

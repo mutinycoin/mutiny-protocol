@@ -1,0 +1,794 @@
+//! Candidate Continuity-only encrypted software custody adapter. This is not
+//! TPM-native Ed448/FN-DSA and does not enable production node startup.
+//! Host file protection and the counter backend's exclusive lock are mandatory
+//! integration boundaries; this module never generates or exports private keys.
+#[cfg(test)]
+#[path = "test_dir.rs"]
+mod test_dir;
+use mutiny_consensus_v8::counter_voter_v2::{CounterSigningBackend, MigrationReceipt};
+use mutiny_consensus_v8::{
+    Hash, NETWORK_ID, anchors::FinalizedAnchor, continuity_v2::Vote,
+    counter_store::MonotonicCounter, votes_v2::AuthenticatedRound,
+};
+use mutiny_crypto_v2::{Domain, HybridKey, HybridSignature, PublicKey, Role};
+type Result<T> = std::result::Result<T, String>;
+
+/// Constructed from admitted physical parent authority, not envelope
+/// metadata. The custody AAD is the exact durable voter identity context.
+pub struct Pins {
+    context: Hash,
+    activation_rule:Option<Hash>,
+    genesis: Hash,
+    fingerprint: Hash,
+    node: Hash,
+    hardware_generation: u64,
+    key_generation: u64,
+    tpm_identity: Hash,
+    profile: Hash,
+    public: PublicKey,
+}
+impl Pins {
+    fn check_work_probe(
+        &self,
+        decision: &mutiny_consensus_v8::certificates::Decision,
+        fragment: &mutiny_consensus_v8::liveness_v2::Fragment,
+    ) -> Result<()> {
+        fragment
+            .unsigned(decision)
+            .map_err(|_| "Work-liveness message encoding")?;
+        let height = decision
+            .height
+            .checked_sub(1)
+            .ok_or("Work-liveness height")?;
+        let parent = FinalizedAnchor {
+            network: NETWORK_ID,
+            genesis: self.genesis,
+            fingerprint: self.fingerprint,
+            height,
+            block: decision.parent,
+        };
+        decision
+            .verify_parent(&parent)
+            .map_err(|_| "Work-liveness parent context")?;
+        if decision.continuity_period != height / 60
+            || fragment.node != self.node
+            || fragment.hardware_generation != self.hardware_generation
+            || fragment.key_generation != self.key_generation
+            || fragment.tpm_identity != self.tpm_identity
+            || fragment.profile != self.profile
+        {
+            return Err("Work-liveness custody identity mismatch".into());
+        }
+        Ok(())
+    }
+    pub fn from_round(round: &AuthenticatedRound, node: Hash) -> Result<Self> {
+        let member = round
+            .authority()
+            .voters
+            .get(&node)
+            .ok_or("Continuity custody authority unavailable")?;
+        if !member.admitted || !member.physical || !member.eligible || member.revoked {
+            return Err("Continuity custody physical eligibility unavailable".into());
+        }
+        // Validate key/profile/generation even when reputation is zero.
+        // Possessing/unlocking custody grants no voting weight.
+        member
+            .weight()
+            .map_err(|_| "Continuity custody identity invalid")?;
+        let parent = &round.authority().parent;
+        Ok(Self {
+            activation_rule:round.authority().activation_rule,
+            context: round
+                .signing_context(node)
+                .map_err(|_| "Continuity custody context invalid")?,
+            genesis: parent.genesis,
+            fingerprint: parent.fingerprint,
+            node,
+            hardware_generation: member.hardware_generation,
+            key_generation: member.key_generation,
+            tpm_identity: member.tpm_identity(),
+            profile: member.profile,
+            public: member.public.clone(),
+        })
+    }
+    pub fn context(&self) -> Hash {
+        self.context
+    }
+    fn check_vote(&self, message: &[u8]) -> Result<()> {
+        if message.len() > mutiny_consensus_v8::continuity_v2::MAX_VOTE_BYTES {
+            return Err("Continuity vote size".into());
+        }
+        let mut e = minicbor::Encoder::new(Vec::new());
+        e.array(3)
+            .unwrap()
+            .bytes(message)
+            .unwrap()
+            .bytes(&[0; 114])
+            .unwrap()
+            .bytes(&[0; 1280])
+            .unwrap();
+        let vote = Vote::decode(&e.into_writer()).map_err(|_| "Continuity vote encoding")?;
+        let d = &vote.decision;
+        let previous_height = d.height.checked_sub(1).ok_or("Continuity vote height")?;
+        let parent = FinalizedAnchor {
+            network: NETWORK_ID,
+            genesis: self.genesis,
+            fingerprint: self.fingerprint,
+            height: previous_height,
+            block: d.parent,
+        };
+        d.verify_parent(&parent)
+            .map_err(|_| "Continuity vote parent context")?;
+        if vote.node != self.node
+            || vote.hardware_generation != self.hardware_generation
+            || vote.key_generation != self.key_generation
+            || vote.tpm_identity != self.tpm_identity
+            || vote.profile != self.profile
+            || d.purpose != 2
+            || !matches!(d.step, 2 | 3)
+            || d.continuity_period != previous_height / 60
+            || (vote.nil && (d.block != [0; 32] || d.state != [0; 32] || d.mining_epoch != 0))
+            || (!vote.nil && (d.block == [0; 32] || d.state == [0; 32]))
+        {
+            return Err("Continuity vote identity/type context".into());
+        }
+        Ok(())
+    }
+}
+pub struct EncryptedVoteBackend<C: MonotonicCounter> {
+    pins: Pins,
+    key: HybridKey,
+    counter: C,
+}
+/// Independently unlocked proposed generation. It cannot sign and cannot be
+/// cloned or export its private key. Dropping it zeroizes the HybridKey.
+pub struct PreparedGeneration {
+    pins: Pins,
+    key: HybridKey,
+    previous: Hash,
+}
+pub(crate) struct ExistingRoleUnlockRefusal<C:MonotonicCounter>{cause:String,counter:std::mem::ManuallyDrop<C>}
+impl<C:MonotonicCounter> ExistingRoleUnlockRefusal<C>{
+    pub(crate) fn into_retained(self)->(String,std::mem::ManuallyDrop<C>){(self.cause,self.counter)}
+}
+impl<C: MonotonicCounter> EncryptedVoteBackend<C> {
+    /// Native factory-only existing role unlock retains the exact incoming
+    /// counter on any decryption/generation/identity failure or unwind.
+    pub(crate) fn unlock_existing(pins:Pins,counter:std::mem::ManuallyDrop<C>,encrypted:&[u8],password:&str)
+        ->std::result::Result<Self,ExistingRoleUnlockRefusal<C>>{
+        let opened=(||->Result<HybridKey>{
+            let(key,generation)=HybridKey::open_for(Role::Continuity,password,&pins.context,encrypted)
+                .map_err(|_|"Continuity encrypted custody rejected")?;
+            if generation!=pins.key_generation||key.public()!=&pins.public{
+                return Err("Continuity custody public identity mismatch".into());}Ok(key)
+        })();
+        match opened{Ok(key)=>Ok(Self{pins,key,counter:std::mem::ManuallyDrop::into_inner(counter)}),
+            Err(cause)=>Err(ExistingRoleUnlockRefusal{cause,counter})}
+    }
+    /// Factory-only ownership transfer after its signing worker has stopped.
+    /// The private key is zeroized by its normal Drop; counter/current/lease
+    /// native cleanup remains the exact owner's consuming responsibility.
+    pub(crate) fn into_existing_counter(self)->std::mem::ManuallyDrop<C>{
+        let Self{counter,key,..}=self;let counter=std::mem::ManuallyDrop::new(counter);
+        drop(key);counter
+    }
+    /// Validate the proposed ciphertext before publishing a create-only durable
+    /// generation file. Publication never changes canonical or counter state.
+    /// An error after publication can leave a complete file; inspect it through
+    /// unlock_generation_file, never overwrite it or initialize a journal.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_rotation_and_publish(
+        &self,
+        pins: Pins,
+        encrypted: &[u8],
+        password: &str,
+        directory: &std::path::Path,
+    ) -> Result<PreparedGeneration> {
+        let prepared = self.prepare_rotation(pins, encrypted, password)?;
+        crate::continuity_generation_store_v2::publish(
+            directory,
+            prepared.pins.context,
+            prepared.pins.key_generation,
+            encrypted,
+        )
+        .map_err(str::to_owned)?;
+        Ok(prepared)
+    }
+    /// Load a generation selected by independently authenticated canonical pins.
+    /// A file's existence does not authorize a rotation or confer voting weight.
+    #[cfg(target_os = "linux")]
+    pub fn unlock_generation_file(
+        pins: Pins,
+        counter: C,
+        directory: &std::path::Path,
+        password: &str,
+    ) -> Result<Self> {
+        let encrypted = crate::continuity_generation_store_v2::read(
+            directory,
+            pins.context,
+            pins.key_generation,
+        )
+        .map_err(str::to_owned)?;
+        Self::unlock(pins, counter, &encrypted, password)
+    }
+    pub fn prepare_rotation(
+        &self,
+        pins: Pins,
+        encrypted: &[u8],
+        password: &str,
+    ) -> Result<PreparedGeneration> {
+        if self.pins.genesis != pins.genesis
+            || self.pins.fingerprint != pins.fingerprint
+            || self.pins.node != pins.node
+            || self.pins.hardware_generation != pins.hardware_generation
+            || self.pins.tpm_identity != pins.tpm_identity
+            || self.pins.profile != pins.profile
+            || self.pins.key_generation.checked_add(1) != Some(pins.key_generation)
+            || self.pins.context == pins.context
+            || self.pins.public.ed448 == pins.public.ed448
+            || self.pins.public.fndsa == pins.public.fndsa
+        {
+            return Err("Continuity replacement identity mismatch".into());
+        }
+        let (key, generation) =
+            HybridKey::open_for(Role::Continuity, password, &pins.context, encrypted)
+                .map_err(|_| "Continuity replacement custody rejected")?;
+        if generation != pins.key_generation || key.public() != &pins.public {
+            return Err("Continuity replacement public identity mismatch".into());
+        }
+        Ok(PreparedGeneration {
+            pins,
+            key,
+            previous: self.pins.context,
+        })
+    }
+    /// No counter replacement, increment or private-key export occurs here.
+    /// The same exclusive counter owner remains inside this backend.
+    pub fn activate_rotation(
+        &mut self,
+        prepared: PreparedGeneration,
+        receipt: MigrationReceipt,
+    ) -> Result<()> {
+        if prepared.previous != self.pins.context
+            || receipt.previous() != self.pins.context
+            || receipt.current() != prepared.pins.context
+        {
+            return Err("Continuity migration receipt mismatch".into());
+        }
+        if self
+            .counter
+            .read()
+            .map_err(|_| "Continuity activation counter unavailable")?
+            != receipt.counter()
+        {
+            return Err("Continuity activation counter mismatch".into());
+        }
+        self.pins = prepared.pins;
+        self.key = prepared.key;
+        Ok(())
+    }
+    /// Linux-only protected file loader. Parent directory capabilities are
+    /// walked with openat/O_NOFOLLOW; no path is re-resolved after inspection.
+    #[cfg(target_os = "linux")]
+    pub fn unlock_file(
+        pins: Pins,
+        counter: C,
+        path: &std::path::Path,
+        password: &str,
+    ) -> Result<Self> {
+        let encrypted = protected_file::read(path)?;
+        Self::unlock(pins, counter, &encrypted, password)
+    }
+    /// The caller supplies encrypted bytes from its protected host-local store.
+    /// The password is borrowed and is never logged, retained or copied here.
+    /// Current production launch remains independently gated.
+    pub fn unlock(pins: Pins, counter: C, encrypted: &[u8], password: &str) -> Result<Self> {
+        let (key, generation) =
+            HybridKey::open_for(Role::Continuity, password, &pins.context, encrypted)
+                .map_err(|_| "Continuity encrypted custody rejected")?;
+        if generation != pins.key_generation || key.public() != &pins.public {
+            return Err("Continuity custody public identity mismatch".into());
+        }
+        Ok(Self { pins, key, counter })
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod protected_file {
+    use super::Result;
+    use std::{
+        ffi::CString,
+        fs::File,
+        io::Read,
+        os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::{ffi::OsStrExt, fs::MetadataExt},
+        },
+        path::{Component, Path},
+    };
+    fn open_at(dir: i32, name: &std::ffi::OsStr, flags: i32) -> Result<File> {
+        let name = CString::new(name.as_bytes()).map_err(|_| "Continuity vault path")?;
+        let fd = unsafe {
+            libc::openat(
+                dir,
+                name.as_ptr(),
+                flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if fd < 0 {
+            return Err("Continuity vault secure open failed".into());
+        }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+    fn directory(file: &File, uid: u32, private: bool) -> Result<()> {
+        let m = file
+            .metadata()
+            .map_err(|_| "Continuity vault directory metadata")?;
+        if !m.is_dir()
+            || (m.uid() != 0 && m.uid() != uid)
+            || m.mode() & 0o022 != 0
+            || (private && (m.uid() != uid || m.mode() & 0o7777 != 0o700))
+        {
+            return Err("Continuity vault directory permissions".into());
+        }
+        Ok(())
+    }
+    pub(super) fn read(path: &Path) -> Result<Vec<u8>> {
+        if !path.is_absolute() {
+            return Err("Continuity vault absolute path required".into());
+        }
+        let mut parts = Vec::new();
+        for part in path.components() {
+            match part {
+                Component::RootDir if parts.is_empty() => {}
+                Component::Normal(name) => parts.push(name),
+                _ => return Err("Continuity vault path component".into()),
+            }
+        }
+        if parts.len() < 2 || parts.len() > 32 {
+            return Err("Continuity vault path bound".into());
+        }
+        let uid = unsafe { libc::geteuid() };
+        let mut dir = open_at(
+            libc::AT_FDCWD,
+            std::ffi::OsStr::new("/"),
+            libc::O_RDONLY | libc::O_DIRECTORY,
+        )?;
+        directory(&dir, uid, false)?;
+        for (index, name) in parts[..parts.len() - 1].iter().enumerate() {
+            dir = open_at(dir.as_raw_fd(), name, libc::O_RDONLY | libc::O_DIRECTORY)?;
+            directory(&dir, uid, index == parts.len() - 2)?;
+        }
+        // NONBLOCK prevents a malicious special file from hanging the opener.
+        let mut file = open_at(
+            dir.as_raw_fd(),
+            parts[parts.len() - 1],
+            libc::O_RDONLY | libc::O_NONBLOCK,
+        )?;
+        let before = file.metadata().map_err(|_| "Continuity vault metadata")?;
+        if !before.is_file()
+            || before.uid() != uid
+            || before.nlink() != 1
+            || before.mode() & 0o7777 != 0o600
+            || !(1..=8192).contains(&before.len())
+        {
+            return Err("Continuity vault file type/owner/permissions/size".into());
+        }
+        let mut raw = Vec::with_capacity(before.len() as usize);
+        (&mut file)
+            .take(8193)
+            .read_to_end(&mut raw)
+            .map_err(|_| "Continuity vault read")?;
+        let after = file
+            .metadata()
+            .map_err(|_| "Continuity vault read metadata")?;
+        if raw.len() as u64 != before.len()
+            || before.len() != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return Err("Continuity vault changed during read".into());
+        }
+        Ok(raw)
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        #[test]
+        fn protected_vault_refuses_links_permissions_special_files_and_bounds() {
+            let owned = super::super::test_dir::TestDir::new("protected-vault");
+            let base = owned.path().canonicalize().unwrap();
+            let file = base.join("synthetic-public-envelope");
+            std::fs::write(&file, b"public fixture").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(read(&file).unwrap(), b"public fixture");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+            assert!(read(&file).is_err());
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let symbolic = base.join("symbolic");
+            symlink(&file, &symbolic).unwrap();
+            assert!(read(&symbolic).is_err());
+            let hard = base.join("hard");
+            std::fs::hard_link(&file, &hard).unwrap();
+            assert!(read(&file).is_err());
+            assert!(read(&hard).is_err());
+            std::fs::remove_file(&hard).unwrap();
+            let linked_parent = base.join("linked-parent");
+            symlink(&base, &linked_parent).unwrap();
+            assert!(read(&linked_parent.join("synthetic-public-envelope")).is_err());
+            std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o750)).unwrap();
+            assert!(read(&file).is_err());
+            std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(&file, vec![0; 8193]).unwrap();
+            assert!(read(&file).is_err());
+            std::fs::write(&file, []).unwrap();
+            assert!(read(&file).is_err());
+            assert!(read(Path::new("relative")).is_err());
+            let fifo = base.join("fifo");
+            let c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            assert!(read(&fifo).is_err());
+            assert!(read(&base).is_err());
+        }
+    }
+}
+impl<C: MonotonicCounter> MonotonicCounter for EncryptedVoteBackend<C> {
+    fn read(&mut self) -> Result<u64> {
+        self.counter.read()
+    }
+    fn increment(&mut self) -> Result<()> {
+        self.counter.increment()
+    }
+}
+impl<C: MonotonicCounter> CounterSigningBackend for EncryptedVoteBackend<C> {
+    fn sign_work_probe(
+        &mut self,
+        decision: &mutiny_consensus_v8::certificates::Decision,
+        fragment: &mutiny_consensus_v8::liveness_v2::Fragment,
+    ) -> Result<HybridSignature> {
+        self.pins.check_work_probe(decision, fragment)?;
+        let before = self
+            .counter
+            .read()
+            .map_err(|_| "Continuity counter unavailable")?;
+        let message = fragment
+            .unsigned(decision)
+            .map_err(|_| "Work-liveness message")?;
+        let signature = self
+            .key
+            .sign(Domain::ContinuityWorkProbe, &message)
+            .map_err(|_| "Work-liveness dual signing failed")?;
+        let after = self
+            .counter
+            .read()
+            .map_err(|_| "Continuity counter unavailable")?;
+        if before != after {
+            return Err("Continuity counter changed during work-liveness signing".into());
+        }
+        self.pins
+            .public
+            .verify(Domain::ContinuityWorkProbe, &message, &signature)
+            .map_err(|_| "Work-liveness dual signature verification failed")?;
+        Ok(signature)
+    }
+    fn public_key(&self) -> &PublicKey {
+        self.key.public()
+    }
+    fn sign_vote(&mut self, message: &[u8]) -> Result<HybridSignature> {
+        let _=message;
+        Err("Continuity signing requires opaque counter-voter permit".into())
+    }
+    fn sign_reserved_vote(&mut self,message:&[u8],
+        permit:&mutiny_consensus_v8::activation_attestation_v1::PrivateSignPermit)->Result<HybridSignature> {
+        permit.check_at_custody_entry(self.pins.node,self.pins.activation_rule,message)
+            .map_err(|_|"Continuity permit context/elapsed refusal")?;
+        // The outer CounterVoter owns lock/quorum/reservation semantics. This
+        // second boundary refuses cross-role or cross-custody signing requests.
+        self.pins.check_vote(message)?;
+        let before = self
+            .counter
+            .read()
+            .map_err(|_| "Continuity counter unavailable")?;
+        // Pin validation/counter I/O may have consumed the remaining lifetime.
+        permit.check_at_custody_entry(self.pins.node,self.pins.activation_rule,message)
+            .map_err(|_|"Continuity permit expired before private signing")?;
+        let signature = self
+            .key
+            .sign(Domain::ContinuityVote, message)
+            .map_err(|_| "Continuity dual signing failed")?;
+        let after = self
+            .counter
+            .read()
+            .map_err(|_| "Continuity counter unavailable")?;
+        if before != after {
+            return Err("Continuity counter changed during signing".into());
+        }
+        self.pins
+            .public
+            .verify(Domain::ContinuityVote, message, &signature)
+            .map_err(|_| "Continuity dual signature verification failed")?;
+        Ok(signature)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mutiny_consensus_v8::{
+        bft::Step, continuity_v2::ParentVoter, counter_voter_v2::CounterVoter,
+        votes_v2::HeightAuthority,
+    };
+    use std::{cell::Cell, rc::Rc};
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn encrypted_generation_publication_requires_valid_pins_and_recovers_exact_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let old = HybridKey::generate(Role::Continuity).unwrap();
+        let new = HybridKey::generate(Role::Continuity).unwrap();
+        let prior = AuthenticatedRound::new(authority(old.public())).unwrap();
+        let mut next_authority = authority(new.public());
+        next_authority
+            .voters
+            .get_mut(&[7; 32])
+            .unwrap()
+            .key_generation = 2;
+        let next = AuthenticatedRound::new(next_authority).unwrap();
+        let old_pins = || Pins::from_round(&prior, [7; 32]).unwrap();
+        let new_pins = || Pins::from_round(&next, [7; 32]).unwrap();
+        let password = "synthetic-public-fixture-password";
+        let old_cipher = old.seal_for(password, 1, &old_pins().context).unwrap();
+        let new_cipher = new.seal_for(password, 2, &new_pins().context).unwrap();
+        let counter = Rc::new(Cell::new(100));
+        let backend_counter = || Counter {
+            value: counter.clone(),
+            drift: false,
+        };
+        let backend =
+            EncryptedVoteBackend::unlock(old_pins(), backend_counter(), &old_cipher, password)
+                .unwrap();
+        let owned = super::test_dir::TestDir::new("encrypted-generation");
+        let directory = owned.path().to_path_buf();
+        assert!(
+            backend
+                .prepare_rotation_and_publish(new_pins(), &new_cipher, "wrong password", &directory)
+                .is_err()
+        );
+        assert!(
+            backend
+                .prepare_rotation_and_publish(new_pins(), &old_cipher, password, &directory)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        let prepared = backend
+            .prepare_rotation_and_publish(new_pins(), &new_cipher, password, &directory)
+            .unwrap();
+        assert_eq!(counter.get(), 100);
+        assert_eq!(backend.public_key(), old.public());
+        drop(prepared);
+        assert!(
+            backend
+                .prepare_rotation_and_publish(new_pins(), &new_cipher, password, &directory)
+                .is_err()
+        );
+        let reopened = EncryptedVoteBackend::unlock_generation_file(
+            new_pins(),
+            backend_counter(),
+            &directory,
+            password,
+        )
+        .unwrap();
+        assert_eq!(reopened.public_key(), new.public());
+        assert_eq!(counter.get(), 100);
+        assert!(
+            EncryptedVoteBackend::unlock_generation_file(
+                old_pins(),
+                backend_counter(),
+                &directory,
+                password
+            )
+            .is_err()
+        );
+        assert!(
+            EncryptedVoteBackend::unlock_generation_file(
+                new_pins(),
+                backend_counter(),
+                &directory,
+                "wrong password"
+            )
+            .is_err()
+        );
+    }
+    struct Counter {
+        value: Rc<Cell<u64>>,
+        drift: bool,
+    }
+    impl MonotonicCounter for Counter {
+        fn read(&mut self) -> Result<u64> {
+            let n = self.value.get();
+            if self.drift {
+                self.value.set(n + 1);
+            }
+            Ok(n)
+        }
+        fn increment(&mut self) -> Result<()> {
+            self.value.set(self.value.get() + 1);
+            Ok(())
+        }
+    }
+    fn authority(key: &PublicKey) -> HeightAuthority {
+        let tpm = p256::ecdsa::SigningKey::from_bytes((&[9; 32]).into())
+            .unwrap()
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .try_into()
+            .unwrap();
+        HeightAuthority {
+            parent: FinalizedAnchor {
+                network: NETWORK_ID,
+                genesis: [1; 32],
+                fingerprint: [2; 32],
+                height: 0,
+                block: [3; 32],
+            },
+            membership: [4; 32],
+            reputation: [5; 32],
+            attestation: [6; 32],
+            activation_rule: None,
+            voters: std::collections::BTreeMap::from([(
+                [7; 32],
+                ParentVoter {
+                    lineage: [8; 32],
+                    admitted: true,
+                    physical: true,
+                    eligible: true,
+                    revoked: false,
+                    hardware_generation: 1,
+                    key_generation: 1,
+                    tpm_public: tpm,
+                    profile: [10; 32],
+                    public: key.clone(),
+                    reputation: 1u64.into(),
+                },
+            )]),
+        }
+    }
+    #[test]
+    fn encrypted_continuity_only_custody_pins_counter_gate_restart_and_faults() {
+        let key = HybridKey::generate(Role::Continuity).unwrap();
+        let authority = authority(key.public());
+        let round = AuthenticatedRound::new(authority.clone()).unwrap();
+        let pins = || Pins::from_round(&round, [7; 32]).unwrap();
+        let password = "public synthetic Continuity test password";
+        let encrypted = key.seal_for(password, 1, &pins().context()).unwrap();
+        let counter = Rc::new(Cell::new(100));
+        let backend_counter = || Counter {
+            value: counter.clone(),
+            drift: false,
+        };
+        let mut wrong = pins();
+        wrong.context[0] ^= 1;
+        assert!(
+            EncryptedVoteBackend::unlock(wrong, backend_counter(), &encrypted, password).is_err()
+        );
+        assert!(
+            EncryptedVoteBackend::unlock(pins(), backend_counter(), &encrypted, "wrong password")
+                .is_err()
+        );
+        let mut wrong = pins();
+        wrong.public.ed448[0] ^= 1;
+        assert!(
+            EncryptedVoteBackend::unlock(wrong, backend_counter(), &encrypted, password).is_err()
+        );
+        let mut backend =
+            EncryptedVoteBackend::unlock(pins(), backend_counter(), &encrypted, password).unwrap();
+        let dir = super::test_dir::TestDir::new("continuity-custody");
+        let path = dir.join("snapshot.sqlite");
+        let mut gate =
+            CounterVoter::open(&path, authority.clone(), [7; 32], Some(100), &mut backend).unwrap();
+        let snapshot = || -> Vec<u8> {
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT snapshot FROM voter_migration", [], |r| r.get(0))
+                .unwrap()
+        };
+        let initial_snapshot = snapshot();
+        let mut work_gate =
+            mutiny_consensus_v8::liveness_v2::WorkGate::new(authority.clone(), [9; 32], 0).unwrap();
+        let request = work_gate.request(0, [10; 32]).unwrap().unwrap();
+        let fragment = gate
+            .sign_work_probe(&request, [9; 32], &mut backend)
+            .unwrap();
+        assert_eq!(fragment.vote_sequence, 0);
+        fragment.verify(&request, &authority, [9; 32]).unwrap();
+        assert_eq!(counter.get(), 100);
+        assert_eq!(gate.last_sequence(), 0);
+        assert_eq!(snapshot(), initial_snapshot);
+        for field in 0..8 {
+            let mut f = fragment.clone();
+            let mut d = request.clone();
+            match field {
+                0 => f.node[0] ^= 1,
+                1 => f.hardware_generation += 1,
+                2 => f.key_generation += 1,
+                3 => f.tpm_identity[0] ^= 1,
+                4 => f.profile[0] ^= 1,
+                5 => d.genesis[0] ^= 1,
+                6 => d.purpose = 2,
+                _ => d.previous_finalized_anchor[0] ^= 1,
+            }
+            assert!(backend.sign_work_probe(&d, &f).is_err());
+            assert_eq!(counter.get(), 100);
+        }
+        let mut bad_request = request.clone();
+        bad_request.state[0] ^= 1;
+        assert!(
+            gate.sign_work_probe(&bad_request, [9; 32], &mut backend)
+                .is_err()
+        );
+        assert_eq!(snapshot(), initial_snapshot);
+        let vote = gate.sign(Step::Prevote, None, None, &mut backend).unwrap();
+        vote.verify(&authority.parent, authority.roots(), &authority.voters)
+            .unwrap();
+        let after = counter.get();
+        assert!(after > 100);
+        let after_vote_snapshot = snapshot();
+        let fragment = gate
+            .sign_work_probe(&request, [9; 32], &mut backend)
+            .unwrap();
+        assert_eq!(fragment.vote_sequence, gate.last_sequence());
+        assert!(fragment.vote_sequence > 0);
+        assert_eq!(counter.get(), after);
+        assert_eq!(snapshot(), after_vote_snapshot);
+        drop(gate);
+        drop(backend);
+        let mut reopened =
+            EncryptedVoteBackend::unlock(pins(), backend_counter(), &encrypted, password).unwrap();
+        let mut gate =
+            CounterVoter::open(&path, authority.clone(), [7; 32], None, &mut reopened).unwrap();
+        assert_eq!(
+            gate.sign(Step::Prevote, None, None, &mut reopened).unwrap(),
+            vote
+        );
+        assert_eq!(counter.get(), after, "exact replay consumed NV increment");
+        for field in 0..8 {
+            let mut bad = vote.clone();
+            match field {
+                0 => bad.node[0] ^= 1,
+                1 => bad.hardware_generation += 1,
+                2 => bad.key_generation += 1,
+                3 => bad.tpm_identity[0] ^= 1,
+                4 => bad.profile[0] ^= 1,
+                5 => bad.decision.genesis[0] ^= 1,
+                6 => bad.decision.purpose = 1,
+                _ => bad.decision.previous_finalized_anchor[0] ^= 1,
+            }
+            assert!(
+                reopened.sign_vote(&bad.unsigned().unwrap()).is_err(),
+                "field {field}"
+            );
+            assert_eq!(counter.get(), after);
+        }
+        assert!(reopened.sign_vote(b"wallet authorization").is_err());
+        // This simulates loss of exclusive counter ownership: no signature is
+        // returned if the counter changes around the private operation.
+        reopened.counter.drift = true;
+        assert!(reopened.sign_vote(&vote.unsigned().unwrap()).is_err());
+        assert_eq!(counter.get(), after + 2);
+        for flag in 0..3 {
+            let mut invalid = authority.clone();
+            let v = invalid.voters.get_mut(&[7; 32]).unwrap();
+            match flag {
+                0 => v.physical = false,
+                1 => v.revoked = true,
+                _ => v.reputation = 0u64.into(),
+            }
+            assert!(AuthenticatedRound::new(invalid).is_err());
+        }
+        // Synthetic envelope is generated in memory; no production vault or
+        // real TPM is opened, initialized, incremented or exported in this test.
+    }
+}

@@ -1,0 +1,436 @@
+ARCHITECT DECISION —
+BUILD8 DECISION PACKET V1
+
+APPROVE WITH THE FOLLOWING AMENDMENTS.
+
+After incorporating these amendments into the technical annex and canonical
+Build8 specification, proceed automatically through the remaining
+pre-Genesis implementation/qualification and into the Genesis Ceremony.
+
+Do not return for another approval unless incorporation exposes a genuinely
+new consensus/security ambiguity.
+
+1. QUORUM / BOOTSTRAP
+
+APPROVE:
+
+- quorum-gated PoW from Genesis;
+- strictly greater than 2/3 of committed eligible Continuity Reputation;
+- persisted propose/prevote/precommit locking;
+- offline eligible voters remain in the denominator;
+- Vultr/cloud/VM/vTPM weight remains exactly zero.
+
+Build8 may begin with the single qualified physical Node A voter.
+
+However this state MUST be explicitly classified:
+
+BOOTSTRAP_CENTRALIZED
+
+It MUST NOT be represented as:
+
+decentralized fault tolerant
+Continuity-survival qualified
+single-node-loss tolerant.
+
+The BOOTSTRAP_CENTRALIZED label ends only after:
+
+- at least4 independently qualified physical TPM-backed voters exist; and
+- the required measured weight distribution survives every tested single-node
+  loss while preserving >2/3 quorum.
+
+No special voting power is granted to Vultr.
+
+2. CONTINUITY PERIOD TERMINOLOGY
+
+DO NOT use the word "epoch" for both mining time and reputation qualification.
+
+Mining Epoch:
+existing 60-second protocol epoch.
+
+Define:
+
+ContinuityPeriod
+
+as the reputation accounting interval consisting of:
+
+60 certified canonical blocks.
+
+All reputation/bond-age formulas and documentation must use
+ContinuityPeriod where this longer interval is intended.
+
+No implementation may ambiguously use one field for both concepts.
+
+3. REPUTATION — UNBOUNDED BUT NOT QUADRATIC ACCUMULATION
+
+REJECT the proposed rule:
+
+"each qualified period adds
+1000 + A + 4*S + 2*H + floor(Q/10^10)
+to prior gross reputation"
+
+because repeatedly adding the current age/streak/hardware-age values causes
+age components to compound approximately quadratically.
+
+Replace it with a directly computed, cumulative, uncapped reputation score.
+
+Use:
+
+P = total qualified ContinuityPeriods
+
+A = admission age in ContinuityPeriods
+
+S = current consecutive qualified ContinuityPeriod streak
+
+H = total qualified ContinuityPeriods on the current attested hardware
+    generation
+
+Q = sum over active qualifying bond lots of:
+
+    locked_atoms * (1 + bond_age_in_ContinuityPeriods)
+
+GrossReputation =
+
+    1000*P
+    + A
+    + 4*S
+    + 2*H
+    + floor(Q / 10^10)
+
+VotingReputation =
+
+    max(0, GrossReputation - ObjectivePenalties)
+
+This score is:
+
+cumulative
+deterministic
+uncapped
+integer-only
+monotonic absent penalties/hardware reset
+linear in historical time components rather than repeatedly compounding them.
+
+Bond-age contribution remains uncapped while the bond remains qualifying.
+
+Codex must generate adversarial simulations before Genesis covering:
+
+- one very old node vs many newer nodes;
+- many fresh Sybil nodes;
+- wealthy new bonded nodes;
+- old unbonded nodes;
+- long-lived bonded nodes;
+- hardware rotation;
+- penalties;
+- voter entry/exit;
+- concentration over1/5/10 years.
+
+Simulation does NOT reopen this formula unless it demonstrates an arithmetic,
+overflow, liveness or catastrophic concentration defect.
+
+Use checked integer arithmetic and fail closed on overflow.
+
+4. TPM / PHYSICAL ADMISSION
+
+APPROVE the proposed physical-attestation architecture:
+
+- supervised admission;
+- manufacturer EK validation;
+- ActivateCredential;
+- certified non-exportable TPM P-256 Continuity voting key;
+- fresh bound quotes;
+- approved measured-boot/platform profile.
+
+An EK certificate alone is NOT sufficient proof of qualifying physical
+execution.
+
+VM guests and vTPMs are ineligible.
+
+Vultr is ineligible for Continuity weight and Bonds.
+
+Windows VBS may coexist with qualifying bare-metal hardware, but VBS itself is
+not the attestation authority.
+
+The underlying real TPM/platform identity must qualify.
+
+5. HARDWARE ROTATION — AMEND
+
+REJECT:
+
+"hardware replacement starts all reputation at1 and bond age at zero"
+
+for a legitimate owner-authorized physical migration.
+
+Implement HardwareRotateV1 or repository-equivalent.
+
+For a cryptographically authorized migration from an old qualifying physical
+node to a newly attested qualifying physical node:
+
+PRESERVE:
+
+- historical Node admission age;
+- total qualified participation history;
+- active Bond amount;
+- Bond age;
+- objective penalty history;
+- historical NodeID/reputation lineage as defined by the canonical operation.
+
+RESET:
+
+- HardwareContinuity H to zero;
+- hardware-generation identity to the new generation.
+
+Require:
+
+- authorization from the existing Node/owner recovery authority;
+- new physical TPM attestation;
+- new TPM-bound Continuity voting key where hardware changed;
+- atomic supersession of the prior hardware generation.
+
+A verified key rotation performed inside the SAME qualifying physical TPM may
+retain HardwareContinuity.
+
+An unauthorized hardware/key change receives no inherited reputation.
+
+This preserves the security principle:
+
+keys alone are insufficient to reproduce full hardware reputation.
+
+6. BONDS
+
+APPROVE:
+
+- optional Continuity Bonds;
+- minimum100 MUT per bond lot;
+- minimum lock = 4,320 ContinuityPeriods;
+- unbond notice = 720 ContinuityPeriods;
+- no interest;
+- no downtime slashing;
+- proven same-height/round/step equivocation burns the slashable bond and
+  revokes Continuity admission/reputation as specified.
+
+Because a ContinuityPeriod is60 certified blocks at a60-second block target,
+the nominal durations are approximately:
+
+4,320 periods =180 days
+720 periods =30 days
+
+subject to actual certified-block production.
+
+Authorized hardware migration does NOT restart bond age.
+
+Unauthorized identity replacement does not inherit the bond.
+
+7. CERTIFICATES
+
+APPROVE deterministic canonical CBOR certificates.
+
+Require:
+
+- NetworkID;
+- GenesisID;
+- ProtocolFingerprint;
+- height;
+- round;
+- step;
+- parent/block/state commitments;
+- registry/reputation root needed to derive voting weights;
+- sorted unique TPM-backed signatures.
+
+No custom aggregate cryptography.
+
+Canonical certificate identity MUST be independent of:
+
+Internet
+TCP
+Wi-Fi
+LoRa
+relay framing.
+
+Wrong-network, replayed, duplicate, malformed or weight-inconsistent evidence
+is rejected.
+
+8. SURVIVAL FAULT-TOLERANCE
+
+APPROVE:
+
+Survival capability cannot be claimed until:
+
+- >=4 qualified physical Continuity voters exist; AND
+- the measured reputation distribution maintains quorum after removal of each
+  individual voter in the tested set.
+
+Number of radios, miners, relays or cloud nodes does not count as physical
+voter count.
+
+Do not renormalize away an offline voter's committed reputation merely to make
+a test pass.
+
+9. POW / ECONOMICS
+
+APPROVE for Build8:
+
+PoW:
+SHA-256d
+
+target block interval:
+60 seconds
+
+difficulty retarget:
+bounded every60 canonical blocks according to the technical annex
+
+block subsidy:
+1 MUT per block
+
+subsidy schedule:
+1 MUT forever
+
+coinbase maturity:
+100 blocks
+
+premine:
+none
+
+minimum relay/admission fee:
+1 atom/byte
+
+winning licensed Worker's owner receives:
+
+block subsidy
++
+transaction fees.
+
+This intentionally creates an uncapped monetary supply.
+
+At the nominal60-second target this is approximately:
+
+525,600 MUT/year
+
+before missed/paused block production.
+
+Do not claim a hard supply cap or ASIC resistance.
+
+10. GENESIS LICENSES / FUTURE ISSUANCE
+
+APPROVE:
+
+exactly12 fresh Build8 Bootstrap Licenses at Genesis.
+
+They represent the preserved historical purchase entitlement.
+
+Each receives:
+
+- fresh Build8 LicenseID;
+- new Genesis binding;
+- new owner binding.
+
+One active Worker per License.
+
+Do NOT import Build7.6 LicenseIDs or WorkerIDs.
+
+AMEND the proposal so that12 is NOT permanently encoded as the protocol's
+maximum possible license count.
+
+Define the canonical Build8 license-issuance operation/schema now.
+
+Mainnet Genesis parameter:
+
+new_license_issuance_enabled = false
+
+Therefore:
+
+exactly12 active licenses exist at launch
+
+and no additional Mainnet license may be issued while that parameter is false.
+
+Future activation requires the formally authorized Build8 consensus/governance
+mechanism and must not require inventing a new transaction encoding or
+LicenseRecord format.
+
+No live Bitcoin dependency.
+
+Bitcoin/purchase evidence remains historical entitlement evidence only.
+
+11. DURABLE TRANSACTIONS
+
+APPROVE the proposed durable UTXO model.
+
+Once admitted:
+
+PENDING remains durable until explicit terminal state:
+
+CONFIRMED
+EXPIRED
+SUPERSEDED
+INPUT_SPENT
+REJECTED.
+
+No silent eviction.
+
+Candidate changes do not own transaction lifetime.
+
+Node restart does not erase valid pending state.
+
+Non-producing physical/cloud validators can maintain transaction lifecycle
+without producer candidate authority.
+
+Certified canonical history may be pruned only under the exact checkpoint/state
+rules in the technical annex.
+
+12. VOTER EXIT / LOST HARDWARE SAFETY
+
+Ensure the canonical specification includes explicit voter lifecycle operations
+before Genesis.
+
+At minimum define:
+
+ContinuityJoinV1
+ContinuityExitV1
+HardwareRotateV1
+ContinuityRevokeV1 or exact equivalent.
+
+Offline voters remain in the denominator while still committed eligible
+members.
+
+A voter is removed from that denominator only through an authenticated,
+consensus-valid lifecycle transition.
+
+Do NOT silently remove a voter because it has merely been offline.
+
+The technical annex must define deterministic handling for:
+
+voluntary exit;
+safe hardware rotation;
+equivocation revocation;
+bond withdrawal;
+lost/unrecoverable hardware.
+
+If the current annex does NOT contain a safe deterministic rule for permanently
+lost hardware whose key cannot authorize an exit/rotation:
+
+STOP ON THAT SINGLE ISSUE BEFORE GENESIS.
+
+Do not invent an inactivity timeout that can be used to eject dissenting
+offline voters.
+
+13. GENESIS CONSEQUENCE
+
+After incorporating all above amendments:
+
+- update the decision packet;
+- update the technical annex;
+- regenerate canonical consensus test vectors;
+- run reputation/economic/overflow/adversarial simulations;
+- complete Node A physical TPM qualification;
+- verify all12 historical Bootstrap entitlement records;
+- lock exact Build8 consensus parameters;
+- compute ProtocolFingerprint;
+- perform the NEW Build8 Genesis Ceremony.
+
+Do not return for another routine approval.
+
+Only return if Section12 exposes an unresolved safe lost-hardware voter-removal
+problem or another genuinely new consensus/security ambiguity.
+
+ARCHITECT DECISION:
+
+BUILD8 PACKET V1 APPROVED AS AMENDED.
+PROCEED.

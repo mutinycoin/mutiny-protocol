@@ -1,0 +1,1002 @@
+AMENDMENT NOTICE (2026-10-03, Architect decision D3 of that date)
+Sections 2E and 2F and one sentence in the Ticket-replay paragraph are amended
+(search "AMENDMENT D3" and "SUPERSEDED"). The text as found, before amendment, is
+preserved in git history (commit 0da9053 on branch integration/self-contained)
+with sha256 7cde6b5b0d68060d32a00a0b40ee78c70632899e2d26cfa8dd69c8d1c65201de.
+Everything else in this document is unchanged. The hash of THIS amended file is
+recorded in WORK-AND-BLOCK-CODECS-V1.md.
+----------------------------------------------------------------------------
+
+ARCHITECT / FORGE DECISION —
+BUILD8 GENESIS POW BLOCKERS 1 / 2 / 3
+
+APPROVE ALL THREE RECOMMENDED RESOLUTIONS WITH THE CLARIFICATIONS BELOW.
+
+These decisions are consensus-authoritative for Build8.
+
+After incorporating them:
+
+DO NOT return for another routine WorkHeader/block-codec decision.
+
+Finish:
+
+block/body codec
+work authorization codec
+WorkHeaderV1
+PoW vectors
+Rust/Python/C agreement
+physical Miner benchmarks
+initial fleet hashrate
+initial target
+ProtocolFingerprint
+remaining pre-Genesis qualification
+
+and continue toward Genesis unless a genuinely new consensus/security
+contradiction appears.
+
+======================================================================
+DECISION 1 — GENESIS IS NOT A LICENSED POW BLOCK
+======================================================================
+
+APPROVED.
+
+Build8 Genesis is an explicitly trusted HEIGHT-ZERO network/bootstrap artifact.
+
+It establishes:
+
+NetworkID
+GenesisID
+ProtocolFingerprint
+Genesis timestamp t0
+initial canonical state
+initial StateRoot
+consensus parameters
+initial PoW target
+12 Bootstrap LicenseRecords
+Continuity registry
+BootstrapRecoveryAuthority while applicable
+all other approved Genesis commitments.
+
+Genesis:
+
+- has height = 0;
+- has no canonical parent;
+- requires no Worker;
+- requires no Ticket;
+- requires no PoW;
+- creates no mining reward;
+- creates no transaction fees;
+- is not credited to a License/Worker.
+
+The previous generic requirement:
+
+"every accepted block requires licensed work"
+
+is amended to:
+
+EVERY POST-GENESIS CANONICAL BLOCK,
+HEIGHT >= 1,
+requires valid licensed work and all ordinary consensus authorization.
+
+======================================================================
+1A. FIRST POW BLOCK
+======================================================================
+
+The first mined canonical block is:
+
+HEIGHT = 1.
+
+Its parent is:
+
+the finalized canonical Genesis block/hash.
+
+Height1 MUST use:
+
+an active Build8 License;
+an enrolled Build8 Worker;
+a fresh valid Ticket;
+valid work authorization;
+valid Continuity certificate/quorum as required;
+valid PoW.
+
+Its reward is the ordinary approved:
+
+1 MUT block subsidy
++
+eligible transaction fees.
+
+Coinbase maturity rules apply normally.
+
+Call vectors and qualification artifacts:
+
+FIRST_POST_GENESIS_CANDIDATE
+
+or repository-equivalent.
+
+Do NOT call it a mined Genesis block.
+
+======================================================================
+1B. GENESISID / GENESIS HASH
+======================================================================
+
+Keep distinct concepts if the canonical design needs both:
+
+Genesis descriptor/state serialization
+
+GenesisBlockHash / canonical height-zero object hash
+
+GenesisID / network-generation identity.
+
+Codex must define their exact deterministic relationship.
+
+Avoid circularity.
+
+GenesisID MUST be computable without requiring:
+
+height1
+Worker assignment
+Ticket
+PoW nonce
+future certificate.
+
+======================================================================
+1C. INITIAL POW TARGET
+======================================================================
+
+Genesis consensus parameters commit:
+
+InitialPoWTarget.
+
+That target applies to canonical heights:
+
+1 through 60 inclusive.
+
+Genesis height0 itself is not PoW validated against it.
+
+Do not use the phrase "Genesis mining target" where it creates ambiguity.
+
+Use:
+
+InitialPoWTarget
+or
+FirstPostGenesisTarget.
+
+======================================================================
+DECISION 2 — GENESIS-RELATIVE MINING EPOCHS
+======================================================================
+
+APPROVED.
+
+Consensus block timestamps are:
+
+unsigned 64-bit Unix seconds.
+
+Genesis commits the authoritative:
+
+t0 = GenesisTimestampUnixSeconds.
+
+For every post-Genesis candidate:
+
+candidate_timestamp >= t0
+
+and:
+
+MiningEpoch =
+floor((candidate_timestamp - t0) / 60).
+
+All arithmetic is checked integer arithmetic.
+
+A candidate timestamp before t0 is invalid.
+
+======================================================================
+2A. EPOCH FIELD
+======================================================================
+
+If MiningEpoch is explicitly encoded in WorkHeaderV1 / BlockHeaderV1:
+
+consensus MUST recompute it from:
+
+candidate_timestamp
+and
+Genesis t0
+
+and require exact equality.
+
+It is not an independently selectable value.
+
+If Codex can safely omit the redundant encoded epoch and derive it everywhere,
+it may do so only if all consumers remain deterministic.
+
+Either design must have canonical test vectors.
+
+======================================================================
+2B. WHO CHOOSES CANDIDATE TIMESTAMP
+======================================================================
+
+The ESP32 Miner MUST NOT freely choose candidate_timestamp.
+
+The coordinator/node constructs the candidate work authority and chooses the
+candidate timestamp according to consensus/local issuance rules.
+
+The signed authenticated WorkAssignment/Ticket authority MUST bind the exact
+candidate timestamp or the exact canonical work object containing it.
+
+The Miner varies only the authorized PoW search field(s), principally nonce.
+
+Therefore a Miner cannot:
+
+advance itself into a future epoch;
+extend its own Ticket;
+alter timestamp to obtain different work validity.
+
+======================================================================
+2C. TICKET / WORK VALIDITY
+======================================================================
+
+Consensus validates work/Ticket epoch against the epoch derived from the
+candidate's bound timestamp.
+
+A Ticket for epoch E is valid only under the exact approved Ticket rules for E.
+
+Old assignment/work retirement on:
+
+epoch change
+or
+parent change
+
+remains mandatory.
+
+A stale Ticket cannot become valid merely because a node reconnects.
+
+======================================================================
+2D. OPERATIONAL CLOCK
+======================================================================
+
+Coordinator operational time determines when it is willing to issue new work.
+
+This is operational/liveness authority.
+
+It does NOT retroactively change historical consensus validity.
+
+A historical block is validated from:
+
+its canonical timestamp;
+Genesis t0;
+parent/canonical state;
+Ticket/work authority;
+the approved timestamp rules.
+
+Do not use current wall clock when replaying historical Ticket validity except
+where an explicitly approved non-consensus future-hold policy requires local
+handling.
+[AMENDMENT D3 (2026-10-03): no wall-clock future-hold policy remains (see 2F), so
+there is no exception: historical replay never uses the current wall clock.]
+
+======================================================================
+2E. MEDIAN-PAST RULE
+======================================================================
+
+Preserve the approved median-past-11 timestamp rule.
+
+Codex must encode the exact early-chain rule as:
+
+For candidate height h:
+
+collect timestamps from up to the previous 11 canonical blocks.
+
+For heights where fewer than11 prior canonical blocks exist:
+
+use ALL available prior canonical timestamps, including Genesis height0.
+
+Compute the deterministic median according to the canonical integer ordering.
+
+Candidate timestamp must satisfy the exact technical-annex relation to that
+median.
+
+If the annex currently says "strictly greater than MTP", preserve that exact
+relation.
+
+Do not silently change >= versus >.
+
+AMENDMENT D3 (2026-10-03), in addition and without weakening the rule above:
+
+A child block's timestamp must be at least its parent's timestamp (equal is
+permitted). The median-time-past rule above ALSO applies, unchanged (strictly
+greater than the median), so a timestamp equal to the parent's is valid only
+when it is also strictly greater than the median.
+
+Implementation note (equivalence, not a second rule): implementations may test
+"timestamp >= maximum of the ancestor window" provided the window includes the
+actual parent and contains only validated ancestors of that parent. On a chain
+built under this rule the parent's timestamp is the window maximum regardless of
+window order. This equivalence is NOT claimed for any chain containing a block
+whose timestamp precedes its parent's; such a chain is not valid under this rule.
+Both canonical stores enforce the condition (see
+D3-TIMESTAMP-ADMISSION-AMENDMENT-AND-EVIDENCE-20261003.md).
+
+======================================================================
+2F. TWO-HOUR FUTURE HOLD  --  SUPERSEDED BY AMENDMENT D3 (2026-10-03)
+======================================================================
+
+AMENDED TEXT (authoritative):
+
+There is NO wall-clock future hold. The local 7,200-second admission/relay
+hold on unfinalized candidates and proposals is removed. A validator's
+willingness to SIGN a fresh block vote is governed solely by its qualified
+clock (block.timestamp <= qualified_local_UTC_now, zero allowance), never by
+admission. Stale unfinalized proposals are excluded by height, round, parent and
+lock checks, not by wall-clock age. Authenticated finalized ingestion and
+historical validation never read a receiver clock. The two concepts remain
+separate: (a) consensus timestamp validity is the deterministic rules of
+section 2E, evaluated identically by every validator; (b) local voting
+eligibility is the qualified-clock guard.
+
+SUPERSEDED TEXT (historical, preserved verbatim; no longer in force):
+
+    Preserve the already-approved local two-hour future-hold behavior exactly as
+    specified by the technical annex.
+
+    It is NOT permitted to become an undocumented new consensus validity rule.
+
+    Document clearly whether it is:
+
+    local admission/relay hold policy
+
+    versus
+
+    historical consensus invalidity.
+
+    Do not mix those concepts.
+
+======================================================================
+DECISION 3 — EXACT 60-BLOCK RETARGET
+======================================================================
+
+APPROVED.
+
+InitialPoWTarget applies to:
+
+heights1..60.
+
+A difficulty adjustment occurs after each canonical height h where:
+
+h mod 60 == 0.
+
+The resulting target applies beginning at:
+
+h + 1.
+
+Therefore retarget boundaries are:
+
+after60 → target for61..120
+
+after120 → target for121..180
+
+after180 → target for181..240
+
+and so on.
+
+======================================================================
+3A. TIMESTAMP ENDPOINTS
+======================================================================
+
+For retarget boundary height h:
+
+start_timestamp =
+timestamp[h - 60]
+
+end_timestamp =
+timestamp[h].
+
+Thus the first retarget uses:
+
+timestamp[0] = Genesis t0
+
+and:
+
+timestamp[60].
+
+This measures exactly:
+
+60 canonical block intervals.
+
+Do NOT use:
+
+timestamp[h-59]
+
+because that represents only59 adjacent block intervals.
+
+======================================================================
+3B. EXPECTED SPAN
+======================================================================
+
+Target block interval:
+
+60 seconds.
+
+Blocks per retarget interval:
+
+60.
+
+Expected span:
+
+3600 seconds.
+
+======================================================================
+3C. ACTUAL SPAN
+======================================================================
+
+Compute using a signed/wide checked intermediate:
+
+raw_span =
+signed_wide(timestamp[h])
+-
+signed_wide(timestamp[h-60]).
+
+Then:
+
+s = clamp(raw_span, 900, 14400).
+
+Therefore:
+
+minimum effective span:
+900 seconds = 1/4 expected
+
+maximum effective span:
+14400 seconds = 4x expected.
+
+If raw_span is zero or negative due to otherwise-permitted timestamp geometry:
+
+the deterministic clamp produces:
+
+s = 900.
+
+Do not underflow unsigned arithmetic.
+
+======================================================================
+3D. TARGET CALCULATION
+======================================================================
+
+Let:
+
+old_target
+
+be the authoritative target applying to block h.
+
+Compute:
+
+raw_next =
+floor(old_target * s / 3600).
+
+Use a sufficiently wide integer intermediate so:
+
+old_target * s
+
+cannot overflow.
+
+Then:
+
+next_target =
+clamp(
+    raw_next,
+    1,
+    2^256 - 1
+).
+
+The resulting uncompressed 256-bit target is consensus-authoritative.
+
+No floating point in consensus.
+
+No displayed "difficulty" value is authoritative.
+
+======================================================================
+3E. HASH / TARGET COMPARISON
+======================================================================
+
+WorkHeaderV1 qualification MUST lock exactly:
+
+how the 32-byte SHA256d digest maps to an unsigned256-bit integer
+
+and:
+
+valid PoW iff
+
+hash_integer <= target
+
+unless the already-approved annex explicitly requires strict <.
+
+Select one exact relation and encode edge vectors for:
+
+hash = target
+
+hash = target - 1
+
+hash = target + 1.
+
+No Bitcoin-style display byte reversal may leak into canonical comparison
+semantics.
+
+======================================================================
+3F. QUORUM PAUSES
+======================================================================
+
+APPROVE:
+
+retarget timestamp span INCLUDES time during Continuity quorum pauses.
+
+Do NOT subtract:
+
+local WAITING_QUORUM duration
+observer-local outage time
+node-local disconnected time
+radio outage measurements.
+
+There is no separate consensus-certified pause accumulator.
+
+Therefore the authoritative retarget span is simply:
+
+canonical timestamp[h] - canonical timestamp[h-60]
+
+subject to the approved clamp.
+
+A sufficiently long quorum halt may therefore ease the next retarget by up to
+the existing4x interval clamp.
+
+This is intentional for Build8 V1.
+
+======================================================================
+3G. SECURITY CONSEQUENCE OF PAUSES
+======================================================================
+
+Document explicitly:
+
+A >2/3 Continuity coalition could deliberately halt certification and thereby
+influence the subsequent bounded PoW retarget.
+
+This does NOT independently give that coalition permission to create invalid
+blocks, and canonical progress still requires the approved Continuity quorum.
+
+Do not hide this consequence.
+
+Do not add a pause-exclusion mechanism in Build8 V1 without a future explicit
+consensus amendment.
+
+======================================================================
+4. WORKHEADER V1 — NOW IMPLEMENT
+======================================================================
+
+With Decisions1/2/3 resolved, Codex is authorized to finalize the exact
+WorkHeaderV1 semantics.
+
+The header MUST bind every field required to make PoW specific to ONE valid
+candidate.
+
+At minimum evaluate and include the actual Build8-required commitments for:
+
+NetworkID
+
+GenesisID
+
+ProtocolFingerprint / PoW domain
+
+parent BlockHash
+
+candidate height
+
+candidate timestamp
+
+derived/encoded MiningEpoch if retained
+
+canonical state/body/transaction commitments
+
+Continuity certificate commitment/reference as approved
+
+LicenseID
+
+Worker/Ticket authorization commitment
+
+target
+
+nonce.
+
+Use the final consensus specification to decide the exact set.
+
+Do NOT add benchmark-only fields.
+
+======================================================================
+5. AVOID AUTHORIZATION CIRCULARITY
+======================================================================
+
+Do NOT create a cycle such as:
+
+WorkAuthorization signs ProposedBlockHash
+
+while:
+
+ProposedBlockHash contains WorkAuthorization.
+
+Design a non-circular authorization commitment.
+
+Preferred conceptual direction:
+
+unsigned candidate body commitments
++
+parent/context
++
+License/Worker/Ticket authority
++
+timestamp/epoch
++
+target
+
+produce a canonical work commitment/header
+
+and the authorization signs/commits to the pre-PoW candidate authority without
+requiring the final PoW BlockHash inside itself.
+
+Codex must prove the dependency graph is acyclic.
+
+======================================================================
+6. BLOCK / BODY COMMITMENT
+======================================================================
+
+Define the canonical block-body commitment before WorkHeader lock.
+
+At minimum the header must commit deterministically to all consensus-relevant
+block contents.
+
+Use explicit domain-separated Merkle/root/hash structures defined by Build8.
+
+Do not hash in-memory Rust structs.
+
+Canonical bytes only.
+
+======================================================================
+7. CERTIFICATE SIGNER SUBSET
+======================================================================
+
+Preserve the approved rule:
+
+the particular set/order of signatures used to assemble an otherwise valid
+Continuity certificate must not create multiple canonical block identities for
+the same certified consensus decision.
+
+Use the annex's certificate/root commitment design.
+
+Do not accidentally put nondeterministic transport/signature collection order
+into BlockHash.
+
+======================================================================
+8. TICKET / WORK AUTHORIZATION CODEC
+======================================================================
+
+Finish the canonical codec for the authority a Miner receives.
+
+Bind enough information to prove:
+
+Network
+Genesis
+Worker
+License
+parent
+height
+timestamp/epoch
+candidate commitment
+target
+assignment/ticket uniqueness.
+
+Exact semantics come from approved Build8 rules.
+
+Produce:
+
+valid vector
+wrong Worker
+wrong License
+wrong parent
+wrong epoch
+wrong Genesis
+wrong NetworkID
+expired Ticket
+modified candidate commitment.
+
+======================================================================
+9. NONCE
+======================================================================
+
+Lock:
+
+nonce width
+
+nonce byte offset
+
+nonce byte order
+
+search range/wrap behavior.
+
+Do not assume the synthetic benchmark's final4-byte little-endian nonce is
+production consensus unless WorkHeaderV1 explicitly locks it.
+
+Choose the production representation first.
+
+Then benchmark it.
+
+======================================================================
+10. FIRST-POST-GENESIS VECTORS
+======================================================================
+
+Produce separate immutable vector families:
+
+A. GENESIS
+
+Genesis descriptor bytes
+Genesis state/root
+Genesis hash
+GenesisID derivation.
+
+B. FIRST_POST_GENESIS_CANDIDATE
+
+height1
+
+parent=Genesis
+
+fresh License/Worker/Ticket
+
+candidate timestamp
+
+epoch
+
+body commitments
+
+target
+
+nonce
+
+WorkHeader bytes
+
+SHA256d
+
+validity result.
+
+Never conflate them.
+
+======================================================================
+11. INDEPENDENT IMPLEMENTATIONS
+======================================================================
+
+Require exact agreement among:
+
+Rust consensus implementation
+
+independent Python vector implementation
+
+ESP32 C implementation.
+
+For each vector require identical:
+
+canonical bytes
+
+length
+
+field offsets
+
+SHA256d
+
+target comparison.
+
+No Genesis/PoW lock if any disagree.
+
+======================================================================
+12. PRODUCTION HASHING PATH
+======================================================================
+
+After WorkHeader bytes are locked:
+
+determine final ESP32 production SHA256d implementation.
+
+If fixed-prefix/midstate optimization is valid:
+
+implement and prove exact equivalence.
+
+If not:
+
+use full hashing.
+
+Then benchmark the actual production path.
+
+Do not extrapolate from the earlier synthetic measurements.
+
+======================================================================
+13. PHYSICAL MINER MEASUREMENT
+======================================================================
+
+COM3 remains Miner1.
+
+COM4 remains the LoRa device and remains untouched.
+
+Use RAM-only/non-destructive qualification where possible.
+
+Measure final canonical WorkHeader hashing with:
+
+real elapsed monotonic timing
+
+actual intended CPU configuration
+
+large enough nonce batches
+
+multiple repetitions
+
+independent digest checks.
+
+Then measure the actual intended Genesis fleet.
+
+Do NOT calculate:
+
+Miner1 rate * 12
+
+unless all12 have independently demonstrated equivalent qualified throughput.
+
+Prefer measuring all12.
+
+======================================================================
+14. INITIAL TARGET
+======================================================================
+
+After actual active Genesis miner rates are known:
+
+H_total =
+sum of qualified active miner hashes/sec.
+
+Expected work over60 seconds:
+
+W = H_total * 60
+
+derive the InitialPoWTarget from the exact SHA256d probability/target
+relationship using deterministic integer arithmetic.
+
+No arbitrary safety multiplier.
+
+Record all rounding.
+
+InitialPoWTarget is then committed into Genesis parameters.
+
+======================================================================
+15. RETARGET VECTORS
+======================================================================
+
+Mandatory vectors:
+
+exact3600-second span
+→ unchanged target
+
+900-second span
+→ 1/4 target
+
+14400-second span
+→ 4x target
+
+below900
+→ clamp900
+
+above14400
+→ clamp14400
+
+first retarget:
+timestamp60 - GenesisTimestamp
+
+second retarget:
+timestamp120 - timestamp60
+
+negative/raw reversed endpoint case
+→ deterministic900 clamp
+
+near target maximum
+
+near target minimum
+
+wide-intermediate overflow stress.
+
+======================================================================
+16. EARLY CHAIN TESTS
+======================================================================
+
+Explicitly test heights:
+
+0
+1
+2
+10
+11
+59
+60
+61
+120
+121.
+
+Cover:
+
+Genesis exception
+
+early MTP ancestor count
+
+first licensed work
+
+first retarget
+
+target transition.
+
+======================================================================
+17. NO MORE DECISION STOP ON THESE ITEMS
+======================================================================
+
+The following are now resolved:
+
+Genesis versus first mined block
+
+epoch origin
+
+timestamp representation
+
+Ticket epoch authority
+
+retarget endpoints
+
+retarget expected span
+
+quorum-pause inclusion.
+
+Do not return for approval on those questions.
+
+Continue automatically.
+
+Only STOP if a NEW contradiction is found that would change:
+
+block validity
+PoW security
+timestamp consensus
+licensed work authority
+or the approved Continuity model.
+
+======================================================================
+18. REQUIRED RESULT
+======================================================================
+
+Continue until:
+
+GENESIS DESCRIPTOR CODEC:
+LOCKED
+
+BLOCK/BODY CODEC:
+LOCKED
+
+WORK AUTHORIZATION CODEC:
+LOCKED
+
+WORKHEADERV1:
+LOCKED
+
+GENESIS/HEIGHT1 DEPENDENCY GRAPH:
+ACYCLIC
+
+TIMESTAMP/EPOCH:
+LOCKED
+
+RETARGET:
+LOCKED
+
+RUST/PYTHON/C VECTORS:
+EXACT MATCH
+
+PRODUCTION ESP32 HASH PATH:
+LOCKED
+
+PHYSICAL GENESIS FLEET HASHRATE:
+MEASURED
+
+INITIAL POW TARGET:
+DERIVED
+
+RETARGET VECTORS:
+PASS
+
+then continue automatically into ProtocolFingerprint and the remaining
+Build8 pre-Genesis gates.

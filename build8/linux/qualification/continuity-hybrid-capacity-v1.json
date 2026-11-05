@@ -1,0 +1,10 @@
+{
+  "candidate_bound": 1671168,
+  "old_bound": 262144,
+  "runtime_bound_changed": false,
+  "schema": "BUILD8-HYBRID-CERTIFICATE-CAPACITY-V1",
+  "signatures_valid": false,
+  "signers_683_bytes": 1044636,
+  "synthetic_size_fixture_only": true,
+  "voters_1024_bytes": 1566025
+}

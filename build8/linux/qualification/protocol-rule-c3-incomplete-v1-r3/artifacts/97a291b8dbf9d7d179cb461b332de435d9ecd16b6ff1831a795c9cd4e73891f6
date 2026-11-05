@@ -1,0 +1,41 @@
+# Canonical historical dependencies and local capacity
+
+The current safe retention frontier is height zero. No age-based canonical
+pruning is enabled. This is an explicit retention policy, not an assertion that
+a finite disk can serve unbounded history indefinitely.
+
+| Material | Required dependency | Current treatment |
+| --- | --- | --- |
+| Certified blocks, finality anchors and accepted recovery material | Exact prefix replay, parent verification, conflicting-finality integrity halt, checkpoint validation | Retain complete prefix |
+| Canonical block hash of every height (canonical rows and finalized anchors) | Operation-envelope reference lookups (OPERATION-ENVELOPE-AND-CONFIRMATION-V1.md part A; candidate-3 amendment): a reference may name any finalized height, and commit, proposal validation and replay compare it with the canonical block hash of that height | Retain complete prefix: reference lookups depend on the complete canonical block-hash prefix, and any future archival path must preserve it |
+| State undo records | Reconstruct historical E-1 voting/key/eligibility authority; execute competing historical finality evidence | Retain complete prefix; the 43,200-height slashing window alone cannot bound this dependency |
+| Current authenticated records | Live UTXOs, licenses, Worker bindings, registry, reputation, bond history, generation tombstones, sequence counters | Retain all canonical records; changes only through approved execution |
+| Bond lot provenance | Qualification at offense height and evidence-before-withdrawal settlement | Retain canonical history and current lot records |
+| Participation/refresh bodies | Reproduce rolling freshness, fixed periods and reputation | Retain certified bodies and state transitions |
+| Pending transaction intents | Durable lifecycle across candidates, reconnect and restart | Never evict silently; terminal records remain until a separately qualified archival policy exists |
+| Merkle index | Proof acceleration | Derived and rebuildable from exact canonical records; no independent authority |
+| TPM counter/lock/signature journal | Nonrollback signing custody | Separate protected storage; never pruned, reset or restored from a canonical checkpoint |
+
+`CanonicalStore::configure_storage_budget` installs a finite, immutable local
+SQLite page budget. The configured process requires a byte limit. The effective
+database limit rounds down to whole pages. Canonical, finality and mempool
+connections reapply the persisted policy before writing. SQLITE_FULL rejects
+the transaction atomically; it never authorizes deletion, alternate state, or
+continuation with a partial commit. Runtime mutation failures pause work.
+
+The byte limit caps the main canonical database, not all files on the machine.
+DELETE-mode rollback journals, checkpoint output budgets, bounded proposal/vote
+and operation journals, Worker accounting, and protected voter custody have
+separate resource requirements. Disk provisioning must account for these before
+production readiness. A local capacity stop is not a consensus integrity halt.
+Operators must provision capacity or perform a separately qualified archival
+upgrade before the cap is reached. No automatic cap increase is implemented.
+
+The B8CHECK2 manifest binds frontier zero and the exact finalized tip anchor.
+Restore replays the entire retained prefix from independently pinned Genesis,
+then compares sorted records and StateRoot. Corrupt or nonzero-frontier claims
+cannot initialize a usable chain. This does not copy pending transaction intents
+or private custody; those remain in their separate durable stores.
+
+Finite online pruning would require an authenticated archival path preserving
+all dependencies above. It is not currently implemented or claimed qualified.

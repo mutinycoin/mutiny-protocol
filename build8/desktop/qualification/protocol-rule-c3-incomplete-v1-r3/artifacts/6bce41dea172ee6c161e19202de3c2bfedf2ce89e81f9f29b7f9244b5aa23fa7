@@ -1,0 +1,181 @@
+//! Exact candidate store schemas. Validation is local corruption detection;
+//! replay from trusted Genesis remains the authority for canonical history.
+use crate::{anchors::FinalizedAnchor, finality_v2::StoreError};
+use rusqlite::{Connection, params};
+pub(crate) const EVIDENCE: [(&str, &str); 3] = [
+    (
+        "finalized_v2",
+        "CREATE TABLE finalized_v2(height BLOB PRIMARY KEY CHECK(length(height)=8),anchor BLOB NOT NULL)",
+    ),
+    (
+        "integrity_v2",
+        "CREATE TABLE integrity_v2(id INTEGER PRIMARY KEY CHECK(id=1),halted INTEGER NOT NULL CHECK(halted IN (0,1)))",
+    ),
+    (
+        "evidence_v2",
+        "CREATE TABLE evidence_v2(height BLOB NOT NULL CHECK(length(height)=8),block BLOB NOT NULL CHECK(length(block)=32),envelope BLOB NOT NULL,PRIMARY KEY(height,block))",
+    ),
+];
+pub(crate) const CANONICAL: [(&str, &str); 5] = [
+    (
+        "accepted_recovery_v2",
+        "CREATE TABLE accepted_recovery_v2(height BLOB PRIMARY KEY CHECK(length(height)=8),commitment BLOB NOT NULL CHECK(length(commitment)=32),record BLOB NOT NULL CHECK(length(record) BETWEEN 1 AND 262144))",
+    ),
+    (
+        "canonical_v2",
+        "CREATE TABLE canonical_v2(height BLOB PRIMARY KEY CHECK(length(height)=8),block BLOB NOT NULL CHECK(length(block)=32),root BLOB NOT NULL CHECK(length(root)=32),target BLOB NOT NULL CHECK(length(target)=32),timestamp BLOB NOT NULL CHECK(length(timestamp)=8))",
+    ),
+    (
+        "state_v2",
+        "CREATE TABLE state_v2(key BLOB PRIMARY KEY CHECK(length(key)=32),value BLOB NOT NULL)",
+    ),
+    (
+        "undo_v2",
+        "CREATE TABLE undo_v2(height BLOB NOT NULL CHECK(length(height)=8),key BLOB NOT NULL CHECK(length(key)=32),previous BLOB,PRIMARY KEY(height,key))",
+    ),
+    (
+        "confirmations_v2",
+        "CREATE TABLE confirmations_v2(id BLOB PRIMARY KEY CHECK(length(id)=32),height BLOB NOT NULL CHECK(length(height)=8))",
+    ),
+];
+pub(crate) const INDEX: [(&str, &str); 2] = [
+    (
+        "state_merkle_nodes",
+        "CREATE TABLE state_merkle_nodes(id BLOB PRIMARY KEY CHECK(length(id)=34),value BLOB NOT NULL) WITHOUT ROWID",
+    ),
+    (
+        "state_merkle_tip",
+        "CREATE TABLE state_merkle_tip(singleton INTEGER PRIMARY KEY CHECK(singleton=1),anchor BLOB NOT NULL,root BLOB NOT NULL,count INTEGER NOT NULL,tree BLOB)",
+    ),
+];
+pub(crate) const OPERATIONS: &str = "CREATE TABLE operation_index_v2(height BLOB NOT NULL CHECK(length(height)=8),list INTEGER NOT NULL CHECK(list IN (0,1)),position INTEGER NOT NULL CHECK(position BETWEEN 0 AND 4095),id BLOB NOT NULL CHECK(length(id)=32),record BLOB NOT NULL CHECK(length(record) BETWEEN 1 AND 512),PRIMARY KEY(height,list,position))";
+pub(crate) const OPERATION_ID_INDEX: &str = "CREATE INDEX operation_index_v2_id ON operation_index_v2(id)";
+pub(crate) fn validate(
+    db: &Connection,
+    genesis: &FinalizedAnchor,
+    require_canonical: bool,
+) -> Result<(), StoreError> {
+    let app: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    let count: i64 = db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+    let canonical = (version == 3 && count == 17) || (version == 4 && count == 20);
+    if app != 0x4d554632
+        || !matches!(version, 3 | 4)
+        || (!(version == 3 && count == 5) && !canonical)
+        || (require_canonical && !canonical)
+    {
+        return Err(StoreError::Integrity);
+    }
+    if version == 4 {
+        for (kind, name, table, sql) in [
+            ("table", "operation_index_v2", "operation_index_v2", OPERATIONS),
+            ("index", "operation_index_v2_id", "operation_index_v2", OPERATION_ID_INDEX),
+        ] {
+            let actual: String = db.query_row("SELECT CASE WHEN length(CAST(sql AS BLOB))<=1024 THEN sql ELSE NULL END FROM sqlite_schema WHERE type=?1 AND name=?2 AND tbl_name=?3", params![kind,name,table], |r| r.get(0))?;
+            if actual != sql { return Err(StoreError::Integrity); }
+        }
+        let n: i64 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name='sqlite_autoindex_operation_index_v2_1' AND tbl_name='operation_index_v2' AND sql IS NULL", [], |r| r.get(0))?;
+        if n != 1 { return Err(StoreError::Integrity); }
+    }
+    for (name, sql) in EVIDENCE
+        .iter()
+        .chain(if canonical {
+            CANONICAL.iter()
+        } else {
+            [].iter()
+        })
+        .chain(if canonical { INDEX.iter() } else { [].iter() })
+    {
+        let actual: String = db.query_row("SELECT CASE WHEN length(CAST(sql AS BLOB))<=1024 THEN sql ELSE NULL END FROM sqlite_schema WHERE type='table' AND name=?1 AND tbl_name=?1", [name], |r| r.get(0))?;
+        if &actual != sql {
+            return Err(StoreError::Integrity);
+        }
+    }
+    let indexes = [
+        "finalized_v2",
+        "evidence_v2",
+        "canonical_v2",
+        "state_v2",
+        "undo_v2",
+        "confirmations_v2",
+        "accepted_recovery_v2",
+    ];
+    for table in &indexes[..if canonical { 7 } else { 2 }] {
+        let name = format!("sqlite_autoindex_{table}_1");
+        let n: i64 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name=?1 AND tbl_name=?2 AND sql IS NULL", params![name, table], |r| r.get(0))?;
+        if n != 1 {
+            return Err(StoreError::Integrity);
+        }
+    }
+    let raw: Vec<u8> = db.query_row("SELECT CASE WHEN typeof(anchor)='blob' AND length(anchor) BETWEEN 1 AND 256 THEN anchor ELSE NULL END FROM finalized_v2 WHERE height=?1", [0u64.to_be_bytes().as_slice()], |r| r.get(0))?;
+    if raw != genesis.encode() {
+        return Err(StoreError::Context);
+    }
+    let n: i64 = db.query_row("SELECT count(*) FROM integrity_v2", [], |r| r.get(0))?;
+    let valid: bool = db.query_row(
+        "SELECT typeof(halted)='integer' AND halted IN (0,1) FROM integrity_v2 WHERE id=1",
+        [],
+        |r| r.get(0),
+    )?;
+    if n != 1 || !valid {
+        return Err(StoreError::Integrity);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exact_definitions_and_singleton_types_are_required() {
+        let db = Connection::open_in_memory().unwrap();
+        let genesis = FinalizedAnchor {
+            network: crate::NETWORK_ID,
+            genesis: [1; 32],
+            fingerprint: [2; 32],
+            height: 0,
+            block: [3; 32],
+        };
+        db.execute_batch("PRAGMA application_id=1297434162; PRAGMA user_version=3")
+            .unwrap();
+        for (_, sql) in EVIDENCE {
+            db.execute_batch(sql).unwrap();
+        }
+        db.execute(
+            "INSERT INTO finalized_v2 VALUES(?1,?2)",
+            params![0u64.to_be_bytes().as_slice(), genesis.encode()],
+        )
+        .unwrap();
+        db.execute_batch("INSERT INTO integrity_v2 VALUES(1,0)")
+            .unwrap();
+        validate(&db, &genesis, false).unwrap();
+        assert!(validate(&db, &genesis, true).is_err());
+        // Same table names/count and application id are insufficient.
+        db.execute_batch("DROP TABLE evidence_v2; CREATE TABLE evidence_v2(height BLOB,block BLOB,envelope BLOB,PRIMARY KEY(height,block))").unwrap();
+        assert!(validate(&db, &genesis, false).is_err());
+        db.execute_batch("DROP TABLE evidence_v2").unwrap();
+        db.execute_batch(EVIDENCE[2].1).unwrap();
+        for (_, sql) in CANONICAL.into_iter().chain(INDEX) {
+            db.execute_batch(sql).unwrap();
+        }
+        validate(&db, &genesis, true).unwrap();
+        db.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE integrity_v2 SET halted=2")
+            .unwrap();
+        assert!(validate(&db, &genesis, true).is_err());
+        db.execute_batch("UPDATE integrity_v2 SET halted=0; INSERT INTO integrity_v2 VALUES(2,0)")
+            .unwrap();
+        assert!(validate(&db, &genesis, true).is_err());
+        db.execute_batch("DELETE FROM integrity_v2 WHERE id=2")
+            .unwrap();
+        validate(&db, &genesis, true).unwrap();
+        db.execute_batch(OPERATIONS).unwrap();
+        db.execute_batch(OPERATION_ID_INDEX).unwrap();
+        db.pragma_update(None, "user_version", 4).unwrap();
+        validate(&db, &genesis, true).unwrap();
+        db.execute_batch("DROP INDEX operation_index_v2_id; CREATE INDEX operation_index_v2_id ON operation_index_v2(record)").unwrap();
+        assert!(matches!(validate(&db, &genesis, true), Err(StoreError::Integrity)));
+        db.execute_batch("DROP INDEX operation_index_v2_id").unwrap();
+        db.execute_batch(OPERATION_ID_INDEX).unwrap();
+        validate(&db, &genesis, true).unwrap();
+    }
+}

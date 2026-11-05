@@ -1,0 +1,11 @@
+# Targeted C10 clock review
+
+Independent review in isolated detached scratch `D:/Mutiny/build8-codex-clock-review` at 7306233. The reviewed engine SHA256 is 3d1c4c876a1707dbb5953dd011383be0e9992c3c06f538075b1f71188e45ad23 and matches the integration engine exactly. No engine, profile or consensus rule changed. This closes the targeted software range-ledger review only; it does not close the full CLOCK review or physical qualification.
+
+Two public software probes use a separately computed UTC truth. Dense versus sparse sampling of the same trace observes different jitter extrema, yielding a 21 ms final half-width difference. Opposing pairing jitter masks the first 25 ms of accumulated real short suspends; the existing detector refuses once the net gap exceeds 50 ms and stays refused. Both qualified intervals contain independent truth throughout, assuming boottime records the actual elapsed time. This exposes an overbroad documentation claim, not an observed unsafe UTC bound. CLOCK-PROFILE-V1.md now limits sample-count independence to the same observed extrema and states the concealment limit precisely.
+
+Clean clock unit target: 56 passed, zero failed/ignored. Independent probes: two passed, zero failed/ignored. Twelve compiling behavioral mutants are killed: empty range, forgotten high, forgotten low, floor rounding, omitted lower/upper ledger, disabled suspend/width/capture/calibration cap, exclusive calibration cap, disabled holdover. Each fails a named assertion after compilation; no compile-only failure is counted. The exact original engine bytes are restored; the final clean target again passes 56/56.
+
+Closed commands/logs/source hashes: `D:/Mutiny/build8-targets/codex-takeover-20261004/CLOCK-REVIEW-RESULTS.json`, `clock-range-review-1.log`, `clock-mutations/RESULTS.json` and each mutation log. Windows Rust 1.98.1, offline/locked, jobs four, test threads two; the host lease excluded simultaneous heavy campaigns. The scratch checkout and all negative evidence remain preserved.
+
+No controlled Linux suspend, host drift measurement, chrony freshness/precision qualification, musl runtime or physical 24-hour survival is inferred. Those need their own native/physical evidence. The locked 250 ms calibration and one-second voting limits and existing profile identity remain intact.

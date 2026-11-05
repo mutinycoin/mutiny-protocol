@@ -1,0 +1,57 @@
+# Host-independence TRIPWIRE rules for non-test consensus and node code (consensus/src, node/src).
+# One rule set, read by BOTH guards: consensus/tests/host_independence_guard.rs and
+# build/check-host-independence.pl (called by build/check-shipping-config.sh). Both apply it with the
+# same model of test code (see either file) and both run build/host-independence-probes.txt.
+#
+# These rules are a TRIPWIRE, not a property: they match spellings in source text, so a spelling not
+# listed here, a computed path, a new dependency or a helper process can still reach the host. The
+# property (validator-local maps, verifiers, pins and host facts cannot change consensus acceptance)
+# is tested separately by the pin-invariance tests (docs/BUILD-CONFIGURATIONS-V1.md section 13).
+#
+# rule <class> <kind> <text>
+#   kind sub   : case-insensitive substring of the non-test code line (string literals included)
+#   kind word  : case-sensitive whole identifier (letters, digits, '_')
+#   kind iword : case-insensitive whole identifier
+#   kind macro : case-sensitive whole identifier followed by '!' (optional whitespace between)
+# allow <file> <fragment>
+#   Explicit allow-list: in <file> (repository-relative), every occurrence of <fragment> (the rest of
+#   the line, exact, case-sensitive) is removed from a non-test code line before the rules apply, so
+#   the fragment is the ONLY thing on that line a rule may match. Every entry must still be needed
+#   (a stale entry fails both guards).
+
+# Host identity: the host's name, machine, boot or user identity, and the files that hold them.
+rule host sub hostname
+rule host sub hostid
+rule host iword uname
+rule host sub machine-id
+rule host sub machine_id
+rule host sub machineid
+rule host sub machineguid
+rule host sub computername
+rule host sub getlogin
+rule host sub getpw
+rule host sub /etc/
+rule host sub /proc/
+rule host sub /sys/
+
+# Process environment (std::env in any import or alias form, env!/option_env!, libc, procfs).
+rule env word env
+rule env word option_env
+rule env sub getenv
+rule env sub environ
+rule env sub var_os
+rule env sub vars_os
+rule env sub set_var
+rule env sub remove_var
+
+# String assembly that would defeat the substring rules above.
+rule assembly macro concat
+
+# The only permitted sites in non-test code.
+allow node/src/main.rs std::env::args()
+allow node/src/host_clock.rs "/proc/sys/kernel/random/boot_id"
+# Error messages about the DECLARED NTS source names of the node clock (configuration text, not a
+# host-name lookup).
+allow node/src/host_clock/nts_sources.rs is not a plain hostname
+allow node/src/host_clock/nts_sources.rs not an operator hostname
+allow node/src/host_clock/nts_sources.rs hostnames of one operator count once

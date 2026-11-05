@@ -1,0 +1,48 @@
+{
+  "schema": "BUILD8-PARTICIPATION-VECTORS-V1",
+  "synthetic_only": true,
+  "public_key": "0247776904c0f1cc3a9c0984b66f75301a5fa68678f0d64af8ba1abce34738a73e",
+  "ack": "8a010b1a4d555401582001010101010101010101010101010101010101010101010101010101010101015820020202020202020202020202020202020202020202020202020202020202020258200303030303030303030303030303030303030303030303030303030303030303010182582086c0773283061f029293f3ad1e13333a634167945da776f3db2b01783aba57b3008158403a10f9c34f7ac1ceb0e28052305d9e2553a2243471e7b95179f3cb808a203c895a1d5b1a2f3d2b9cae584b39d93fe3fc0c3da6a470bfea177956b67fdc7abf85",
+  "digest": "adf019bbfe69aa88a00701222a8a39702673a4972cf17d6535c27a2073595dba",
+  "thresholds": [
+    {
+      "count": 53,
+      "qualified": false
+    },
+    {
+      "count": 54,
+      "qualified": true
+    },
+    {
+      "count": 60,
+      "qualified": true
+    }
+  ],
+  "slots": [
+    {
+      "height": 1,
+      "period": 0,
+      "slot": 0
+    },
+    {
+      "height": 60,
+      "period": 0,
+      "slot": 59
+    },
+    {
+      "height": 61,
+      "period": 1,
+      "slot": 0
+    },
+    {
+      "height": 120,
+      "period": 1,
+      "slot": 59
+    },
+    {
+      "height": 121,
+      "period": 2,
+      "slot": 0
+    }
+  ]
+}

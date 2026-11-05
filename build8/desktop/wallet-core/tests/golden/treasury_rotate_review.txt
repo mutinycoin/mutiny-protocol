@@ -1,0 +1,85 @@
+== Summary ==
+* Action: Rotate the Treasury destination
+  Summary: Rotate Treasury eb9273a9..3278f2d6 from generation 1 (tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca) to generation 2 (tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54), effective at inclusion. Network fee 0.00005783 MUT from the current destination's coins. MUT authority only; Bitcoin custody is untouched.
+! Chain class: TEST-VALUE chain: nothing here has real value
+
+== Chain ==
+  Network: 0x4d555401
+  Genesis: 0101010101010101010101010101010101010101010101010101010101010101
+  Protocol fingerprint: 0202020202020202020202020202020202020202020202020202020202020202
+  Verified block height: 100
+  Verified block: 0303030303030303030303030303030303030303030303030303030303030303
+  State root: f874970697ec73a0ddd4904660ab86523c82d3053883c2530834b63a601c9b19
+  Chain class: TEST-VALUE (nothing on this chain has real value)
+
+== Signing wallet ==
+  Signing address: tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54 (legacy hex 89a81347fdce532285a1027f43a563b61d29fe73228745d4098a68870acd8d3d)
+  Key generation: 2
+  Wallet authority: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+  Profile: Treasury profile
+
+== Required authorizations ==
+  Approval slot 0: this wallet signs; wallet tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Parties ==
+  Treasury: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+
+== Money ==
+  The protocol pays: 0.00000000 MUT (0 STRIKES) to tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54 (this wallet; legacy hex 89a81347fdce532285a1027f43a563b61d29fe73228745d4098a68870acd8d3d)
+  Returns to this wallet: 0.04994217 MUT (4994217 STRIKES) to tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet; legacy hex eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6)
+* Network fee: 0.00005783 MUT (5783 STRIKES); the greater of 240 STRIKES and one atom per byte of the signed encoding; paid by this wallet, signed size 5783 bytes
+* Total leaving this wallet: 0.00005783 MUT
+  Inputs: 1 coin(s) worth 0.05000000 MUT
+  Input 0: d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1:0 worth 0.05000000 MUT (this wallet)
+
+== Conditions ==
+  Treasury: Trading Treasury eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6 (TreasuryID). Its destination history is generation-indexed: this rotation adds generation 2 and makes it the active destination; generation 1 and every earlier one stay in the history.
+  Generation: 1 to 2: exactly one more than the active generation (a skipped, repeated or stale generation is refused).
+  Current destination: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet), generation 1, active since block 0.
+  Current descriptor: Descriptor hash 1a7b32c7687dd6bffff25ff2e4bb7b70aaeaa396b18178bc808b21a0e4704f87: the key that controls the current destination in the verified wallet book; it is this wallet's current key. Only that key can authorize this rotation (approval slot 0).
+  New destination: tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54 (this wallet), generation 2; descriptor hash 1a7b32c7687dd6bffff25ff2e4bb7b70aaeaa396b18178bc808b21a0e4704f87; key generation 2.
+  New destination precondition: The new wallet authority generation must already exist: the verified wallet book resolves the new address to exactly this descriptor (checked at this head). The reviewed plan requires a host assertion of a clean backup rehearsal bound to this exact Treasury authority and descriptor. Consensus cannot verify that rehearsal.
+  Address used once: A destination address serves one generation only: tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54 has never been a destination of this Treasury (checked). After inclusion neither tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca nor tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54 can be named by a later rotation.
+  Effective height: The inclusion height: the rotation takes effect in the block that includes it, between block 101 and block 245.
+  New offers: Treasury offers frozen from the inclusion block on must name generation 2 and tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54; a new freeze naming generation 1 is refused from then on.
+  Frozen offers: Native locks already finalized against generation 1 or earlier keep their exact signed destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca and existing claim/refund rules. Claims use that wallet lineage's current signing authority; retiring its former key does not redirect the signed destination. An unfunded offer or freeze witness has no historical authority exception and must be reviewed and signed by the current maker before first canonical funding. No open hash lock pays it now.
+  Bitcoin custody: This changes MUT Treasury authority and destination ONLY. It does not touch Bitcoin custody: no Bitcoin key, address, script or transaction is created, parsed, signed or verified by this wallet.
+  Fee coins: The fee and the change come from 1 coin(s) of the current destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (consensus debits exactly that address); the change returns to it.
+  Dividend reserve: These coins back the dividend reserve of 0.00000000 MUT: after this fee the Treasury's backing is 0.05294217 MUT (checked). A block that leaves the reserve unbacked is invalid, so a fee below the reserve is refused.
+  Unused trade fields: TradeID 0000000000000000000000000000000000000000000000000000000000000000, ContractHash 0000000000000000000000000000000000000000000000000000000000000000, trade generation 1: not used by a Treasury rotation.
+  Validity window: Valid only for blocks 101 to 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval).
+  Inputs: All 1 input coin(s) must still be unspent coins of the current destination when the rotation is included; a conflicting spend of any of them cancels it.
+  Fee rule: The fee must be at least the greater of 240 STRIKES and the encoded size of the complete signed operation (its one approval included): 5783 bytes, so 5783 atoms.
+  One pending rotation: This wallet keeps one pending rotation per Treasury generation: generation 1 of this Treasury stays reserved until this rotation settles or is forgotten.
+  Approvals still required: The approval of the current Treasury destination (slot 0, this wallet).
+  Finality: The rotation is final only when a certified block that includes it is part of this wallet's verified chain and this host's own replay-derived index confirms its inclusion. A queued record is stored locally only; authenticated submission or peer acknowledgement is not confirmation. Inclusion in a proposed, uncertified block is not finality either.
+
+== Timing ==
+  Valid from block: 101
+  Valid until block: 245 (145 blocks after the verified block; about 2 h 25 min, approximate at the 60 s target interval)
+
+== Effects ==
+# Irreversible: From inclusion the active destination of Treasury eb9273a9..3278f2d6 is generation 2 at tmut13x5px3laeefj9pdpqfl58ftrkcwjnlnny2r5t4qf3f5gwzkd357sf2ux54: only the key that controls it can authorize the next Treasury rotation or new offer freezes. A rotation cannot be undone; a later rotation can only move on to a new address.
+# Irreversible: tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca can never again become a destination of this Treasury.
+  Effect: Moves no MUT to the new destination, leaves every other coin of the current destination where it is, and changes no wallet key. MUT authority only: Bitcoin custody is untouched.
+# Irreversible: Spends 1 coin(s) worth 0.05000000 MUT of the current destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca. A spent coin cannot be recovered once the rotation is included.
+  Effect: Returns 0.04994217 MUT of change to the current destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca (this wallet).
+# Irreversible: Pays a network fee of 0.00005783 MUT to the block producer.
+# Irreversible: Once signed, the rotation cannot be revoked: it stays valid until it is included or until block 245.
+
+== Warnings ==
+! Notice: This is a TEST-VALUE chain: nothing here has real value.
+! Caution: This changes the MUT Treasury destination authority only. Bitcoin custody is separate and untouched.
+! Danger: From inclusion only the key that controls the new destination can rotate this Treasury further or freeze new offers, and proceeds of new offers settle to its address: if that key or its backup is lost, both are lost. This wallet checks only that the chain resolves the address to the descriptor.
+! Caution: Already canonical funded locks preserve their historical destination tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca. Historical signatures and freeze witnesses do not authorize first funding after the maker's authority retires; an unfunded offer requires fresh review and current-maker signatures.
+! Caution: This spends Treasury coins for the fee. It moves MUT only; Bitcoin custody is separate and untouched.
+
+== You must acknowledge ==
+* Required: I checked the fee and who pays it
+* Required: I read the conditions and the timing
+* Required: I understand the effects marked irreversible cannot be undone once the operation is included
+* Required: I understand this changes MUT Treasury authority only and does not touch Bitcoin custody
+* Type to confirm: CONFIRM 18EF66D3
+
+== Binding ==
+  Review digest: 18ef66d3a47d548ba35ec1c681d50fa689a5daeb360ed91619123412a6688099

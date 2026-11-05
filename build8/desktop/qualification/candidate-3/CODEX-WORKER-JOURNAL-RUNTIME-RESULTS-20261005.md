@@ -1,0 +1,23 @@
+# Selected current-assignment Worker runtime source
+
+This tranche imports 353 exact reviewed public files: 331 selected Worker source/dependency files and 22 native probe files. `WORKER-RUNTIME-SELECTED-SOURCE-v10.json` pins every imported byte and the historical qualification package. These directories are separate from the preserved GEN source, the original checkout and normal shipping targets. No SDK build, image, device flash or production activation occurred.
+
+The current-assignment journal path verifies the signed kind-10 Worker birth against actual current canonical ownership before initialization and again at runtime gates. It binds the nested mining offer to the current assignment, preserves journal and birth records, and retires owned I/O on stale authority, malformed traffic, clock or maintenance failure. Original delivery deadlines do not serve as active-session expiry. Mode 2 selects the journal; the connection adapter allows its absent legacy public binding while preserving the legacy mode requirements.
+
+The native TEST-VALUE adapter exercises real Rust/C cryptography, a genuine current-assignment canonical chain and signed work, including the inclusive nonce window and refusal of queued old-authority traffic after a certified assignment change. Linux additionally exercises the actual POSIX owned socket, native retirement, EOF and idempotent closure. RAM storage models and software socket tests do not establish physical NVS behavior, rollback resistance, power-loss survival, hardware identity or enforceable host association.
+
+## Naturally closed historical software results
+
+The reviewed v10 package closure is `9cd1e73f0de2089f2a52c9fae5257caf10e305a8a5085e8031163ba21955e609`, with dependency commit `726392c7fb2ec0c0b01947cc06d3c0cbe1ab8ace`. Actual Windows release execution passed 28/28, zero ignored or filtered; log `69599bcbc1331b31ad667bf37bc3e39f4235bb36c490f2f65189f0c0a46aa3c7`. Actual Linux release execution passed 32/32, zero ignored or filtered; log `4e7d4b95f2486296e14d6b7118de877dc6836558c6f1876a864ad893d6be9bee`. The earlier Linux socket 1/1 is a rerun within those 32 unique tests.
+
+Both hosts used locked offline dependencies, Rust/Cargo 1.98.1, four build jobs and one test thread. The exact 1,287 package source files remained unchanged; Linux's isolated vendor configuration adds one checked file. Linux rehashed 5,833 unchanged vendor files across 138 public dependency origins. All preceding failures and partial packages are preserved. No process signals were used to end either campaign.
+
+Windows predecessor v5/v7 access violations remain failed evidence. The v8 TEST adapter keeps C-retained pending storage alive through owner closure. Its canonical predecessor then exposed a stale fixture assignment fact across the ordinary epoch-activation boundary. The v10 fixture uses a private review projection for due activation while retaining the genuine canonical parent; actual licensed execution independently applies the same lifecycle before signing/certifying the ownership change. These corrections do not retroactively turn predecessor failures into PASS.
+
+Independent evidence is retained under `D:/Mutiny/build8-targets/codex-q17-firmware-source-20261004-idx-v1/JOURNAL-RUNTIME-WINDOWS-v10-ROOT-INDEPENDENT-RESULT.json` and `D:/Mutiny/build8-targets/codex-takeover-20261004/worker-runtime-linux-v10-recovered-v1/LOCAL-VERIFICATION.json`. The closed Linux public archive is `169172600da015402666681ea33073ecacca5eed2f3887de7052c30039f30d41`, containing 24 verified regular files. Generated private temporary fixtures, Cargo home and build targets remain at the protected task roots and were excluded from that archive.
+
+## Open work and reproduction
+
+The new combined candidate has newer clock and wallet source than the qualified v10 dependency graph. Its affected runtime and complete campaigns remain pending; historical results do not transfer silently. The proposed 14 semantic mutations remain unfinished following automatic safety rejection of the delegated review. Physical storage, SDK integration, hardware qualification and production admission remain open.
+
+Use `qualification/worker-runtime-probe-v2/Cargo.toml` as an explicit native qualification target with protected task-owned temporary storage, separate build targets, offline locked dependencies and serialized host execution. The preserved runner and package controls in the external evidence directory identify the exact command, compiler, ancestry and fixture protections used for the historical results. A failed setup, zero selected tests, incomplete process closure or changed source cannot qualify a run.

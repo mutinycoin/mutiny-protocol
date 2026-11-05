@@ -1,0 +1,573 @@
+//! Hybrid live ingress. Parent authority must come from committed canonical
+//! state. Historical signature validity alone never admits an unexecuted block.
+use crate::{
+    Error, Hash,
+    anchors::FinalizedAnchor,
+    bft::{LockState, Observation, RoundMachine, Step},
+    blocks::BlockBody,
+    certificates::Decision,
+    continuity_v2::{MAX_VOTERS, ParentVoter, Vote},
+    domain_hash,
+    execution::{Execution, State, WorkParent},
+    pow::{WorkHeader, meets_target, mining_epoch},
+    votes::IngressError,
+    work_authority_v2::Authority,
+};
+use minicbor::Encoder;
+use mutiny_crypto_v2::HybridSignature;
+use primitive_types::U256;
+use std::collections::{BTreeMap, BTreeSet};
+type Result<T> = std::result::Result<T, IngressError>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeightAuthority {
+    pub parent: FinalizedAnchor,
+    pub membership: Hash,
+    pub reputation: Hash,
+    pub attestation: Hash,
+    pub voters: BTreeMap<Hash, ParentVoter>,
+    /// Derived from authenticated immutable parent parameters. Explicitly
+    /// trusted low-level authority callers must supply the same selection.
+    pub activation_rule: Option<Hash>,
+}
+impl HeightAuthority {
+    /// Derive candidate hybrid authority from an authenticated canonical parent.
+    /// Both the anchor and expected StateRoot must come from a verified finalized
+    /// header/checkpoint, never from the peer asking us to accept its vote.
+    /// This does not enable the still-gated hybrid lifecycle executor.
+    pub fn from_state(
+        state: &State,
+        parent: FinalizedAnchor,
+        expected_state_root: Hash,
+    ) -> Result<Self> {
+        if state.root()? != expected_state_root
+            || state.accounting.slots.last_height != parent.height
+        {
+            return Err(Error::WrongAnchor.into());
+        }
+        Self::from_validated_components(state, parent)
+    }
+    /// Internal projection only after canonical parent verification or a fully
+    /// verified recovery plan. This does not authenticate a StateRoot and must
+    /// never be used by proof/checkpoint import as a substitute for from_state.
+    pub(crate) fn from_validated_components(
+        state: &State,
+        parent: FinalizedAnchor,
+    ) -> Result<Self> {
+        // A recovery projection intentionally has incomplete canonical history
+        // and cannot be authenticated by StateRoot yet. Its prospective voting
+        // authority must nevertheless retain the Genesis identity coverage and
+        // duplicate-lineage rules before durable recovery acceptance.
+        crate::endorsement_identity::check_state(state, state.admission_class()?)?;
+        crate::endorsement_revocation_v1::check_components(state)?;
+        let registry = state.continuity.as_ref().ok_or(Error::UnknownSigner)?;
+        state.penalties_v2.validate_at_parent(&parent)?;
+        state.bonds_v2.validate_at_height(parent.height)?;
+        parent.validate_context(registry.genesis, registry.fingerprint)?;
+        state.membership_v2.validate_at_height(
+            registry,
+            &state.continuity_keys_v2,
+            parent.height,
+        )?;
+        let weights = registry.weights()?;
+        let (physical_membership, reputation, attestation) = registry.roots()?;
+        let key_records = state.continuity_keys_v2.records()?;
+        let key_root = crate::blocks::state_root(
+            &key_records
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect::<Vec<_>>(),
+        )?;
+        let mut e = Encoder::new(Vec::new());
+        e.array(3)
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .bytes(&physical_membership)
+            .unwrap()
+            .bytes(&key_root)
+            .unwrap();
+        let membership = domain_hash(
+            b"MUTINY-BUILD8-HYBRID-CONTINUITY-MEMBERSHIP-V2",
+            &e.into_writer(),
+        );
+        let mut voters = BTreeMap::new();
+        for (member, weight) in registry.members.iter().zip(weights) {
+            if !member.physical {
+                // Cloud/virtual members have no hybrid Continuity authority.
+                if !weight.is_zero() || state.continuity_keys_v2.get(member.node).is_some() {
+                    return Err(Error::UnqualifiedPhysical.into());
+                }
+                continue;
+            }
+            let binding = state
+                .continuity_keys_v2
+                .get(member.node)
+                .ok_or(Error::UnqualifiedPhysical)?;
+            let a = binding.admission();
+            let profile = crate::tpm::TpmProfile::decode(&a.profile)?;
+            if a.genesis != parent.genesis
+                || a.fingerprint != parent.fingerprint
+                || a.hardware_generation != member.generation
+                || profile.hardware != member.hardware
+                || profile.commitment()? != member.attestation
+                || crate::tpm::public_key(&profile.voting_public, false)? != member.voting_key
+            {
+                return Err(Error::UnqualifiedPhysical.into());
+            }
+            voters.insert(
+                member.node,
+                ParentVoter {
+                    lineage: member.lineage,
+                    admitted: true,
+                    physical: true,
+                    eligible: member.eligible,
+                    revoked: state.penalties.revoked(member.lineage)
+                        || state.penalties_v2.revoked(member.lineage),
+                    hardware_generation: member.generation,
+                    key_generation: a.key_generation,
+                    tpm_public: member.voting_key,
+                    profile: member.attestation,
+                    public: binding.public()?,
+                    reputation: weight,
+                },
+            );
+        }
+        // No orphaned key record may silently acquire authority later.
+        if voters.len() != key_records.len() {
+            return Err(Error::UnknownSigner.into());
+        }
+        let authority = Self {
+            parent,
+            membership,
+            reputation,
+            attestation,
+            voters,
+            activation_rule: crate::activation_attestation_v1::selected(state)?
+                .then(crate::activation_attestation_v1::rule_commitment),
+        };
+        authority.weights()?;
+        Ok(authority)
+    }
+    pub fn roots(&self) -> [Hash; 3] {
+        [self.membership, self.reputation, self.attestation]
+    }
+    pub(crate) fn weights(&self) -> Result<BTreeMap<Hash, U256>> {
+        if self.activation_rule.is_some_and(|rule|rule!=crate::activation_attestation_v1::rule_commitment()){
+            return Err(Error::WrongFingerprint.into());
+        }
+        self.parent
+            .validate_context(self.parent.genesis, self.parent.fingerprint)?;
+        if self.voters.len() > MAX_VOTERS {
+            return Err(IngressError::Capacity);
+        }
+        let (mut ed, mut pq, mut tpm, mut lineages) = (
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        );
+        let mut weights = BTreeMap::new();
+        for (id, v) in &self.voters {
+            let weight = v.weight()?;
+            if !weight.is_zero()
+                && (*id == [0; 32]
+                    || !ed.insert(v.public.ed448)
+                    || !pq.insert(v.public.fndsa)
+                    || !tpm.insert(v.tpm_public)
+                    || !lineages.insert(v.lineage))
+            {
+                return Err(Error::Duplicate.into());
+            }
+            weights.insert(*id, weight);
+        }
+        Ok(weights)
+    }
+}
+pub struct AuthenticatedRound {
+    authority: HeightAuthority,
+    machine: RoundMachine,
+    proposals: BTreeMap<Hash, (Hash, u64)>,
+    activation_scopes: BTreeMap<Hash, Option<crate::activation_attestation_v1::Scope>>,
+    /// Block timestamp of each executed proposal, for the local vote-time gate only.
+    stamps: BTreeMap<Hash, u64>,
+    // Local deduplication only. Evidence verification remains independent of
+    // arrival order, and replay after restart may rebuild authenticated quorum.
+    sequences: BTreeMap<(Hash, u64), Hash>,
+    slots: BTreeMap<(Hash, u64, u8), Hash>,
+}
+impl AuthenticatedRound {
+    pub fn new(authority: HeightAuthority) -> Result<Self> {
+        let machine = RoundMachine::new(authority.weights()?)?;
+        Ok(Self {
+            authority,
+            machine,
+            proposals: BTreeMap::new(),
+            activation_scopes: BTreeMap::new(),
+            stamps: BTreeMap::new(),
+            sequences: BTreeMap::new(),
+            slots: BTreeMap::new(),
+        })
+    }
+    pub fn restore(authority: HeightAuthority, state: LockState) -> Result<Self> {
+        let machine = RoundMachine::restore(authority.weights()?, state)?;
+        Ok(Self {
+            authority,
+            machine,
+            proposals: BTreeMap::new(),
+            activation_scopes: BTreeMap::new(),
+            stamps: BTreeMap::new(),
+            sequences: BTreeMap::new(),
+            slots: BTreeMap::new(),
+        })
+    }
+    pub fn height(&self) -> crate::Result<u64> {
+        self.authority
+            .parent
+            .height
+            .checked_add(1)
+            .ok_or(Error::Overflow)
+    }
+    pub fn authority(&self) -> &HeightAuthority {
+        &self.authority
+    }
+    pub fn machine(&self) -> &RoundMachine {
+        &self.machine
+    }
+    pub(crate) fn custody_member(&self, node: Hash) -> crate::Result<&ParentVoter> {
+        self.authority.voters.get(&node).ok_or(Error::UnknownSigner)
+    }
+    pub fn voter(&self, node: Hash) -> crate::Result<&ParentVoter> {
+        let v = self.custody_member(node)?;
+        if v.weight()?.is_zero() {
+            return Err(Error::UnqualifiedPhysical);
+        }
+        Ok(v)
+    }
+    /// Height-independent identity for one hardware/software-key generation.
+    /// No parent roots are omitted from vote validation by this storage identity.
+    pub fn signing_context(&self, node: Hash) -> crate::Result<Hash> {
+        let v = self.custody_member(node)?;
+        let descriptor = v
+            .public
+            .descriptor(v.key_generation)
+            .map_err(|_| Error::Codec)?;
+        let p = &self.authority.parent;
+        let mut e = Encoder::new(Vec::new());
+        e.array(11)
+            .unwrap()
+            .u8(2)
+            .unwrap()
+            .u32(p.network)
+            .unwrap()
+            .bytes(&p.genesis)
+            .unwrap()
+            .bytes(&p.fingerprint)
+            .unwrap()
+            .bytes(&node)
+            .unwrap()
+            .bytes(&v.lineage)
+            .unwrap()
+            .u64(v.hardware_generation)
+            .unwrap()
+            .u64(v.key_generation)
+            .unwrap()
+            .bytes(&v.tpm_identity())
+            .unwrap()
+            .bytes(&v.profile)
+            .unwrap()
+            .bytes(&descriptor)
+            .unwrap();
+        Ok(domain_hash(
+            b"MUTINY-BUILD8-VOTE-JOURNAL-CONTEXT-V2",
+            &e.into_writer(),
+        ))
+    }
+    pub fn validate_proposal(
+        &mut self,
+        state: &State,
+        parent: &WorkParent,
+        header: &WorkHeader,
+        work: &Authority,
+        body: &BlockBody,
+    ) -> Result<Execution> {
+        self.validate_proposal_with_history(state, parent, header, work, body, &Default::default())
+    }
+    /// Historical authorities must come from authenticated canonical E-1 state.
+    /// An evidence sender cannot supply or replace this local history map.
+    pub fn validate_proposal_with_history(
+        &mut self,
+        state: &State,
+        parent: &WorkParent,
+        header: &WorkHeader,
+        work: &Authority,
+        body: &BlockBody,
+        history: &crate::evidence_history_v2::History,
+    ) -> Result<Execution> {
+        self.validate_proposal_with_recovery(state, parent, header, work, body, history, None)
+    }
+    pub(crate) fn validate_proposal_with_recovery(
+        &mut self,
+        state: &State,
+        parent: &WorkParent,
+        header: &WorkHeader,
+        work: &Authority,
+        body: &BlockBody,
+        history: &crate::evidence_history_v2::History,
+        recovery: Option<&crate::recovery_transition_v2::Prepared>,
+    ) -> Result<Execution> {
+        let trusted = &self.authority.parent;
+        if parent.genesis != trusted.genesis
+            || parent.fingerprint != trusted.fingerprint
+            || parent.block != trusted.block
+            || parent.height != trusted.height
+        {
+            return Err(Error::WrongAnchor.into());
+        }
+        if !meets_target(&header.digest(), &header.candidate.target) {
+            return Err(Error::InvalidCounter.into());
+        }
+        let block = header.block_hash();
+        if self.proposals.len() >= 1024 && !self.proposals.contains_key(&block) {
+            return Err(IngressError::Capacity);
+        }
+        let executed = match recovery {
+            Some(r) => {
+                if r.authority()? != self.authority {
+                    return Err(Error::WrongAnchor.into());
+                }
+                r.execute_licensed(state, parent, header, work, body, history)?
+            }
+            None => {
+                // This low-level component receives authenticated authority
+                // explicitly. CanonicalStore additionally derives and compares
+                // that authority from its root-verified read snapshot.
+                state.execute_licensed_with_history_v2(parent, header, work, body, history)?
+            }
+        };
+        let activation_scope=crate::activation_attestation_v1::Scope::executed(
+            state,&executed.state,trusted,header,body,recovery)?;
+        if self.authority.activation_rule != crate::activation_attestation_v1::selected(state)?
+            .then(crate::activation_attestation_v1::rule_commitment) {
+            return Err(Error::WrongFingerprint.into());
+        }
+        self.activation_scopes.insert(block,activation_scope);
+        self.proposals.insert(
+            block,
+            (
+                executed.root,
+                mining_epoch(header.candidate.timestamp, parent.t0)?,
+            ),
+        );
+        self.stamps.insert(block, header.candidate.timestamp);
+        Ok(executed)
+    }
+    pub(crate) fn activation_scope(&self,block:Hash)
+        -> Result<Option<&crate::activation_attestation_v1::Scope>> {
+        self.activation_scopes.get(&block).map(Option::as_ref).ok_or(IngressError::UnknownProposal)
+    }
+    /// The durable caller assigns a monotonically increasing sequence and must
+    /// persist this vote and reducer locks together before invoking any signer.
+    /// Local time eligibility of voting for `block` now. Pure: changes no state.
+    pub fn time_status(
+        &self,
+        clock: &dyn crate::vote_clock_v1::VoteClock,
+        block: Hash,
+    ) -> crate::vote_clock_v1::TimeStatus {
+        match self.stamps.get(&block) {
+            Some(ts) => crate::vote_clock_v1::evaluate(clock, *ts),
+            None => crate::vote_clock_v1::TimeStatus::UnknownProposal,
+        }
+    }
+    /// The block this round WOULD vote for, computed without any mutation. The time guard must
+    /// judge this block, not the caller's `proposal` argument: a validator holding a lock votes
+    /// its locked block even when called with no proposal, and `None` here means a nil vote.
+    pub fn vote_block(
+        &self,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+    ) -> Result<Option<Hash>> {
+        match step {
+            Step::Prevote => {
+                if proposal.is_some_and(|p| !self.proposals.contains_key(&p)) {
+                    return Err(IngressError::UnknownProposal);
+                }
+                Ok(self.machine.preview_prevote(proposal, pol_round)?)
+            }
+            Step::Precommit => {
+                if pol_round.is_some() {
+                    return Err(Error::WrongOperation.into());
+                }
+                Ok(self.machine.preview_precommit(proposal)?)
+            }
+        }
+    }
+    /// Gate for a FRESH vote. It judges the block the reducer would actually return (see
+    /// `vote_block`); nil votes are not time-dependent. Runs before any reducer or custody
+    /// mutation so a refusal leaves no trace.
+    pub fn time_gate(
+        &self,
+        gate: crate::vote_clock_v1::VoteGate<'_>,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+    ) -> Result<()> {
+        use crate::vote_clock_v1::{TimeStatus, VoteGate};
+        let VoteGate::Fresh(clock) = gate else {
+            return Ok(());
+        };
+        let Some(block) = self.vote_block(step, proposal, pol_round)? else {
+            return Ok(());
+        };
+        match self.time_status(clock, block) {
+            TimeStatus::Eligible => Ok(()),
+            TimeStatus::Future { ahead_seconds } => {
+                Err(IngressError::FutureTimestamp { ahead_seconds })
+            }
+            TimeStatus::Unqualified => Err(IngressError::ClockUnqualified),
+            TimeStatus::UnknownProposal => Err(IngressError::UnknownProposal),
+        }
+    }
+    pub fn prepare_vote(
+        &mut self,
+        node: Hash,
+        step: Step,
+        proposal: Option<Hash>,
+        pol_round: Option<u64>,
+        sequence: u64,
+        gate: crate::vote_clock_v1::VoteGate<'_>,
+    ) -> Result<Vote> {
+        let v = self.voter(node)?.clone();
+        self.time_gate(gate, step, proposal, pol_round)?;
+        if sequence == 0 {
+            return Err(Error::InvalidCounter.into());
+        }
+        let block = match step {
+            Step::Prevote => self.prevote(proposal, pol_round)?,
+            Step::Precommit => {
+                if pol_round.is_some() {
+                    return Err(Error::WrongOperation.into());
+                }
+                self.precommit(proposal)?
+            }
+        };
+        let (state, mining_epoch) = match block {
+            Some(b) => *self
+                .proposals
+                .get(&b)
+                .ok_or(IngressError::UnknownProposal)?,
+            None => ([0; 32], 0),
+        };
+        let p = &self.authority.parent;
+        let height = self.height()?;
+        Ok(Vote {
+            nil: block.is_none(),
+            node,
+            hardware_generation: v.hardware_generation,
+            key_generation: v.key_generation,
+            sequence,
+            tpm_identity: v.tpm_identity(),
+            profile: v.profile,
+            signature: HybridSignature {
+                ed448: [0; 114],
+                fndsa: [0; 1280],
+            },
+            decision: Decision {
+                network: p.network,
+                genesis: p.genesis,
+                fingerprint: p.fingerprint,
+                purpose: 2,
+                height,
+                mining_epoch,
+                continuity_period: (height - 1) / 60,
+                round: self.machine.state().round,
+                step: match step {
+                    Step::Prevote => 2,
+                    Step::Precommit => 3,
+                },
+                previous_finalized_anchor: p.id(),
+                parent: p.block,
+                block: block.unwrap_or([0; 32]),
+                state,
+                membership: self.authority.membership,
+                reputation: self.authority.reputation,
+                attestation: self.authority.attestation,
+            },
+        })
+    }
+    pub fn observe(&mut self, vote: &Vote) -> Result<Observation> {
+        vote.verify(
+            &self.authority.parent,
+            self.authority.roots(),
+            &self.authority.voters,
+        )?;
+        let d = &vote.decision;
+        if !vote.nil && self.proposals.get(&d.block) != Some(&(d.state, d.mining_epoch)) {
+            return Err(IngressError::UnknownProposal);
+        }
+        let step = match d.step {
+            2 => Step::Prevote,
+            3 => Step::Precommit,
+            _ => return Err(Error::WrongOperation.into()),
+        };
+        let identity = domain_hash(
+            b"MUTINY-BUILD8-CONTINUITY-INGRESS-MESSAGE-V2",
+            &vote.unsigned()?,
+        );
+        let sequence = (vote.node, vote.sequence);
+        let slot = (vote.node, d.round, d.step);
+        if self
+            .sequences
+            .get(&sequence)
+            .is_some_and(|old| *old != identity)
+        {
+            return Err(Error::InvalidCounter.into());
+        }
+        if self.slots.get(&slot).is_some_and(|old| *old != identity) {
+            // Let the reducer distinguish contradictory payloads from attempts
+            // to resubmit one payload with a different sequence. Neither adds
+            // weight. Historical equivocation evidence has its own verifier.
+            self.machine.observe_authenticated(
+                d.round,
+                step,
+                vote.node,
+                if vote.nil { None } else { Some(d.block) },
+            )?;
+            return Err(Error::InvalidCounter.into());
+        }
+        if !self.slots.contains_key(&slot) && self.slots.len() >= 100_000 {
+            return Err(IngressError::Capacity);
+        }
+        let result = self.machine.observe_authenticated(
+            d.round,
+            step,
+            vote.node,
+            if vote.nil { None } else { Some(d.block) },
+        )?;
+        self.sequences.insert(sequence, identity);
+        self.slots.insert(slot, identity);
+        Ok(result)
+    }
+    pub fn enter_round(&mut self, round: u64) -> Result<()> {
+        Ok(self.machine.enter_round(round)?)
+    }
+    pub fn prevote(&mut self, proposal: Option<Hash>, pol: Option<u64>) -> Result<Option<Hash>> {
+        if proposal.is_some_and(|p| !self.proposals.contains_key(&p)) {
+            return Err(IngressError::UnknownProposal);
+        }
+        Ok(self.machine.prevote(proposal, pol)?)
+    }
+    pub fn precommit(&mut self, block: Option<Hash>) -> Result<Option<Hash>> {
+        Ok(self.machine.precommit(block)?)
+    }
+    pub fn timeout_precommit(&mut self) -> Result<u64> {
+        Ok(self.machine.timeout_precommit()?)
+    }
+    pub fn commit(&mut self, round: u64, block: Hash) -> Result<bool> {
+        Ok(self.machine.commit(round, block)?)
+    }
+}
+#[cfg(test)]
+#[path = "votes_v2_coverage_tests.rs"]
+mod coverage_tests;

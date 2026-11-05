@@ -1,0 +1,168 @@
+//! Bounded finalized-history catch-up. Peer status is only a fetch hint;
+//! every envelope passes the local canonical executor and certificate verifier.
+use crate::{peer_client::PeerClient, peer_server::PeerBackend};
+use mutiny_consensus_v8::{Hash, block_envelope::BlockEnvelope};
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
+type Result<T> = std::result::Result<T, String>;
+#[derive(Debug)]
+pub struct SyncProgress {
+    pub accepted: usize,
+    pub local_height: u64,
+    pub advertised_height: u64,
+}
+pub(crate) fn local<B: PeerBackend>(
+    actor: &Arc<Mutex<B>>,
+    peer: Hash,
+    method: &str,
+    args: Value,
+) -> Result<Value> {
+    let mut request = args.as_object().ok_or("Local request fields")?.clone();
+    request.insert("id".into(), json!(0));
+    request.insert("method".into(), json!(method));
+    let reply = actor.lock().map_err(|_| "Actor poisoned")?.handle(
+        peer,
+        &serde_json::to_vec(&request).map_err(|e| e.to_string())?,
+    )?;
+    let reply: Value = serde_json::from_slice(&reply.payload).map_err(|e| e.to_string())?;
+    if let Some(error) = reply.get("error") {
+        return Err(format!("Canonical catch-up: {error}"));
+    }
+    reply.get("result").cloned().ok_or("Local response".into())
+}
+fn height(status: &Value) -> Result<u64> {
+    if status["integrity_halted"] != false {
+        return Err("Integrity halt or missing status".into());
+    }
+    status["height"].as_u64().ok_or("Status height".into())
+}
+pub fn catch_up<B: PeerBackend>(
+    client: &mut PeerClient,
+    actor: &Arc<Mutex<B>>,
+    peer: Hash,
+    maximum_blocks: usize,
+) -> Result<SyncProgress> {
+    synchronize(
+        &mut |method, args| client.request(method, args.as_object().ok_or("Request fields")?),
+        &mut |method, args| local(actor, peer, method, args),
+        maximum_blocks,
+    )
+}
+/// Send canonical history over the existing outbound socket. The receiving
+/// peer runs exactly the same authenticated ingress as for pulled history.
+pub fn push_history<B: PeerBackend>(
+    client: &mut PeerClient,
+    actor: &Arc<Mutex<B>>,
+    peer: Hash,
+    maximum_blocks: usize,
+) -> Result<SyncProgress> {
+    synchronize(
+        &mut |method, args| local(actor, peer, method, args),
+        &mut |method, args| client.request(method, args.as_object().ok_or("Request fields")?),
+        maximum_blocks,
+    )
+}
+type Endpoint<'a> = dyn FnMut(&str, Value) -> Result<Value> + 'a;
+fn synchronize(
+    source: &mut Endpoint<'_>,
+    destination: &mut Endpoint<'_>,
+    maximum_blocks: usize,
+) -> Result<SyncProgress> {
+    if !(1..=64).contains(&maximum_blocks) {
+        return Err("Catch-up batch must be 1..64".into());
+    }
+    let remote = source("status", json!({}))?;
+    let target = height(&remote)?;
+    let own = destination("status", json!({}))?;
+    for field in ["genesis_id", "protocol_fingerprint"] {
+        if remote[field].as_str().is_none() || remote[field] != own[field] {
+            return Err("Catch-up context".into());
+        }
+    }
+    let mut current = height(&own)?;
+    let common = current.min(target);
+    // Authenticate any competing certificate at an existing finalized height.
+    // The store, not remote status, decides duplicate vs. integrity violation.
+    if common > 0 {
+        fetch_validate(source, destination, common)?;
+    }
+    if current <= target {
+        fetch_recovery(source, destination, current)?;
+    }
+    let mut accepted = 0;
+    while current < target && accepted < maximum_blocks {
+        let next = current.checked_add(1).ok_or("Height exhausted")?;
+        fetch_validate(source, destination, next)?;
+        let after = height(&destination("status", json!({}))?)?;
+        if after < next {
+            return Err("Catch-up did not canonically advance".into());
+        }
+        current = after;
+        fetch_recovery(source, destination, current)?;
+        accepted += 1;
+    }
+    Ok(SyncProgress {
+        accepted,
+        local_height: current,
+        advertised_height: target,
+    })
+}
+fn fetch_recovery(
+    source: &mut Endpoint<'_>,
+    destination: &mut Endpoint<'_>,
+    at: u64,
+) -> Result<()> {
+    let answer = source("get_recovery", json!({"height":at}))?;
+    let field = answer.get("envelope").ok_or("Missing recovery response")?;
+    if field.is_null() {
+        return Ok(());
+    }
+    let text = field.as_str().ok_or("Recovery envelope")?;
+    if text.len()
+        > 2 * mutiny_consensus_v8::canonical_store::recovery_transport::MAX_RECOVERY_ENVELOPE
+    {
+        return Err("Recovery envelope bound".into());
+    }
+    let raw = hex::decode(text).map_err(|e| e.to_string())?;
+    let proof =
+        mutiny_consensus_v8::canonical_store::recovery_transport::RecoveryEnvelope::decode(&raw)
+            .map_err(|e| format!("Recovery decode: {e:?}"))?;
+    if proof.certificate.body.anchor.height != at {
+        return Err("Wrong recovery height".into());
+    }
+    let result = destination("submit_recovery", json!({"recovery":text}))?;
+    if !matches!(
+        result["status"].as_str(),
+        Some("RECOVERY_COMMITTED" | "ALREADY_COMMITTED")
+    ) {
+        return Err("Recovery not canonically accepted".into());
+    }
+    Ok(())
+}
+fn fetch_validate(
+    source: &mut Endpoint<'_>,
+    destination: &mut Endpoint<'_>,
+    at: u64,
+) -> Result<()> {
+    let answer = source("get_block", json!({"height":at}))?;
+    let encoded = answer["envelope"]
+        .as_str()
+        .ok_or("Peer lacks requested finalized block")?;
+    // The authenticated frame is independently bounded before JSON allocation.
+    let raw = hex::decode(encoded).map_err(|e| e.to_string())?;
+    let block = BlockEnvelope::decode(&raw).map_err(|e| format!("Block decode: {e:?}"))?;
+    if block.header.candidate.height != at {
+        return Err("Peer returned wrong height".into());
+    }
+    let result = destination("submit_block", json!({"envelope":encoded}))?;
+    if !matches!(
+        result["status"].as_str(),
+        Some("COMMITTED" | "ALREADY_FINALIZED")
+    ) {
+        return Err("Block not accepted into canonical history".into());
+    }
+    if result["block_hash"] != hex::encode(block.block_hash()) {
+        return Err("Committed identity mismatch".into());
+    }
+    Ok(())
+}

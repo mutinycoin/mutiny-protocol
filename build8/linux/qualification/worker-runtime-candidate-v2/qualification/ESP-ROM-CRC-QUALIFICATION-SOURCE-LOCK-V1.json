@@ -1,0 +1,9 @@
+{
+  "schema": "BUILD8-ESP-ROM-CRC-QUALIFICATION-SOURCE-LOCK-V1",
+  "origin": "Previously pinned Espressif NVS RAM probe; observation-compact-probe-v3-report.json source_hashes",
+  "scope": "Public CRC corruption check only; not cryptographic authentication",
+  "files": {
+    "esp_rom_crc.c": "4874af25714e23f20e371262f588a6e7bc23e0b83b23d42f2351595817cf5c88",
+    "esp_rom_crc.h": "16495e00daa7dfd708105479ff050180c56bdabd520f78360cba0af709f0c6d0"
+  }
+}

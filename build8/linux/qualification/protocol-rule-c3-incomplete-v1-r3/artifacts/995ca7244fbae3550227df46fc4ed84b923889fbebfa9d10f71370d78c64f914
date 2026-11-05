@@ -1,0 +1,724 @@
+//! Owner-only, single-writer storage for the clock anchor (Order of 4 Oct 2026, decisions C8 and
+//! C12; docs/CLOCK-PROFILE-V1.md, "Persistent clock anchor").
+//!
+//! [`ClockStateDir::open`] runs at start-up, BEFORE anything of the anchor store is read:
+//!
+//! 1. C8, owner-only storage (unix): every ancestor of the anchor directory is a real directory
+//!    (not a symbolic link) owned by root or by the effective user and not writable by group or
+//!    others unless its sticky bit stops them replacing entries they do not own; the anchor
+//!    directory itself is created with mode 0700 when it is missing (only that last component,
+//!    nothing else is created or chmod-ed), must not be a symbolic link, is opened with
+//!    `O_DIRECTORY | O_NOFOLLOW`, and the OPENED HANDLE must be the directory the name pointed to
+//!    (same device and inode as the `lstat`), owned by the effective user, with no permission bit
+//!    for group or others. Every existing file of the store (record, lineage mark, lock, temp
+//!    files) must be a non-link owned by the effective user with no group or other bits.
+//! 2. C12, single writer: an exclusive OS lock on `<anchor_file>.lock` (std `File::try_lock`:
+//!    `flock` on unix, `LockFileEx` on Windows), held for the lifetime of the returned value; the
+//!    live node keeps it for the lifetime of the process. A second instance fails closed with
+//!    [`StorageError::Locked`]: it never waits, never steals the lock and never reads the store.
+//!    The lock file is never removed (removing a lock file can let two holders lock two inodes).
+//!
+//! Windows uses native handle owner/DACL, NTFS identity, no-reparse/one-link checks and retained
+//! directory handles without delete sharing. Newly created leaves/files have atomic protected
+//! current-user+SYSTEM descriptors; unsafe existing objects are never repaired. Other platforms
+//! refuse. Windows storage support does not qualify `HostClock::start` or a restart.
+//!
+//! Limits (stated, not closed here): the checks run at start-up; a later substitution would need
+//! write access to a directory that only root or the node's own account can write, and the lock
+//! addresses concurrency between instances, not a malicious root or node account (a root/runtime
+//! compromise is a separately stated limitation).
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+mod windows_storage;
+
+/// Why the anchor storage was refused at start-up. Every variant stops the start-up: the node does
+/// not run its clock on storage it cannot vouch for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StorageError {
+    /// This platform offers no owner-only check this build can perform (Order C8): refused, never
+    /// assumed.
+    Unsupported(&'static str),
+    /// The path is not absolute, has no file name or parent, contains `.` / `..`, or a component is
+    /// not a directory.
+    Path(PathBuf),
+    /// A component of the path is a symbolic link (path substitution).
+    Symlink(PathBuf),
+    /// An ancestor directory could be replaced by another user: it is owned by neither root nor
+    /// this user, or it is writable by group or others without the sticky bit.
+    ReplaceableAncestor(PathBuf),
+    /// The anchor directory or one of its files is not owned by the effective user.
+    NotOwner(PathBuf),
+    /// The anchor directory or one of its files is accessible by group or others.
+    Accessible(PathBuf),
+    /// The opened directory handle is not the directory the path named a moment before.
+    Substituted(PathBuf),
+    /// Another instance holds the exclusive anchor lock (Order C12): this one fails closed.
+    Locked(PathBuf),
+    Io(PathBuf, String),
+}
+impl std::error::Error for StorageError {}
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageError::Unsupported(why) => {
+                write!(f, "owner-only storage check unsupported: {why}")
+            }
+            StorageError::Path(p) => write!(f, "unusable anchor path {}", p.display()),
+            StorageError::Symlink(p) => {
+                write!(f, "symbolic link in the anchor path: {}", p.display())
+            }
+            StorageError::ReplaceableAncestor(p) => {
+                write!(
+                    f,
+                    "another user could replace the anchor directory via {}",
+                    p.display()
+                )
+            }
+            StorageError::NotOwner(p) => write!(f, "not owned by the node user: {}", p.display()),
+            StorageError::Accessible(p) => {
+                write!(
+                    f,
+                    "accessible by group or others (mode must be owner-only): {}",
+                    p.display()
+                )
+            }
+            StorageError::Substituted(p) => {
+                write!(f, "anchor directory substituted: {}", p.display())
+            }
+            StorageError::Locked(p) => write!(
+                f,
+                "another instance holds the clock anchor lock {} (one node process per anchor directory)",
+                p.display()
+            ),
+            StorageError::Io(p, e) => write!(f, "{}: {e}", p.display()),
+        }
+    }
+}
+// `take_lock` serves Unix and the unchecked portable test double; the Windows production
+// backend uses its protected native file opener before taking that same OS lifetime lock.
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+fn io(path: &Path, e: std::io::Error) -> StorageError {
+    StorageError::Io(path.to_path_buf(), e.to_string())
+}
+
+/// `<path><suffix>` beside `path` (the anchor's companion files).
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// The anchor directory, verified owner-only (C8) and exclusively locked (C12) for the lifetime of
+/// this value. The anchor store takes it by value, so nothing of the store can be read or written
+/// without it.
+#[derive(Debug)]
+pub struct ClockStateDir {
+    anchor_file: PathBuf,
+    lock_file: PathBuf,
+    /// Held, never read: dropping it releases the exclusive lock. Always `Some` outside the anchor
+    /// store's own unit tests (`unlocked_for_test`).
+    _lock: Option<File>,
+    /// The verified directory handle (unix), held with the lock.
+    #[cfg(unix)]
+    _dir: Option<File>,
+    #[cfg(windows)]
+    windows: Option<windows_storage::WindowsStateDir>,
+}
+
+impl ClockStateDir {
+    /// Production start-up: verify (creating the directory owner-only if it is missing) and lock.
+    pub fn open(anchor_file: &Path) -> Result<Self, StorageError> {
+        let dir = anchor_dir(anchor_file)?;
+        #[cfg(unix)]
+        {
+            let handle = unix::secure_directory(dir)?;
+            let lock_file = sibling(anchor_file, ".lock");
+            let lock = take_lock(&lock_file)?;
+            unix::check_entries(&store_entries(anchor_file))?;
+            Ok(Self {
+                anchor_file: anchor_file.to_path_buf(),
+                lock_file,
+                _lock: Some(lock),
+                _dir: Some(handle),
+            })
+        }
+        #[cfg(windows)]
+        {
+            windows_storage::strict(anchor_file)?;
+            let windows = windows_storage::WindowsStateDir::secure(dir)?;
+            let lock_file = sibling(anchor_file, ".lock");
+            let lock = windows.lock(&lock_file)?;
+            windows.check_entries(&store_entries(anchor_file))?;
+            Ok(Self {
+                anchor_file: anchor_file.into(),
+                lock_file,
+                _lock: Some(lock),
+                windows: Some(windows),
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = dir;
+            Err(StorageError::Unsupported(
+                "no ACL facility is in this crate's dependency graph, so owner-only storage cannot be \
+                 verified on this platform; the live node requires Linux",
+            ))
+        }
+    }
+    /// TEST DOUBLE: the C12 lock exactly as in production, WITHOUT the C8 ownership and mode checks
+    /// (test directories are created with the platform's default modes). Windows production
+    /// checks remain in the native backend; this deliberately bypasses them. TEST builds only.
+    #[cfg(test)]
+    pub(crate) fn open_unchecked_for_test(anchor_file: &Path) -> Result<Self, StorageError> {
+        let dir = anchor_dir(anchor_file)?;
+        let lock_file = sibling(anchor_file, ".lock");
+        let lock = take_lock(&lock_file)?;
+        #[cfg(not(unix))]
+        let _ = dir;
+        Ok(Self {
+            anchor_file: anchor_file.to_path_buf(),
+            lock_file,
+            _lock: Some(lock),
+            #[cfg(unix)]
+            _dir: Some(File::open(dir).map_err(|e| io(dir, e))?),
+            #[cfg(windows)]
+            windows: None,
+        })
+    }
+    /// TEST DOUBLE for the anchor store's own unit tests only, which open a second store over the
+    /// same files while the first is still alive to inspect what a later process would load: NO
+    /// lock and no checks. Never compiled into a non-test build; the lock is tested in this module
+    /// and at host level, where every "restart" first drops the previous process.
+    #[cfg(test)]
+    pub(crate) fn unlocked_for_test(anchor_file: &Path) -> Self {
+        Self {
+            anchor_file: anchor_file.to_path_buf(),
+            lock_file: sibling(anchor_file, ".lock"),
+            _lock: None,
+            #[cfg(unix)]
+            _dir: None,
+            #[cfg(windows)]
+            windows: None,
+        }
+    }
+    pub fn anchor_file(&self) -> &Path {
+        &self.anchor_file
+    }
+    pub fn lock_file(&self) -> &Path {
+        &self.lock_file
+    }
+    // Windows production store I/O cannot bypass the verified retained directory chain.
+    // The None backend is constructed only by unit-test doubles.
+    #[cfg(windows)]
+    pub(super) fn windows_read(
+        &self,
+        path: &Path,
+        limit: usize,
+    ) -> Option<Result<Option<Vec<u8>>, StorageError>> {
+        self.windows.as_ref().map(|w| w.read(path, limit))
+    }
+    #[cfg(windows)]
+    pub(super) fn windows_write(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+    ) -> Option<Result<(), StorageError>> {
+        self.windows.as_ref().map(|w| w.write(path, bytes))
+    }
+    #[cfg(windows)]
+    pub(super) fn windows_remove(&self, path: &Path) -> Option<Result<(), StorageError>> {
+        self.windows.as_ref().map(|w| w.remove(path))
+    }
+}
+
+/// The directory of `anchor_file`: the path must be absolute, free of `.` and `..`, and name a file.
+fn anchor_dir(anchor_file: &Path) -> Result<&Path, StorageError> {
+    let bad = || StorageError::Path(anchor_file.to_path_buf());
+    if !anchor_file.is_absolute()
+        || anchor_file.file_name().is_none()
+        || anchor_file
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+    {
+        return Err(bad());
+    }
+    anchor_file.parent().ok_or_else(bad)
+}
+/// Every file the store may leave in the directory.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn store_entries(anchor_file: &Path) -> Vec<PathBuf> {
+    let mark = sibling(anchor_file, ".seq");
+    vec![
+        anchor_file.to_path_buf(),
+        sibling(anchor_file, ".tmp"),
+        sibling(&mark, ".tmp"),
+        mark,
+        sibling(anchor_file, ".lock"),
+    ]
+}
+/// Order C12: open (never truncate, never remove) and lock exclusively without waiting.
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+fn take_lock(path: &Path) -> Result<File, StorageError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).map_err(|e| io(path, e))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(StorageError::Locked(path.to_path_buf())),
+        Err(TryLockError::Error(e)) => Err(io(path, e)),
+    }
+}
+
+#[cfg(unix)]
+mod unix {
+    use super::{StorageError, io};
+    use std::fs::{File, OpenOptions};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    use std::path::{Component, Path, PathBuf};
+
+    const GROUP_OTHER_WRITE: u32 = 0o022;
+    const GROUP_OTHER_ANY: u32 = 0o077;
+    const STICKY: u32 = 0o1000;
+
+    /// TEST HOOK (never in a non-test build): run between the `lstat` of the anchor directory and
+    /// its no-follow open, for that one directory only, to inject a path substitution.
+    #[cfg(test)]
+    pub(super) static BETWEEN_LSTAT_AND_OPEN: std::sync::Mutex<Option<(PathBuf, fn(&Path))>> =
+        std::sync::Mutex::new(None);
+
+    fn effective_uid() -> u32 {
+        // SAFETY: `geteuid` takes no arguments, touches no memory of ours and cannot fail.
+        unsafe { libc::geteuid() }
+    }
+
+    /// C8 for the anchor directory: ancestors, creation, no-follow open, handle identity and mode.
+    pub(super) fn secure_directory(dir: &Path) -> Result<File, StorageError> {
+        let me = effective_uid();
+        let parent = dir
+            .parent()
+            .ok_or_else(|| StorageError::Path(dir.to_path_buf()))?;
+        let mut prefix = PathBuf::new();
+        for component in parent.components() {
+            match component {
+                Component::RootDir => prefix.push("/"),
+                Component::Normal(name) => prefix.push(name),
+                _ => return Err(StorageError::Path(dir.to_path_buf())),
+            }
+            let m = std::fs::symlink_metadata(&prefix).map_err(|e| io(&prefix, e))?;
+            if m.file_type().is_symlink() {
+                return Err(StorageError::Symlink(prefix));
+            }
+            if !m.is_dir() {
+                return Err(StorageError::Path(prefix));
+            }
+            let replaceable = (m.uid() != 0 && m.uid() != me)
+                || (m.mode() & GROUP_OTHER_WRITE != 0 && m.mode() & STICKY == 0);
+            if replaceable {
+                return Err(StorageError::ReplaceableAncestor(prefix));
+            }
+        }
+        // The directory itself: created owner-only when missing (this last component only).
+        match std::fs::symlink_metadata(dir) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+                    Ok(()) => {}
+                    // Created concurrently: it is checked below like any existing directory.
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(io(dir, e)),
+                }
+            }
+            Err(e) => return Err(io(dir, e)),
+        }
+        let named = std::fs::symlink_metadata(dir).map_err(|e| io(dir, e))?;
+        if named.file_type().is_symlink() {
+            return Err(StorageError::Symlink(dir.to_path_buf()));
+        }
+        if !named.is_dir() {
+            return Err(StorageError::Path(dir.to_path_buf()));
+        }
+        #[cfg(test)]
+        {
+            let hook = BETWEEN_LSTAT_AND_OPEN
+                .lock()
+                .map(|h| h.clone())
+                .unwrap_or(None);
+            if let Some((target, inject)) = hook
+                && target == dir
+            {
+                inject(dir);
+            }
+        }
+        // Open it WITHOUT following a link and check the HANDLE: the very directory the name
+        // pointed to a moment ago, owned by this user, nothing for group or others.
+        let handle = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(dir)
+            .map_err(|e| io(dir, e))?;
+        let m = handle.metadata().map_err(|e| io(dir, e))?;
+        if (m.dev(), m.ino()) != (named.dev(), named.ino()) {
+            return Err(StorageError::Substituted(dir.to_path_buf()));
+        }
+        if m.uid() != me {
+            return Err(StorageError::NotOwner(dir.to_path_buf()));
+        }
+        if m.mode() & GROUP_OTHER_ANY != 0 {
+            return Err(StorageError::Accessible(dir.to_path_buf()));
+        }
+        Ok(handle)
+    }
+
+    /// C8 for the store's files: each that exists is a non-link owned by this user, owner-only.
+    pub(super) fn check_entries(paths: &[PathBuf]) -> Result<(), StorageError> {
+        let me = effective_uid();
+        for p in paths {
+            let m = match std::fs::symlink_metadata(p) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(io(p, e)),
+            };
+            if m.file_type().is_symlink() {
+                return Err(StorageError::Symlink(p.clone()));
+            }
+            if m.uid() != me {
+                return Err(StorageError::NotOwner(p.clone()));
+            }
+            if m.mode() & GROUP_OTHER_ANY != 0 {
+                return Err(StorageError::Accessible(p.clone()));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    /// A fresh directory created atomically for this test (never reused, never a PID-only name).
+    fn fresh_dir(tag: &str) -> PathBuf {
+        static UNIQUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let n = UNIQUE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut salt = [0u8; 8];
+            getrandom::getrandom(&mut salt).unwrap();
+            let d = std::env::temp_dir().join(format!(
+                "build8-state-dir-{tag}-{}-{n}-{}",
+                std::process::id(),
+                hex::encode(salt)
+            ));
+            if std::fs::create_dir(&d).is_ok() {
+                return d;
+            }
+        }
+    }
+
+    #[test]
+    fn c12_a_second_instance_fails_closed_and_never_steals_the_lock() {
+        let dir = fresh_dir("lock");
+        let anchor = dir.join("clock.anchor");
+        let first = ClockStateDir::open_unchecked_for_test(&anchor).unwrap();
+        assert_eq!(first.lock_file(), sibling(&anchor, ".lock"));
+        // A second instance on the same anchor fails closed at once, with the explicit error.
+        for _ in 0..3 {
+            assert_eq!(
+                ClockStateDir::open_unchecked_for_test(&anchor).err(),
+                Some(StorageError::Locked(sibling(&anchor, ".lock")))
+            );
+        }
+        let message = StorageError::Locked(sibling(&anchor, ".lock")).to_string();
+        assert!(
+            message.contains("another instance") && message.contains("one node process"),
+            "{message}"
+        );
+        // Another anchor file in the same directory has its own lock.
+        assert!(ClockStateDir::open_unchecked_for_test(&dir.join("other.anchor")).is_ok());
+        // Only when the holder is gone can the next instance lock; the lock file stays.
+        drop(first);
+        assert!(
+            sibling(&anchor, ".lock").exists(),
+            "the lock file is never removed"
+        );
+        let next = ClockStateDir::open_unchecked_for_test(&anchor).unwrap();
+        assert_eq!(next.anchor_file(), anchor.as_path());
+    }
+
+    #[test]
+    fn c12_racing_instances_get_exactly_one_lock() {
+        let dir = fresh_dir("race");
+        let anchor = dir.join("clock.anchor");
+        for _round in 0..20 {
+            let threads = 8;
+            let barrier = Arc::new(Barrier::new(threads));
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    let anchor = anchor.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        ClockStateDir::open_unchecked_for_test(&anchor)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let winners = results.iter().filter(|r| r.is_ok()).count();
+            assert_eq!(winners, 1, "{results:?}");
+            assert!(
+                results
+                    .iter()
+                    .filter_map(|r| r.as_ref().err())
+                    .all(|e| *e == StorageError::Locked(sibling(&anchor, ".lock")))
+            );
+        }
+    }
+
+    #[test]
+    fn unusable_anchor_paths_are_refused() {
+        for bad in ["relative/clock.anchor", "clock.anchor"] {
+            assert_eq!(
+                ClockStateDir::open(Path::new(bad)).err(),
+                Some(StorageError::Path(PathBuf::from(bad)))
+            );
+        }
+        let dir = fresh_dir("paths");
+        let dotted = dir.join("sub").join("..").join("clock.anchor");
+        assert_eq!(
+            ClockStateDir::open(&dotted).err(),
+            Some(StorageError::Path(dotted.clone()))
+        );
+        assert_eq!(
+            ClockStateDir::open_unchecked_for_test(&dotted).err(),
+            Some(StorageError::Path(dotted))
+        );
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    #[test]
+    fn c8_the_owner_only_check_is_refused_as_unsupported_on_this_platform() {
+        // Windows: no ACL facility is in the dependency graph, so the production opener refuses
+        // explicitly instead of assuming an equivalent check; it creates and locks nothing.
+        let dir = fresh_dir("unsupported");
+        let anchor = dir.join("clock.anchor");
+        let refused = ClockStateDir::open(&anchor).err().unwrap();
+        assert!(
+            matches!(refused, StorageError::Unsupported(_)),
+            "{refused:?}"
+        );
+        assert!(refused.to_string().contains("unsupported"));
+        assert!(!sibling(&anchor, ".lock").exists(), "nothing was created");
+    }
+
+    // The unix checks below run only in the Linux campaign (nothing runs on Linux on the Windows
+    // development host); they are type-checked for the musl target there.
+    #[cfg(unix)]
+    mod owner_only {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn chmod(p: &Path, mode: u32) {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        /// A base directory this test owns, mode 0700, under the (sticky) temp directory.
+        fn base(tag: &str) -> PathBuf {
+            let d = fresh_dir(tag);
+            chmod(&d, 0o700);
+            d
+        }
+
+        #[test]
+        fn c8_a_missing_directory_is_created_owner_only_and_then_locked() {
+            let anchor = base("create").join("state").join("clock.anchor");
+            let opened = ClockStateDir::open(&anchor).unwrap();
+            let mode = std::fs::metadata(anchor.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+            assert_eq!(
+                ClockStateDir::open(&anchor).err(),
+                Some(StorageError::Locked(sibling(&anchor, ".lock")))
+            );
+            let lock_mode = std::fs::metadata(opened.lock_file())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(lock_mode & 0o777, 0o600);
+        }
+
+        #[test]
+        fn c8_group_or_other_access_to_the_directory_is_refused() {
+            for mode in [0o750, 0o705, 0o770, 0o755, 0o701] {
+                let dir = base("mode").join("state");
+                std::fs::create_dir(&dir).unwrap();
+                chmod(&dir, mode);
+                let anchor = dir.join("clock.anchor");
+                assert_eq!(
+                    ClockStateDir::open(&anchor).err(),
+                    Some(StorageError::Accessible(dir.clone())),
+                    "{mode:o}"
+                );
+                assert!(
+                    !sibling(&anchor, ".lock").exists(),
+                    "{mode:o}: refused before locking"
+                );
+            }
+        }
+
+        #[test]
+        fn c8_symlinks_in_the_path_are_refused() {
+            let b = base("link");
+            let real = b.join("real");
+            std::fs::create_dir(&real).unwrap();
+            chmod(&real, 0o700);
+            // The anchor directory itself is a link.
+            let linked = b.join("linked");
+            std::os::unix::fs::symlink(&real, &linked).unwrap();
+            assert_eq!(
+                ClockStateDir::open(&linked.join("clock.anchor")).err(),
+                Some(StorageError::Symlink(linked.clone()))
+            );
+            // An ancestor is a link.
+            let inner = real.join("state");
+            std::fs::create_dir(&inner).unwrap();
+            chmod(&inner, 0o700);
+            assert_eq!(
+                ClockStateDir::open(&linked.join("state").join("clock.anchor")).err(),
+                Some(StorageError::Symlink(linked))
+            );
+            // A store file is a link (path substitution of the record or the lock).
+            let anchor = inner.join("clock.anchor");
+            std::os::unix::fs::symlink(b.join("elsewhere"), sibling(&anchor, ".seq")).unwrap();
+            assert_eq!(
+                ClockStateDir::open(&anchor).err(),
+                Some(StorageError::Symlink(sibling(&anchor, ".seq")))
+            );
+        }
+
+        #[test]
+        fn c8_an_ancestor_another_user_could_replace_is_refused_unless_sticky() {
+            let b = base("ancestor");
+            let shared = b.join("shared");
+            std::fs::create_dir(&shared).unwrap();
+            chmod(&shared, 0o777);
+            let anchor = shared.join("state").join("clock.anchor");
+            assert_eq!(
+                ClockStateDir::open(&anchor).err(),
+                Some(StorageError::ReplaceableAncestor(shared.clone()))
+            );
+            chmod(&shared, 0o775);
+            assert_eq!(
+                ClockStateDir::open(&anchor).err(),
+                Some(StorageError::ReplaceableAncestor(shared.clone()))
+            );
+            // With the sticky bit nobody else can rename or delete our entry: accepted.
+            chmod(&shared, 0o1777);
+            assert!(ClockStateDir::open(&anchor).is_ok());
+        }
+
+        /// Order C8, independent review MINOR-1: NotOwner. As root the directory (and then a store
+        /// file) is given to another uid; as an ordinary user a root-owned directory (`/tmp`, under
+        /// a root-owned `/`) is used. Either way the open is refused before anything is created or
+        /// locked. Linux only (it relies on `/tmp` being a real root-owned directory).
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn c8_a_directory_or_file_owned_by_another_user_is_refused() {
+            use std::os::unix::ffi::OsStrExt;
+            use std::os::unix::fs::MetadataExt;
+            // SAFETY: `geteuid` takes no arguments and cannot fail.
+            let me = unsafe { libc::geteuid() };
+            let give_away = |p: &Path| {
+                let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+                // SAFETY: a valid NUL-terminated path; chown touches no memory of ours.
+                assert_eq!(
+                    unsafe { libc::chown(c.as_ptr(), 65_534, 65_534) },
+                    0,
+                    "{}",
+                    p.display()
+                );
+            };
+            if me == 0 {
+                let dir = base("owner").join("state");
+                std::fs::create_dir(&dir).unwrap();
+                chmod(&dir, 0o700);
+                give_away(&dir);
+                let anchor = dir.join("clock.anchor");
+                assert_eq!(
+                    ClockStateDir::open(&anchor).err(),
+                    Some(StorageError::NotOwner(dir.clone()))
+                );
+                assert!(
+                    !sibling(&anchor, ".lock").exists(),
+                    "refused before locking"
+                );
+                // A store FILE of another user in an otherwise good directory.
+                let good = base("owner-file").join("state");
+                let anchor = good.join("clock.anchor");
+                drop(ClockStateDir::open(&anchor).unwrap());
+                std::fs::write(&anchor, b"x").unwrap();
+                chmod(&anchor, 0o600);
+                give_away(&anchor);
+                assert_eq!(
+                    ClockStateDir::open(&anchor).err(),
+                    Some(StorageError::NotOwner(anchor))
+                );
+            } else {
+                let tmp = Path::new("/tmp");
+                let m = std::fs::symlink_metadata(tmp).unwrap();
+                assert!(m.is_dir() && !m.file_type().is_symlink() && m.uid() != me);
+                let anchor = tmp.join(format!("build8-not-owned-{}.anchor", std::process::id()));
+                assert_eq!(
+                    ClockStateDir::open(&anchor).err(),
+                    Some(StorageError::NotOwner(tmp.to_path_buf()))
+                );
+                assert!(
+                    !sibling(&anchor, ".lock").exists(),
+                    "refused before locking"
+                );
+            }
+        }
+
+        /// Order C8, independent review MINOR-1: Substituted. The anchor directory is swapped for
+        /// another directory between its `lstat` and its no-follow open (test hook): the handle's
+        /// device and inode differ from what the name showed, and the open is refused.
+        #[test]
+        fn c8_a_directory_swapped_between_lstat_and_open_is_refused() {
+            fn swap(dir: &Path) {
+                std::fs::rename(dir, dir.with_extension("orig")).unwrap();
+                std::fs::create_dir(dir).unwrap();
+                chmod(dir, 0o700);
+            }
+            let dir = base("swap").join("state");
+            std::fs::create_dir(&dir).unwrap();
+            chmod(&dir, 0o700);
+            *unix::BETWEEN_LSTAT_AND_OPEN.lock().unwrap() = Some((dir.clone(), swap));
+            let r = ClockStateDir::open(&dir.join("clock.anchor")).err();
+            *unix::BETWEEN_LSTAT_AND_OPEN.lock().unwrap() = None;
+            assert_eq!(r, Some(StorageError::Substituted(dir.clone())));
+            // Without the swap the same directory is accepted.
+            assert!(ClockStateDir::open(&dir.join("clock.anchor")).is_ok());
+        }
+
+        #[test]
+        fn c8_store_files_must_be_owner_only() {
+            let dir = base("files").join("state");
+            let anchor = dir.join("clock.anchor");
+            drop(ClockStateDir::open(&anchor).unwrap());
+            std::fs::write(&anchor, b"x").unwrap();
+            chmod(&anchor, 0o644);
+            assert_eq!(
+                ClockStateDir::open(&anchor).err(),
+                Some(StorageError::Accessible(anchor.clone()))
+            );
+            chmod(&anchor, 0o600);
+            assert!(ClockStateDir::open(&anchor).is_ok());
+        }
+    }
+}

@@ -1,0 +1,31 @@
+[package]
+name = "build8-worker-pending-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+mutiny-crypto-v2 = { path = "../../crypto-v2", features = ["wallet-custody"] }
+mutiny-transport-v2 = { path = "../../transport-v2" }
+[build-dependencies]
+cc = "=1.5.1"
+sha2 = "=0.10.9"
+serde_json = "=1.0.151"
+[dev-dependencies]
+mutiny-consensus-v8 = { path = "../../consensus" }
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
+serde_json = "=1.0.151"
+bip39 = { version = "=3.0.0", features = ["zeroize"] }
+zeroize = "=1.9.0"
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+minicbor = { version = "=0.26.5", features = ["std"] }
+[patch.crates-io]
+hkdf = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/hkdf" }
+hmac = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/hmac" }
+sha2 = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/sha2" }
+block-buffer = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/block-buffer" }
+pbkdf2 = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/pbkdf2" }
+argon2 = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/argon2" }
+blake2 = { path = "../../qualification/crypto-v2-sources/kdf-custody-v1/blake2" }

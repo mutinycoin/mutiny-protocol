@@ -1,0 +1,881 @@
+//! Atomic transfer/coinbase execution. Lifecycle operations are deliberately
+//! rejected until their validators are integrated; unknown operations never pass.
+use crate::{
+    Error, Hash,
+    blocks::{BlockBody, state_root},
+    domain_hash,
+    licenses::{BindWorker, LicenseBook},
+    pow::{WorkAuthority, WorkContext, WorkHeader, mining_epoch, validate_authority},
+    transactions::{Coin, OutPoint, Output, SUBSIDY, Transfer, TxError},
+};
+use minicbor::Encoder;
+use std::collections::{BTreeMap, BTreeSet};
+#[derive(Debug)]
+pub enum ExecutionError {
+    Codec(Error),
+    Transfer(TxError),
+    WrongOwner,
+    WrongFees,
+    Overflow,
+    Duplicate,
+    Capacity,
+    UnsupportedOperation,
+    Dividend(crate::dividend_claim_v1::ClaimError),
+    BondCreate(crate::bond_create_v3::BondError),
+}
+impl From<Error> for ExecutionError {
+    fn from(e: Error) -> Self {
+        Self::Codec(e)
+    }
+}
+impl From<TxError> for ExecutionError {
+    fn from(e: TxError) -> Self {
+        Self::Transfer(e)
+    }
+}
+pub(crate) type Result<T> = std::result::Result<T, ExecutionError>;
+pub const MAX_STATE_RECORDS: usize = 10_000_000;
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct State {
+    pub coins: BTreeMap<OutPoint, Coin>,
+    pub wallets: crate::wallet_authority_v1::WalletBook,
+    /// Canonical license/registry/reputation/bond/recovery records, keyed by
+    /// domain-separated identifiers. Must be produced by their typed validators.
+    pub protocol_records: BTreeMap<Hash, Vec<u8>>,
+    pub licenses: LicenseBook,
+    pub licenses_v2: crate::license_book_v2::Book,
+    pub continuity_keys_v2: crate::continuity_keys_v2::Book,
+    pub node_key_history_v2: crate::node_key_history_v2::Book,
+    pub retired_continuity_v2: crate::retired_continuity_v2::Book,
+    pub continuity: Option<crate::recovery::ContinuityState>,
+    pub accounting: crate::continuity_execution::ContinuityAccounting,
+    pub admission: crate::admission::AdmissionBook,
+    pub membership: crate::membership::MembershipBook,
+    pub membership_v2: crate::membership_v2::Book,
+    pub admission_policy_v2: Option<crate::admission_policy_v2::Record>,
+    pub recovery_authority_v2: Option<crate::recovery_authority_v2::Authority>,
+    pub recovery_history_v2: crate::recovery_history_v2::Book,
+    pub bonds: crate::bonds::BondBook,
+    pub bonds_v2: crate::bonds_v2::Book,
+    pub penalties: crate::equivocation::PenaltyBook,
+    pub penalties_v2: crate::penalties_v2::Book,
+    /// Treasury identity, License status and dividend ledger. Inactive (no records) unless the
+    /// Genesis carries an authenticated Treasury identity.
+    pub dividends: crate::dividend_state_v1::DividendState,
+}
+/// Independently obtained from the validated canonical chain, never from a
+/// miner/coordinator's proposed header. Target includes the parent's retarget.
+pub struct WorkParent {
+    pub genesis: Hash,
+    pub fingerprint: Hash,
+    pub block: Hash,
+    pub height: u64,
+    pub t0: u64,
+    pub target: Hash,
+    pub ancestor_timestamps: Vec<u64>,
+}
+impl State {
+    pub fn root(&self) -> Result<Hash> {
+        Ok(state_root(&self.records()?)?)
+    }
+    pub fn records(&self) -> Result<Vec<(Hash, Vec<u8>)>> {
+        if !self.penalties_v2.is_empty() && !self.penalties.events.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        if !self.bonds_v2.is_empty() && !self.bonds.lots.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        if !self.licenses_v2.is_empty()
+            && (!self.licenses.licenses.is_empty()
+                || !self.licenses.workers.is_empty()
+                || !self.licenses.pending.is_empty())
+        {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        if self.coins.len() + self.protocol_records.len() > MAX_STATE_RECORDS {
+            return Err(ExecutionError::Capacity);
+        }
+        let mut records = self.protocol_records.clone();
+        crate::trading_host_v1::records(self, None)?;
+        if self.admission_policy_v2.is_some() && !self.admission.is_empty()? {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        // Admission class from the committed Genesis parameters and policy roots. In the
+        // Production class every committed admission (V1 approved profiles below, V2 current and
+        // retired bindings here) satisfies the typed provenance rule, or no StateRoot exists.
+        let class = self.admission_class()?;
+        self.check_v2_admission_class(class)?;
+        // Candidate 3, Order A4 and A8 (Production class): no endorsement identity is committed by two
+        // lineages, and the V2 admission owner is not the Treasury wallet.
+        crate::endorsement_identity::check_state(self, class)?;
+        crate::admission_scope::check_state_roles(self, class)?;
+        if !self.membership_v2.is_empty() && !self.membership.records()?.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        if records
+            .iter()
+            .any(|(key, value)| crate::state_records::reserved(*key, value))
+        {
+            return Err(ExecutionError::Duplicate);
+        }
+        if let Some(authority) = &self.recovery_authority_v2 {
+            authority.validate_state_roles(self)?;
+            if records
+                .insert(crate::recovery_authority_v2::key(), authority.encode()?)
+                .is_some()
+            {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        self.recovery_history_v2.validate_state(self)?;
+        if !self.recovery_history_v2.is_empty() {
+            let authority = self
+                .recovery_authority_v2
+                .as_ref()
+                .ok_or(Error::RecoveryDisabled)?;
+            for (key, value) in self.recovery_history_v2.records(authority)? {
+                if records.insert(key, value).is_some() {
+                    return Err(ExecutionError::Duplicate);
+                }
+            }
+        }
+        for (key, value) in self.wallets.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        if let Some(policy) = &self.admission_policy_v2 {
+            let initial = policy.initial();
+            policy.current(&self.wallets, initial.genesis, initial.fingerprint)?;
+            if self.continuity.as_ref().is_some_and(|r| {
+                (r.genesis, r.fingerprint) != (initial.genesis, initial.fingerprint)
+            }) {
+                return Err(Error::WrongAnchor.into());
+            }
+            if self.continuity_keys_v2.bindings().any(|b| {
+                (b.admission().genesis, b.admission().fingerprint)
+                    != (initial.genesis, initial.fingerprint)
+            }) {
+                return Err(Error::WrongAnchor.into());
+            }
+            if records
+                .insert(crate::admission_policy_v2::key(), policy.encode()?)
+                .is_some()
+            {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.continuity_keys_v2.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        if !self.retired_continuity_v2.is_empty() && self.membership_v2.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        if !self.membership_v2.is_empty() {
+            let archives = self.recovery_history_v2.archived_controls()?;
+            self.recovery_history_v2.validate_generations(
+                self.continuity.as_ref(),
+                &self.continuity_keys_v2,
+                &self.retired_continuity_v2,
+                self.accounting.slots.last_height,
+            )?;
+            for binding in self.continuity_keys_v2.bindings() {
+                self.retired_continuity_v2
+                    .reject_reused(&binding.public()?)?;
+            }
+            for retired in self.retired_continuity_v2.entries() {
+                let old = &retired.binding.admission;
+                let current = self
+                    .continuity_keys_v2
+                    .get(old.node)
+                    .map(|k| k.admission())
+                    .or_else(|| {
+                        archives
+                            .get(&old.node)
+                            .map(|a| &a.control.binding().admission)
+                    })
+                    .ok_or(Error::UnknownSigner)?;
+                if (old.genesis, old.fingerprint) != (current.genesis, current.fingerprint)
+                    || old.hardware_generation > current.hardware_generation
+                {
+                    return Err(Error::WrongGeneration.into());
+                }
+            }
+        }
+        self.node_key_history_v2.validate_state(self)?;
+        for (key, value) in self.node_key_history_v2.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.retired_continuity_v2.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.admission.records(class)? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.membership.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.membership_v2.records(&self.continuity_keys_v2)? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.bonds.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.bonds_v2.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.penalties.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.penalties_v2.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.licenses.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        for (key, value) in self.licenses_v2.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        if let Some(registry) = &self.continuity {
+            if registry
+                .members
+                .iter()
+                .any(|m| m.eligible && self.penalties.revoked(m.lineage))
+            {
+                return Err(Error::WrongGeneration.into());
+            }
+            if let Some(policy) = &self.admission.policy {
+                if policy.genesis != registry.genesis || policy.fingerprint != registry.fingerprint
+                {
+                    return Err(Error::WrongAnchor.into());
+                }
+                for member in registry.members.iter().filter(|m| m.physical) {
+                    let control = self
+                        .membership
+                        .controls
+                        .get(&member.node)
+                        .ok_or(Error::UnknownSigner)?;
+                    if control.generation != member.generation
+                        || control.admitted_height > self.accounting.slots.last_height
+                        || control.admission_boundary.is_some_and(|h| {
+                            member.eligible || h <= self.accounting.slots.last_height
+                        })
+                        || control.exit_boundary.is_some_and(|h| {
+                            !member.eligible || h <= self.accounting.slots.last_height
+                        })
+                    {
+                        return Err(Error::WrongGeneration.into());
+                    }
+                }
+            }
+            for control in self.membership.controls.values() {
+                if !registry
+                    .members
+                    .iter()
+                    .any(|m| m.node == control.node && m.generation == control.generation)
+                {
+                    return Err(Error::UnknownSigner.into());
+                }
+            }
+            for (key, value) in registry
+                .state_records()?
+                .into_iter()
+                .chain(self.accounting.records()?)
+            {
+                if records.insert(key, value).is_some() {
+                    return Err(ExecutionError::Duplicate);
+                }
+            }
+        } else if self.accounting != crate::continuity_execution::ContinuityAccounting::default()
+            || !self.membership.controls.is_empty()
+        {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        // Typed dividend records; validation includes the reserve-backing invariant, so no
+        // execution path can produce a StateRoot over an unbacked reserve.
+        self.validate_dividends()?;
+        for (key, value) in self.dividends.records()? {
+            if records.insert(key, value).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        if records
+            .len()
+            .checked_add(self.coins.len())
+            .ok_or(ExecutionError::Overflow)?
+            > MAX_STATE_RECORDS
+        {
+            return Err(ExecutionError::Capacity);
+        }
+        for (point, coin) in &self.coins {
+            let mut e = Encoder::new(Vec::new());
+            e.array(2)
+                .unwrap()
+                .bytes(&point.transaction)
+                .unwrap()
+                .u32(point.index)
+                .unwrap();
+            let key = domain_hash(b"MUTINY-BUILD8-UTXO-KEY-V1", &e.into_writer());
+            let mut e = Encoder::new(Vec::new());
+            e.array(7)
+                .unwrap()
+                .u8(1)
+                .unwrap()
+                .bytes(&point.transaction)
+                .unwrap()
+                .u32(point.index)
+                .unwrap()
+                .bytes(&coin.output.owner)
+                .unwrap()
+                .u64(coin.output.atoms)
+                .unwrap()
+                .u64(coin.created_height)
+                .unwrap()
+                .bool(coin.coinbase)
+                .unwrap();
+            if records.insert(key, e.into_writer()).is_some() {
+                return Err(ExecutionError::Duplicate);
+            }
+        }
+        Ok(records.into_iter().collect())
+    }
+    /// Production-class backstop over committed V2 admission evidence (V1 approved profiles are
+    /// re-verified by `AdmissionBook::records(class)`): every current and retired hybrid binding
+    /// must satisfy the typed provenance rule against the immutable V2 policy roots.
+    fn check_v2_admission_class(
+        &self,
+        class: crate::provenance::AdmissionClass,
+    ) -> crate::Result<()> {
+        if class == crate::provenance::AdmissionClass::LegacyTest {
+            return Ok(());
+        }
+        if let Some(record) = &self.admission_policy_v2 {
+            let roots = &record.initial().endorsement_roots;
+            for binding in self.continuity_keys_v2.bindings() {
+                binding.check_class(class, roots)?;
+            }
+            for retired in self.retired_continuity_v2.entries() {
+                retired.check_class(class, roots)?;
+            }
+        }
+        Ok(())
+    }
+    /// Returns a candidate state; the original is unchanged even on any failure.
+    /// Finality and durable atomic installation belong to the chain executor.
+    pub fn execute_transfers(
+        &self,
+        genesis: Hash,
+        fingerprint: Hash,
+        parent: Hash,
+        licensed_owner: Hash,
+        body: &BlockBody,
+    ) -> Result<Execution> {
+        if !body.operations.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        self.execute_body(genesis, fingerprint, parent, licensed_owner, body)
+    }
+    pub fn work_context(
+        &self,
+        parent: &WorkParent,
+        c: &crate::pow::Candidate,
+    ) -> Result<(WorkContext, Hash)> {
+        let epoch = mining_epoch(c.timestamp, parent.t0)?;
+        let mut book = self.licenses.clone();
+        book.activate_due(epoch)?;
+        let (license, worker) = book.active(c.license, c.worker, epoch)?;
+        if license.genesis != parent.genesis
+            || worker.binding.genesis != parent.genesis
+            || worker.binding.fingerprint != parent.fingerprint
+        {
+            return Err(Error::WrongAnchor.into());
+        }
+        Ok((
+            WorkContext {
+                genesis: parent.genesis,
+                fingerprint: parent.fingerprint,
+                parent: parent.block,
+                parent_height: parent.height,
+                t0: parent.t0,
+                target: parent.target,
+                license: license.id,
+                worker: c.worker,
+                coordinator: worker.binding.coordinator_public,
+                assignment_sequence: license.assignment_sequence,
+                last_accepted_ticket: worker.last_accepted_ticket,
+                ancestor_timestamps: parent.ancestor_timestamps.clone(),
+            },
+            license.owner,
+        ))
+    }
+    /// Execute against a candidate copy with canonical license-derived authority.
+    /// This does not establish PoW/finality or install state. Unknown lifecycle
+    /// operations fail closed. Initial Genesis binding is a separate ceremony.
+    pub fn execute_licensed(
+        &self,
+        parent: &WorkParent,
+        header: &WorkHeader,
+        authority: &WorkAuthority,
+        signature: &[u8; 64],
+        body: &BlockBody,
+    ) -> Result<Execution> {
+        self.execute_with_attestation(
+            LicensedExecution {
+                parent,
+                header,
+                authority,
+                signature,
+                body,
+            },
+            &BTreeMap::new(),
+            &RejectAttestation,
+        )
+    }
+    pub fn execute_with_attestation<V: crate::freshness::PhysicalAttestationVerifier>(
+        &self,
+        work: LicensedExecution<'_>,
+        physical: &BTreeMap<Hash, crate::freshness::PhysicalMember>,
+        verifier: &V,
+    ) -> Result<Execution> {
+        self.execute_with_history(work, physical, verifier, &BTreeMap::new())
+    }
+    pub fn execute_with_history<V: crate::freshness::PhysicalAttestationVerifier>(
+        &self,
+        work: LicensedExecution<'_>,
+        physical: &BTreeMap<Hash, crate::freshness::PhysicalMember>,
+        verifier: &V,
+        history: &crate::equivocation::EvidenceHistory,
+    ) -> Result<Execution> {
+        let LicensedExecution {
+            parent,
+            header,
+            authority,
+            signature,
+            body,
+        } = work;
+        let c = &header.candidate;
+        let (context, _) = self.work_context(parent, c)?;
+        validate_authority(header, authority, signature, &context)?;
+        let executed = self.prepare_candidate_with_history(
+            CandidatePreparation {
+                parent,
+                candidate: c,
+                ticket_sequence: authority.ticket_sequence,
+                body,
+            },
+            physical,
+            verifier,
+            history,
+        )?;
+        if executed.root != c.state_root {
+            return Err(Error::WrongAnchor.into());
+        }
+        Ok(executed)
+    }
+    /// Candidate construction only: no signature, PoW or finality authority is
+    /// granted. Acceptance must use execute_with_attestation and a certificate.
+    pub fn prepare_candidate<V: crate::freshness::PhysicalAttestationVerifier>(
+        &self,
+        input: CandidatePreparation<'_>,
+        physical: &BTreeMap<Hash, crate::freshness::PhysicalMember>,
+        verifier: &V,
+    ) -> Result<Execution> {
+        self.prepare_candidate_with_history(input, physical, verifier, &BTreeMap::new())
+    }
+    pub fn prepare_candidate_with_history<V: crate::freshness::PhysicalAttestationVerifier>(
+        &self,
+        input: CandidatePreparation<'_>,
+        physical: &BTreeMap<Hash, crate::freshness::PhysicalMember>,
+        verifier: &V,
+        history: &crate::equivocation::EvidenceHistory,
+    ) -> Result<Execution> {
+        let CandidatePreparation {
+            parent,
+            candidate: c,
+            ticket_sequence,
+            body,
+        } = input;
+        let epoch = mining_epoch(c.timestamp, parent.t0)?;
+        let (context, owner) = self.work_context(parent, c)?;
+        if body.height != c.height
+            || body.root()? != c.body_root
+            || c.parent != parent.block
+            || parent.height.checked_add(1) != Some(c.height)
+            || ticket_sequence <= context.last_accepted_ticket
+        {
+            return Err(Error::WrongAnchor.into());
+        }
+        let mut candidate = self.clone();
+        candidate.licenses.activate_due(epoch)?;
+        if let Some(parent_registry) = &self.continuity {
+            let mut registry = parent_registry.clone();
+            registry.anchor = crate::recovery::Anchor {
+                height: parent.height,
+                tip: parent.block,
+                state_root: self.root()?,
+                registry_root: registry.roots()?.0,
+            };
+            let anchor = crate::anchors::FinalizedAnchor {
+                network: crate::NETWORK_ID,
+                genesis: parent.genesis,
+                fingerprint: parent.fingerprint,
+                height: parent.height,
+                block: parent.block,
+            };
+            // Class from committed Genesis data. A policy-bearing state always derives its verifier
+            // and physical map from committed records (caller maps are ignored); the caller-supplied
+            // verifier is decisive only for a policy-less Legacy/Test qualification state, and a
+            // Production-class state without a policy is an error (unreachable by construction:
+            // `admission_class` already refuses a declared root set without a policy).
+            let class = self.admission_class()?;
+            let (accounting, mut next_registry) = match (&self.admission.policy, class) {
+                (Some(_), class) => {
+                    let (committed_physical, committed_verifier) =
+                        self.admission.physical_context(&registry, class)?;
+                    self.accounting.apply(
+                        &anchor,
+                        body,
+                        &registry,
+                        &committed_physical,
+                        &committed_verifier,
+                    )?
+                }
+                (None, crate::provenance::AdmissionClass::LegacyTest) => self
+                    .accounting
+                    .apply(&anchor, body, &registry, physical, verifier)?,
+                (None, crate::provenance::AdmissionClass::Production) => {
+                    return Err(Error::UnqualifiedPhysical.into());
+                }
+            };
+            self.adjust_hardware_history(c.height, &body.operations, &mut next_registry)?;
+            candidate.accounting = accounting;
+            candidate.continuity = Some(next_registry);
+            self.apply_joins(&anchor, &body.operations, &mut candidate)?;
+            self.apply_rotations(&anchor, &body.operations, &mut candidate)?;
+            candidate.membership = candidate.membership.apply_exits(
+                &anchor,
+                &body.operations,
+                &registry,
+                candidate
+                    .continuity
+                    .as_mut()
+                    .ok_or(Error::UnqualifiedPhysical)?,
+            )?;
+        }
+        for raw in &body.operations {
+            let kind = crate::blocks::operation_kind(raw)?;
+            if matches!(kind, 11..=20) && self.continuity.is_some() {
+                continue;
+            }
+            let binding =
+                BindWorker::decode(raw).map_err(|_| ExecutionError::UnsupportedOperation)?;
+            candidate.licenses.schedule(
+                binding,
+                parent.genesis,
+                parent.fingerprint,
+                c.height,
+                epoch,
+            )?;
+        }
+        candidate
+            .licenses
+            .workers
+            .get_mut(&c.worker)
+            .ok_or(Error::WrongAnchor)?
+            .last_accepted_ticket = ticket_sequence;
+        let mut executed = candidate.execute_body(
+            parent.genesis,
+            parent.fingerprint,
+            parent.block,
+            owner,
+            body,
+        )?;
+        let anchor = crate::anchors::FinalizedAnchor {
+            network: crate::NETWORK_ID,
+            genesis: parent.genesis,
+            fingerprint: parent.fingerprint,
+            height: parent.height,
+            block: parent.block,
+        };
+        self.apply_equivocations(&anchor, body, history, &mut executed.state)?;
+        self.apply_bond_operations(&anchor, body, &mut executed.state)?;
+        executed.root = executed.state.root()?;
+        Ok(executed)
+    }
+    fn execute_body(
+        &self,
+        genesis: Hash,
+        fingerprint: Hash,
+        parent: Hash,
+        licensed_owner: Hash,
+        body: &BlockBody,
+    ) -> Result<Execution> {
+        self.execute_body_version(genesis, fingerprint, parent, licensed_owner, body, false)
+    }
+    /// Explicit V2 execution candidate. Node integration must call this path;
+    /// incoming bytes never select a weaker suite. Lifecycle operations require
+    /// their migrated validators and are rejected by this entry point.
+    pub fn execute_hybrid_transfers(
+        &self,
+        genesis: Hash,
+        fingerprint: Hash,
+        parent: Hash,
+        licensed_owner: Hash,
+        body: &BlockBody,
+    ) -> Result<Execution> {
+        if !body.operations.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        // AM-4 (P-LANE-DESIGN-AMENDMENTS-V1): this entry point has no canonical-store History, so
+        // a transaction that carries an operation envelope (design 1.a.4: the funded wallet
+        // rotation) passes only with the parent itself as its reference: any older reference
+        // FAILS CLOSED here (window and parent reference of `Envelope::check_inclusion` with an
+        // empty History), before the kind's own checks run.
+        for raw in &body.transactions {
+            if let Some(envelope) = crate::op_envelope_v1::transaction_envelope(raw) {
+                let height = body.height.checked_sub(1).ok_or(ExecutionError::Codec(Error::WrongAnchor))?;
+                let anchor = crate::anchors::FinalizedAnchor { network: crate::NETWORK_ID, genesis, fingerprint, height, block: parent };
+                envelope
+                    .check_inclusion(&anchor, &crate::evidence_history_v2::History::default())
+                    .map_err(|_| ExecutionError::Codec(Error::WrongAnchor))?;
+            }
+        }
+        self.execute_body_version(genesis, fingerprint, parent, licensed_owner, body, true)
+    }
+    pub(crate) fn execute_body_version(
+        &self,
+        genesis: Hash,
+        fingerprint: Hash,
+        parent: Hash,
+        licensed_owner: Hash,
+        body: &BlockBody,
+        hybrid: bool,
+    ) -> Result<Execution> {
+        // Hybrid Continuity lifecycle migration is not complete. Neither the
+        // legacy nor transfer-only path may silently carry its new authority.
+        if self.admission_policy_v2.is_some()
+            || self.recovery_authority_v2.is_some()
+            || !self.recovery_history_v2.is_empty()
+            || !self.continuity_keys_v2.is_empty()
+            || !self.membership_v2.is_empty()
+            || !self.node_key_history_v2.is_empty()
+            || !self.retired_continuity_v2.is_empty()
+            || !self.bonds_v2.is_empty()
+            || !self.penalties_v2.is_empty()
+        {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        if (!hybrid && !self.licenses_v2.is_empty())
+            || (hybrid && !self.licenses.records()?.is_empty())
+        {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        // No History here: a funded rotation can only reference the parent (fail closed, design 1.a.3).
+        self.execute_body_inner(genesis, fingerprint, parent, licensed_owner, body, hybrid, 0, &Default::default())
+    }
+    /// Only the explicit V2 lifecycle executor may call this hybrid payment
+    /// phase on a state with Continuity data. Its complete result remains a
+    /// tentative copy until every supported lifecycle operation validates.
+    /// `history` is the caller's locally authenticated History; its anchors resolve a funded
+    /// rotation's finalized reference older than `parent` (Lane P design 3.5 step 3).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_hybrid_payment_phase(
+        &self,
+        genesis: Hash,
+        fingerprint: Hash,
+        parent: Hash,
+        licensed_owner: Hash,
+        body: &BlockBody,
+        extra_fee_atoms: u64,
+        history: &crate::evidence_history_v2::History,
+    ) -> Result<Execution> {
+        if !self.licenses.records()?.is_empty() {
+            return Err(ExecutionError::UnsupportedOperation);
+        }
+        self.execute_body_inner(genesis, fingerprint, parent, licensed_owner, body, true, extra_fee_atoms, history)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn execute_body_inner(
+        &self,
+        genesis: Hash,
+        fingerprint: Hash,
+        parent: Hash,
+        licensed_owner: Hash,
+        body: &BlockBody,
+        hybrid: bool,
+        extra_fee_atoms: u64,
+        history: &crate::evidence_history_v2::History,
+    ) -> Result<Execution> {
+        body.encode()?;
+        if body.reward_owner != licensed_owner {
+            return Err(ExecutionError::WrongOwner);
+        }
+        let mut next = self.clone();
+        let mut fees = extra_fee_atoms;
+        let mut ids = BTreeSet::new();
+        // Every hybrid transaction is validated as if included at `body.height` on top of this
+        // parent; each one sees the running `next`, so a later transaction of the block sees an
+        // earlier one's completed rotation.
+        let anchor = crate::anchors::FinalizedAnchor {
+            network: crate::NETWORK_ID,
+            genesis,
+            fingerprint,
+            height: body.height.checked_sub(1).ok_or(ExecutionError::Overflow)?,
+            block: parent,
+        };
+        let inclusion = crate::hybrid_transaction_v2::Inclusion {
+            parent: &anchor,
+            history,
+        };
+        for raw in &body.transactions {
+            let (id, fee, inputs, outputs) = if hybrid {
+                let verified =
+                    crate::hybrid_transaction_v2::Transaction::decode(raw)?.verify(&inclusion, &next)?;
+                next.wallets = verified.wallets;
+                (verified.id, verified.fee, verified.inputs, verified.outputs)
+            } else {
+                let tx = Transfer::decode(raw)?;
+                let fee = tx.verify(genesis, fingerprint, body.height, &next.coins)?;
+                (
+                    tx.id()?,
+                    fee,
+                    tx.inputs.into_iter().map(|i| i.point).collect(),
+                    tx.outputs,
+                )
+            };
+            if !ids.insert(id) {
+                return Err(ExecutionError::Duplicate);
+            }
+            fees = fees.checked_add(fee).ok_or(ExecutionError::Overflow)?;
+            for point in &inputs {
+                next.coins.remove(point).ok_or(ExecutionError::Duplicate)?;
+            }
+            for (i, output) in outputs.iter().enumerate() {
+                if next
+                    .coins
+                    .insert(
+                        OutPoint {
+                            transaction: id,
+                            index: i as u32,
+                        },
+                        Coin {
+                            output: output.clone(),
+                            created_height: body.height,
+                            coinbase: false,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(ExecutionError::Duplicate);
+                }
+            }
+        }
+        if fees != body.fees {
+            return Err(ExecutionError::WrongFees);
+        }
+        // The coinbase ID precedes post-StateRoot/WorkHeader/BlockHash. Using the
+        // current BlockHash as this UTXO's ID would introduce a hash cycle.
+        let mut e = Encoder::new(Vec::new());
+        e.array(6)
+            .unwrap()
+            .u8(1)
+            .unwrap()
+            .bytes(&genesis)
+            .unwrap()
+            .bytes(&fingerprint)
+            .unwrap()
+            .bytes(&parent)
+            .unwrap()
+            .u64(body.height)
+            .unwrap()
+            .bytes(&body.root()?)
+            .unwrap();
+        let coinbase_id = domain_hash(b"MUTINY-BUILD8-COINBASE-ID-V1", &e.into_writer());
+        let reward = SUBSIDY.checked_add(fees).ok_or(ExecutionError::Overflow)?;
+        if next
+            .coins
+            .insert(
+                OutPoint {
+                    transaction: coinbase_id,
+                    index: 0,
+                },
+                Coin {
+                    output: Output {
+                        owner: licensed_owner,
+                        atoms: reward,
+                    },
+                    created_height: body.height,
+                    coinbase: true,
+                },
+            )
+            .is_some()
+        {
+            return Err(ExecutionError::Duplicate);
+        }
+        let root = next.root()?;
+        Ok(Execution {
+            state: next,
+            root,
+            transaction_ids: ids,
+            coinbase_id,
+            fees,
+            bond_command_outcomes: Default::default(),
+        })
+    }
+}
+pub struct Execution {
+    pub state: State,
+    pub root: Hash,
+    pub transaction_ids: BTreeSet<Hash>,
+    pub coinbase_id: Hash,
+    pub fees: u64,
+    /// Execution outcome of every bond command (kinds 19/20) of the block, by command id (AM-5):
+    /// the operation index records it and a withdrawal payout exists only for `Applied`.
+    pub bond_command_outcomes: BTreeMap<Hash, crate::bond_ops_v2::CommandOutcome>,
+}
+
+/// Validated-parent inputs shared by ordinary and physical-attestation execution.
+pub struct LicensedExecution<'a> {
+    pub parent: &'a WorkParent,
+    pub header: &'a WorkHeader,
+    pub authority: &'a WorkAuthority,
+    pub signature: &'a [u8; 64],
+    pub body: &'a BlockBody,
+}
+pub(crate) struct RejectAttestation;
+impl crate::freshness::PhysicalAttestationVerifier for RejectAttestation {
+    fn verify(&self, _: &crate::freshness::PhysicalMember, _: Hash, _: &[u8]) -> crate::Result<()> {
+        Err(Error::UnqualifiedPhysical)
+    }
+}
+
+pub struct CandidatePreparation<'a> {
+    pub parent: &'a WorkParent,
+    pub candidate: &'a crate::pow::Candidate,
+    pub ticket_sequence: u64,
+    pub body: &'a BlockBody,
+}

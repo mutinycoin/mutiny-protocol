@@ -1,0 +1,92 @@
+//! Local accepted-recovery journal. Entries are public proofs, not replacement
+//! canonical parent states. Every read is revalidated against its actual parent.
+use crate::{
+    Hash, anchors::FinalizedAnchor, execution::State, finality_v2::StoreError,
+    recovery_history_v2::Record, recovery_transition_v2::Prepared,
+};
+use rusqlite::{Connection, OptionalExtension};
+
+pub(crate) fn raw(db: &Connection, height: u64) -> Result<Option<(Hash, Vec<u8>)>, StoreError> {
+    let row: Option<(Vec<u8>, Vec<u8>)> = db.query_row(
+        "SELECT CASE WHEN typeof(commitment)='blob' AND length(commitment)=32 THEN commitment ELSE NULL END,CASE WHEN typeof(record)='blob' AND length(record) BETWEEN 1 AND 262144 THEN record ELSE NULL END FROM accepted_recovery_v2 WHERE height=?1",
+        [height.to_be_bytes().as_slice()], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()?;
+    row.map(|(commitment, record)| {
+        Ok((
+            commitment.try_into().map_err(|_| StoreError::Integrity)?,
+            record,
+        ))
+    })
+    .transpose()
+}
+
+pub(crate) fn prepared(
+    db: &Connection,
+    state: &State,
+    parent: &FinalizedAnchor,
+    root: Hash,
+) -> Result<Option<Prepared>, StoreError> {
+    let Some((commitment, bytes)) = raw(db, parent.height)? else {
+        return Ok(None);
+    };
+    let authority = state
+        .recovery_authority_v2
+        .as_ref()
+        .ok_or(StoreError::Integrity)?;
+    let record = Record::decode(&bytes, authority)?;
+    if record.material.commitment()? != commitment {
+        return Err(StoreError::Integrity);
+    }
+    // A successor may already exist during historical replay. Its authority is
+    // checked against this proof by the caller; acceptance itself excludes any
+    // pre-existing descendant while holding the canonical write transaction.
+    Ok(Some(Prepared::verify(state, parent, root, record, false)?))
+}
+
+/// Recheck the exact row under the finality write transaction. A proof accepted
+/// during slow envelope verification must not let stale ordinary authority win.
+pub(crate) fn require_unchanged(
+    db: &Connection,
+    height: u64,
+    expected: Option<&(Hash, Vec<u8>)>,
+) -> Result<(), StoreError> {
+    if raw(db, height)?.as_ref() != expected {
+        return Err(StoreError::WrongParent);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn journal_guard_rejects_stale_ordinary_and_recovery_contexts() {
+        // Storage/race guard only. These deliberately non-cryptographic bytes
+        // cannot pass prepared(); full signed replay is tested separately.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(crate::store_schema_v2::CANONICAL[0].1)
+            .unwrap();
+        require_unchanged(&db, 0, None).unwrap();
+        let expected = ([1; 32], vec![2; 12]);
+        db.execute(
+            "INSERT INTO accepted_recovery_v2 VALUES(?1,?2,?3)",
+            rusqlite::params![
+                0u64.to_be_bytes().as_slice(),
+                expected.0.as_slice(),
+                &expected.1
+            ],
+        )
+        .unwrap();
+        assert!(require_unchanged(&db, 0, None).is_err());
+        require_unchanged(&db, 0, Some(&expected)).unwrap();
+        db.execute(
+            "UPDATE accepted_recovery_v2 SET commitment=?1",
+            [[3u8; 32].as_slice()],
+        )
+        .unwrap();
+        assert!(require_unchanged(&db, 0, Some(&expected)).is_err());
+        db.execute("DELETE FROM accepted_recovery_v2", []).unwrap();
+        assert!(require_unchanged(&db, 0, Some(&expected)).is_err());
+        require_unchanged(&db, 0, None).unwrap();
+    }
+}

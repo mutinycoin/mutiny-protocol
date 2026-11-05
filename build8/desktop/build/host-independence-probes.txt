@@ -1,0 +1,82 @@
+# Probes for the host-independence tripwire (rules: build/host-independence-rules.txt).
+# Each probe is Rust source text that is SCANNED (never compiled) as if it were the named file
+# (default node/src/guard_probe.rs). Both guards must reach the expected verdict:
+# consensus/tests/host_independence_guard.rs and `perl build/check-host-independence.pl --selftest`.
+# build/negative-controls.sh injects every FAIL probe into a scratch clone and requires
+# build/check-shipping-config.sh to fail. G0-G9 are the independent review's probes; its G5 (a
+# developer host alias string) belongs to the host-string check and has its own negative control.
+# Header: === <id> <PASS|FAIL> [@<repository-relative file>] <description>
+=== G0 FAIL plain std::env::var (control)
+pub fn probe() -> Option<String> { std::env::var("HOME").ok() }
+=== G1 FAIL host name read from /etc/hostname
+pub fn probe() -> Option<String> { std::fs::read_to_string("/etc/hostname").ok() }
+=== G2 FAIL environment read through an aliased import
+use std::{env as e};
+pub fn probe() -> Option<String> { e::var("HOME").ok() }
+=== G3 FAIL host file name assembled with concat!
+pub fn probe() -> Option<String> { std::fs::read_to_string(concat!("/etc/host", "name")).ok() }
+=== G4 FAIL environment read through libc::getenv
+#[cfg(target_os = "linux")]
+pub fn probe() -> bool { unsafe { !libc::getenv(b"HOME\0".as_ptr() as *const libc::c_char).is_null() } }
+=== G6 FAIL shipped item on the line of a cfg(test) item
+#[cfg(test)]
+fn t() {} pub fn probe() -> Option<String> { std::env::var("HOME").ok() }
+=== G6b FAIL @node/src/main.rs the same in a file with allow-list entries
+#[cfg(test)]
+fn t() {} pub fn probe() -> Option<String> { std::env::var("HOME").ok() }
+=== G7 FAIL machine identity read from /etc/machine-id
+pub fn probe() -> Option<String> { std::fs::read_to_string("/etc/machine-id").ok() }
+=== G8 FAIL environment read through /proc/self/environ
+pub fn probe() -> Option<Vec<u8>> { std::fs::read("/proc/self/environ").ok() }
+=== G9 FAIL compile-time environment (env!)
+pub const PROBE: &str = env!("USERNAME");
+=== S1 FAIL shipped code after the closing brace of a test module
+#[cfg(test)]
+mod tests {
+    fn t() {}
+} pub fn probe() -> Option<String> { std::env::var("HOME").ok() }
+=== S2 FAIL shipped code after a test item that ends with a semicolon
+#[cfg(test)] const X: u8 = 1; pub fn probe() -> Option<String> { std::env::var("HOME").ok() }
+=== S3 FAIL a test-only struct-literal field does not hide the next field
+pub fn probe() -> S { S { #[cfg(test)] a: 1, b: std::env::var("HOME").ok() } }
+=== S4 FAIL a test-only match arm does not hide the next arm
+pub fn probe(x: u8) -> Option<String> { match x { #[cfg(test)] 1 => None, _ => std::env::var("HOME").ok() } }
+=== S5 FAIL cfg(any(test, ...)) is shipped code
+#[cfg(any(test, feature = "f"))]
+pub fn probe() -> Option<String> { std::env::var("HOME").ok() }
+=== S6 FAIL @node/src/main.rs an allowed fragment does not cover another read on its line
+pub fn probe() -> Vec<String> { let _h = std::env::var("HOME"); std::env::args().collect() }
+=== S7 FAIL the boot_id read is allowed only in node/src/host_clock.rs
+pub fn probe() -> Option<String> { std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok() }
+=== S8 FAIL a host name syscall
+pub fn probe(buf: &mut [u8]) -> i32 { unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } }
+=== S9 FAIL a uname syscall
+pub fn probe(u: *mut libc::utsname) -> i32 { unsafe { libc::uname(u) } }
+=== P1 PASS environment reads inside test modules and multi-line test items
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() { let _ = std::env::var("X"); }
+}
+#[cfg(all(test, unix))]
+fn multi(
+    a: u8,
+) -> u8 { let _ = std::env::var("W"); a }
+fn after() -> &'static str { let _q = '\''; let _b = '{'; r#"{"# }
+=== P2 PASS comments and doc comments are not code
+// std::env::var("HOME") and /etc/hostname in a comment
+/* /proc/self/environ in a block comment */
+/// `env!` in a doc comment
+pub fn probe() {}
+=== P3 PASS @node/src/main.rs the allowed command-line read
+fn main() { let args: Vec<_> = std::env::args().collect(); }
+=== P4 PASS @node/src/host_clock.rs the allowed boot_id read
+pub fn boot() -> Option<String> { std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok() }
+=== P5 PASS test-only path includes and attributes after the test attribute
+#[cfg(test)]
+#[path = "x_tests.rs"]
+mod x_tests;
+#[cfg(test)]
+#[allow(dead_code)]
+fn helper() -> Option<String> { std::env::var("X").ok() }
+pub fn shipped() -> u8 { 1 }

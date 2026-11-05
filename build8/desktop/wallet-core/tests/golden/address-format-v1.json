@@ -1,0 +1,305 @@
+{
+  "bech32m_constant": "0x2bc830a3",
+  "bip173_bech32_valid": [
+    "A12UEL5L",
+    "a12uel5l",
+    "abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw",
+    "split1checkupstagehandshakeupstreamerranterredcaperred2y9e3w",
+    "?1ezyfcl"
+  ],
+  "bip350_bech32m_valid": [
+    "A1LQFN3A",
+    "a1lqfn3a",
+    "an83characterlonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11sg7hg6",
+    "abcdef1l7aum6echk45nj3s0wdvt2fg8x9yrzpqzd3ryx",
+    "11llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllludsr8",
+    "split1checkupstagehandshakeupstreamerranterredcaperredlc445v",
+    "?1v759aa"
+  ],
+  "charset": "qpzry9x8gf2tvdw0s3jn54khce6mua7l",
+  "encoding": "prefix || '1' || 52 data characters (the 32 bytes as 5-bit groups, most significant bit first, 4 zero padding bits) || 6 checksum characters; BIP-173 alphabet and generator; BIP-350 bech32m constant",
+  "evidence": "TEST-VALUE public vectors: fixed byte patterns and the addresses of public BIP-39 test-phrase keys; no production key",
+  "format": "MUTINY-BUILD8-ADDRESS-TEXT-V1",
+  "invalid": [
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q8kpv5e",
+      "error": "CHECKSUM_VARIANT",
+      "why": "a BIP-173 bech32 checksum instead of bech32m"
+    },
+    {
+      "class": "test-value",
+      "encoded": "",
+      "error": "EMPTY",
+      "why": "nothing entered"
+    },
+    {
+      "class": "test-value",
+      "encoded": " tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m",
+      "error": "INVALID_CHARACTER",
+      "why": "a leading space: nothing is trimmed"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nbehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m",
+      "error": "INVALID_CHARACTER",
+      "why": "a data character outside the BIP-173 alphabet (b)"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m\n",
+      "error": "INVALID_CHARACTER",
+      "why": "a trailing line feed: nothing is trimmed"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1é",
+      "error": "INVALID_CHARACTER",
+      "why": "a non-ASCII character"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3q",
+      "error": "INVALID_CHECKSUM",
+      "why": "the last checksum character changed"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qldkksg",
+      "error": "INVALID_CHECKSUM",
+      "why": "a production address with only its prefix edited to tmut"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmutqqqqqqqqq",
+      "error": "MISSING_SEPARATOR",
+      "why": "no separator 1"
+    },
+    {
+      "class": "test-value",
+      "encoded": "TMUT1RS09Nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m",
+      "error": "MIXED_CASE",
+      "why": "upper- and lowercase mixed"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7p0u94vf",
+      "error": "NON_CANONICAL_PADDING",
+      "why": "non-zero padding bits in the last data character, valid checksum"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qqzytgux",
+      "error": "PAYLOAD_TOO_LONG",
+      "why": "53 data characters with a valid checksum (extra data)"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp76yt74g",
+      "error": "PAYLOAD_TOO_SHORT",
+      "why": "51 data characters with a valid checksum"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "error": "TOO_LONG",
+      "why": "91 characters, beyond the BIP-173 limit of 90"
+    },
+    {
+      "class": "test-value",
+      "encoded": "tmut1qqqqq",
+      "error": "TOO_SHORT",
+      "why": "fewer characters than the checksum alone"
+    },
+    {
+      "class": "test-value",
+      "encoded": "1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qhefd9h",
+      "error": "UNKNOWN_PREFIX",
+      "why": "an empty prefix"
+    },
+    {
+      "class": "test-value",
+      "encoded": "bc1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qthfwxw",
+      "error": "UNKNOWN_PREFIX",
+      "why": "a valid bech32m string under a foreign prefix"
+    },
+    {
+      "class": "test-value",
+      "encoded": "TMUT1RS09NQEHM3DYJAYUGEFR9KKUL369LVUFY9754M2QWFJ5C27JRP7QJ23Q3M",
+      "error": "UPPERCASE",
+      "why": "the all-uppercase form is not accepted (no normalisation)"
+    },
+    {
+      "class": "test-value",
+      "encoded": "mut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qldkksg",
+      "error": "WRONG_PREFIX",
+      "why": "a valid production-class address entered on a TEST-VALUE chain"
+    },
+    {
+      "class": "production",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m",
+      "error": "WRONG_PREFIX",
+      "why": "a valid TEST-VALUE address entered on a production chain"
+    },
+    {
+      "class": "production",
+      "encoded": "umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f",
+      "error": "WRONG_PREFIX",
+      "why": "a valid class-not-declared address entered on a production chain"
+    }
+  ],
+  "legacy_hex_invalid": [
+    {
+      "error": "LEGACY_HEX_LENGTH",
+      "text": "000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "error": "LEGACY_HEX_CHARACTER",
+      "text": "000000000000000000000000000000000000000000000000000000000000000A"
+    },
+    {
+      "error": "LEGACY_HEX_CHARACTER",
+      "text": "0x00000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "legacy_hex_valid": [
+    {
+      "address_hex": "1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c",
+      "text": "1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c"
+    }
+  ],
+  "prefixes": {
+    "production": "mut",
+    "test-value": "tmut",
+    "undeclared": "umut"
+  },
+  "status": "PROPOSED-UNFROZEN: not frozen until the Architect approves docs/ADDRESS-FORMAT-V1.md",
+  "valid": [
+    {
+      "address_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "class": "production",
+      "encoded": "mut1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu53wyh",
+      "what": "all zero bytes"
+    },
+    {
+      "address_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "class": "test-value",
+      "encoded": "tmut1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3nkc9y",
+      "what": "all zero bytes"
+    },
+    {
+      "address_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "class": "undeclared",
+      "encoded": "umut1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqygrm2k",
+      "what": "all zero bytes"
+    },
+    {
+      "address_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "class": "production",
+      "encoded": "mut1llllllllllllllllllllllllllllllllllllllllllllllllllls72jldq",
+      "what": "all 0xff bytes"
+    },
+    {
+      "address_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "class": "test-value",
+      "encoded": "tmut1lllllllllllllllllllllllllllllllllllllllllllllllllllsnd4fvn",
+      "what": "all 0xff bytes"
+    },
+    {
+      "address_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "class": "undeclared",
+      "encoded": "umut1lllllllllllllllllllllllllllllllllllllllllllllllllllsxkq2rp",
+      "what": "all 0xff bytes"
+    },
+    {
+      "address_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "class": "production",
+      "encoded": "mut1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0s4q6vyw",
+      "what": "bytes 0x00 to 0x1f"
+    },
+    {
+      "address_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "class": "test-value",
+      "encoded": "tmut1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sc8a69a",
+      "what": "bytes 0x00 to 0x1f"
+    },
+    {
+      "address_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "class": "undeclared",
+      "encoded": "umut1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sduge20",
+      "what": "bytes 0x00 to 0x1f"
+    },
+    {
+      "address_hex": "1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c",
+      "class": "production",
+      "encoded": "mut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qldkksg",
+      "what": "TEST-VALUE key A (all-abandon phrase), generation 1"
+    },
+    {
+      "address_hex": "1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c",
+      "class": "test-value",
+      "encoded": "tmut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7qj23q3m",
+      "what": "TEST-VALUE key A (all-abandon phrase), generation 1"
+    },
+    {
+      "address_hex": "1c1e598337dc5a49749c465232dadcfc745fb389217d4aed4072654c2bd2187c",
+      "class": "undeclared",
+      "encoded": "umut1rs09nqehm3dyjayugefr9kkul369lvufy9754m2qwfj5c27jrp7q83yr7f",
+      "what": "TEST-VALUE key A (all-abandon phrase), generation 1"
+    },
+    {
+      "address_hex": "eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6",
+      "class": "production",
+      "encoded": "mut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttqz35dew",
+      "what": "TEST-VALUE key B (all-zoo phrase), generation 1"
+    },
+    {
+      "address_hex": "eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6",
+      "class": "test-value",
+      "encoded": "tmut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq0knmca",
+      "what": "TEST-VALUE key B (all-zoo phrase), generation 1"
+    },
+    {
+      "address_hex": "eb9273a900971ec881effbb719f84b01c1ff7b59f409046d5213855a3278f2d6",
+      "class": "undeclared",
+      "encoded": "umut1awf882gqju0v3q00lwm3n7ztq8ql776e7sysgm2jzwz45vnc7ttq6dxch0",
+      "what": "TEST-VALUE key B (all-zoo phrase), generation 1"
+    },
+    {
+      "address_hex": "b52f9e00d8a3c89153b2f7b465fc3d8a31216b24c97e123b0461811e93f49345",
+      "class": "production",
+      "encoded": "mut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzsvupk03",
+      "what": "TEST-VALUE key C (legal-winner phrase), generation 1"
+    },
+    {
+      "address_hex": "b52f9e00d8a3c89153b2f7b465fc3d8a31216b24c97e123b0461811e93f49345",
+      "class": "test-value",
+      "encoded": "tmut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzspmxqwz",
+      "what": "TEST-VALUE key C (legal-winner phrase), generation 1"
+    },
+    {
+      "address_hex": "b52f9e00d8a3c89153b2f7b465fc3d8a31216b24c97e123b0461811e93f49345",
+      "class": "undeclared",
+      "encoded": "umut1k5heuqxc50yfz5aj776xtlpa3gcjz6eye9lpywcyvxq3ayl5jdzs5qnrps",
+      "what": "TEST-VALUE key C (legal-winner phrase), generation 1"
+    },
+    {
+      "address_hex": "0b3afc8ea2617a8a5f6dfd616d3ce210d38da574b20d34d0c5bc0ebb419da652",
+      "class": "production",
+      "encoded": "mut1pva0er4zv9ag5hmdl4sk608zzrfcmft5kgxnf5x9hs8tksva5efqr5c260",
+      "what": "TEST-VALUE key A, generation 2"
+    },
+    {
+      "address_hex": "0b3afc8ea2617a8a5f6dfd616d3ce210d38da574b20d34d0c5bc0ebb419da652",
+      "class": "test-value",
+      "encoded": "tmut1pva0er4zv9ag5hmdl4sk608zzrfcmft5kgxnf5x9hs8tksva5efqwnlumu",
+      "what": "TEST-VALUE key A, generation 2"
+    },
+    {
+      "address_hex": "0b3afc8ea2617a8a5f6dfd616d3ce210d38da574b20d34d0c5bc0ebb419da652",
+      "class": "undeclared",
+      "encoded": "umut1pva0er4zv9ag5hmdl4sk608zzrfcmft5kgxnf5x9hs8tksva5efqmg2l5w",
+      "what": "TEST-VALUE key A, generation 2"
+    }
+  ]
+}
