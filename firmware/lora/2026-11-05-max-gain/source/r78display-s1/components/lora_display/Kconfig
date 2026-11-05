@@ -1,0 +1,65 @@
+menu "LoRa bridge status display"
+
+config LORA_DISPLAY_ENABLE
+    bool "Drive the status OLED"
+    default n
+    help
+        Off by default. Even when enabled, the display refuses to start until
+        every pin below is set from the published schematic for the exact
+        board revision and passes the profile check.
+
+config LORA_DISPLAY_SDA_GPIO
+    int "OLED I2C SDA GPIO (-1 = unset)"
+    depends on LORA_DISPLAY_ENABLE
+    range -1 48
+    default -1
+
+config LORA_DISPLAY_SCL_GPIO
+    int "OLED I2C SCL GPIO (-1 = unset)"
+    depends on LORA_DISPLAY_ENABLE
+    range -1 48
+    default -1
+
+config LORA_DISPLAY_RST_GPIO
+    int "OLED reset GPIO (-1 = unset)"
+    depends on LORA_DISPLAY_ENABLE
+    range -1 48
+    default -1
+
+config LORA_DISPLAY_VEXT_GPIO
+    int "Panel power (Vext) GPIO (-1 = unset)"
+    depends on LORA_DISPLAY_ENABLE
+    range -1 48
+    default -1
+
+config LORA_DISPLAY_VEXT_ACTIVE_LEVEL
+    int "Vext level that powers the panel: 0 or 1 (-1 = unset)"
+    depends on LORA_DISPLAY_ENABLE
+    range -1 1
+    default -1
+
+config LORA_DISPLAY_I2C_ADDR
+    int "OLED 7-bit I2C address in decimal: 60 = 0x3C, 61 = 0x3D (-1 = unset)"
+    depends on LORA_DISPLAY_ENABLE
+    range -1 61
+    default -1
+    help
+        Not measured on the fitted panels. Leave unset until confirmed.
+
+config LORA_DISPLAY_SSD13XX_VENDOR_PROFILE_CANDIDATE
+    bool "Select documented Heltec V4 SSD1315 command-set CANDIDATE"
+    depends on LORA_DISPLAY_ENABLE
+    default n
+    help
+        The V4.2/V4.3.1 manufacturer datasheets name SSD1315. The V4
+        factory code uses the SSD1306-compatible command interface at 0x3C.
+        This selects that documented profile for an isolated candidate,
+        not proof of the attached panel or permission to flash. Default off.
+
+config LORA_DISPLAY_TASK_PRIORITY
+    int "Display task priority (keep below the radio)"
+    depends on LORA_DISPLAY_ENABLE
+    range 1 5
+    default 1
+
+endmenu

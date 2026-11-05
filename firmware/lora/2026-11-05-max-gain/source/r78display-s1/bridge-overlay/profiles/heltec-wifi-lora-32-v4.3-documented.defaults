@@ -1,0 +1,17 @@
+# HTIT-WB32LAF V4.3 status OLED profile: DOCUMENTED pins only.
+# Sources: Heltec HTIT-WB32LAF_V4.3.pdf (b846f7bbdb156ad938e3df34b8803de63e8180b9895417d6206e2094f429a2e1)
+#          Heltec V4_pinmap.png      (2562d799970eb2ac231fee0679093e4207019af0800a24b169ae72a98a89988f)
+# OLED_SDA GPIO17, OLED_SCL GPIO18, OLED_RST GPIO21, Vext_Ctrl GPIO36.
+# Vext on = LOW: Vext_Ctrl drives the gate of P-channel Q2 (AO3401A) through
+# R10, pulled up to 3V3 by R14, which enables the Vext LDO U2.
+#
+# Still NOT measured on the fitted panels, so deliberately left unset here:
+#   CONFIG_LORA_DISPLAY_I2C_ADDR           (stays -1: the display refuses to start)
+#   CONFIG_LORA_DISPLAY_SSD1306_CONFIRMED  (stays n)
+# The display also stays disabled: CONFIG_LORA_DISPLAY_ENABLE is not set here.
+# Use: SDKCONFIG_DEFAULTS="sdkconfig.defaults;profiles/heltec-wifi-lora-32-v4.3-documented.defaults"
+CONFIG_LORA_DISPLAY_SDA_GPIO=17
+CONFIG_LORA_DISPLAY_SCL_GPIO=18
+CONFIG_LORA_DISPLAY_RST_GPIO=21
+CONFIG_LORA_DISPLAY_VEXT_GPIO=36
+CONFIG_LORA_DISPLAY_VEXT_ACTIVE_LEVEL=0
